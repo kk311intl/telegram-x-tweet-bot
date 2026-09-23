@@ -1485,25 +1485,26 @@ class MenuTests(unittest.TestCase):
             self.assertEqual(store.quota(987654321), 50)
 
     def test_administrator_help_omits_owner_only_shortcuts(self):
-        owner_help = bot.owner_help_text(True)
-        admin_help = bot.owner_help_text(False)
-        self.assertTrue(owner_help.startswith("所有者管理說明"))
-        self.assertTrue(admin_help.startswith("管理員使用說明"))
-        self.assertIn("直接傳送 User ID", owner_help)
-        self.assertIn("直接傳送 User ID", admin_help)
-        self.assertIn("不能修改 Owner、自己或其他管理員", admin_help)
-        self.assertIn("不能新增管理員", admin_help)
-        self.assertIn("只允許 Owner 操作", admin_help)
-        self.assertIn("高級選項只能使用實現方式", admin_help)
-        self.assertIn("仍可使用 Owner 已配置的 Cookies", admin_help)
-        self.assertIn("升級或降級管理員", owner_help)
-        self.assertIn("系統狀態的高級選項管理 Cookies", owner_help)
-        self.assertIn("自動通過", owner_help)
-        self.assertIn("自動通過", admin_help)
-        self.assertIn("優先使用 FxTwitter metadata", owner_help)
-        self.assertIn("才依序嘗試 gallery-dl 匿名", owner_help)
-        self.assertIn("不會切換到被引用內容", owner_help)
-        self.assertIn("不會切換到被引用內容", admin_help)
+        for language, titles, shortcut in (
+            ("zh", ("所有者管理說明", "管理員使用說明"), "User ID 額度"),
+            ("ja", ("所有者向けガイド", "管理者向けガイド"), "User ID 上限値"),
+            ("en", ("Owner guide", "Administrator guide"), "User ID and quota"),
+        ):
+            with self.subTest(language=language), patch.object(bot, "OWNER_LANGUAGE", language):
+                owner_help = bot.owner_help_text(True)
+                admin_help = bot.owner_help_text(False)
+                self.assertTrue(owner_help.startswith(titles[0]))
+                self.assertTrue(admin_help.startswith(titles[1]))
+                for text in (owner_help, admin_help):
+                    self.assertIn(shortcut, text)
+                    self.assertIn(bot.BOT_MENTION, text)
+                    self.assertLess(len(text), 750)
+                    for detail in ("FxTwitter", "gallery-dl", "yt-dlp", "50 MB", "52-bit", bot.BOT_TIMEZONE_NAME):
+                        self.assertNotIn(detail, text)
+                self.assertNotEqual(owner_help, admin_help)
+                self.assertNotIn("auto-approval", admin_help)
+                self.assertNotIn("自動通過", admin_help)
+                self.assertNotIn("自動承認", admin_help)
 
     def test_administrator_numeric_shortcut_creates_only_non_privileged_users(self):
         with tempfile.TemporaryDirectory() as temporary:

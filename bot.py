@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -1393,51 +1393,31 @@ def cookie_help_text() -> str:
 
 def owner_help_text(is_owner: bool = True) -> str:
     if OWNER_LANGUAGE == "en":
-        role = ("The owner can manage users and administrators, Cookies, access, and auto-approval." if is_owner else "Administrators can manage regular users but cannot change the owner, themselves, other administrators, or owner-only settings.")
+        role = (
+            "The owner can manage administrators; Cookies, access, and auto-approval are in Advanced settings."
+            if is_owner else
+            "Administrators can manage regular users, but not the owner, themselves, other administrators, or owner-only settings."
+        )
         return (
             "Owner guide" if is_owner else "Administrator guide"
-        ) + f"\n\nSend one X/Twitter post URL to retrieve text and media. In another chat, use {BOT_MENTION} followed by a URL for inline media. Images include uncompressed files; videos are limited to 50 MB. Quoted content is not followed.\n\nUsers and requests are shown 20 per page. A quota of -1 blocks, 0 initializes, a positive number is the daily limit, and unlimited means administrator. Send a User ID to search, or a User ID and quota to change access; changes require confirmation.\n\n{role}\nManagement commands work only in a private chat with the bot. Daily usage resets at {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}; the report is sent at {DAILY_REPORT_HOUR:02d}:00."
+        ) + f"\n\nSend one X/Twitter post URL for text and media. In another chat, use {BOT_MENTION} followed by the URL for inline sharing.\n\nSend a User ID to find a user, or a User ID and quota to change access; confirm the change when prompted. Quotas: -1 blocks, 0 initializes, a positive number is the daily limit; only the owner can grant unlimited administrator access.\n\n{role}\nManagement works only in a private chat with the bot."
     if OWNER_LANGUAGE == "ja":
-        role = ("所有者はユーザーと管理者、Cookies、利用許可、自動承認を管理できます。" if is_owner else "管理者は一般ユーザーを管理できますが、所有者、自分自身、他の管理者、所有者専用設定は変更できません。")
+        role = (
+            "所有者は管理者を管理できます。Cookies、利用許可、自動承認は詳細設定にあります。"
+            if is_owner else
+            "管理者が変更できるのは一般ユーザーのみです。所有者、自分、他の管理者、所有者専用設定は変更できません。"
+        )
         return (
             "所有者向けガイド" if is_owner else "管理者向けガイド"
-        ) + f"\n\nX/Twitter の単一投稿URLを送信すると本文とメディアを取得します。他のチャットでは {BOT_MENTION} とURLでインライン送信できます。画像は元ファイルも送り、動画の上限は 50 MB です。引用先はたどりません。\n\nユーザーと申請は1ページ20件です。権限は -1 がブロック、0 が初期化、正の数が1日の上限、無制限が管理者です。User ID で検索し、User ID と上限値で変更できます。変更には確認が必要です。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。利用回数は {BOT_TIMEZONE_NAME} の {DAILY_RESET_HOUR:02d}:00 にリセットされ、日次レポートは {DAILY_REPORT_HOUR:02d}:00 に送信されます。"
-    title = "所有者管理說明" if is_owner else "管理員使用說明"
-    role_scope = (
-        "• 可建立普通使用者，並升級或降級管理員。\n"
-        "• 可在系統狀態的高級選項管理 Cookies、全域使用開關與自動通過。\n"
-        if is_owner
-        else
-        "• 可建立及修改普通、初始化或封鎖使用者。\n"
-        "• 不能修改 Owner、自己或其他管理員，也不能新增管理員。\n"
-        "• 高級選項只能使用實現方式；Cookies、全域使用開關與自動通過只允許 Owner 操作。\n"
-        "• 抓取貼文時仍可使用 Owner 已配置的 Cookies，不受 Cookies 開關影響。\n"
+        ) + f"\n\nX/Twitter の単一投稿URLで本文とメディアを取得できます。他のチャットでは {BOT_MENTION} とURLでインライン共有できます。\n\nUser ID でユーザーを検索し、「User ID 上限値」で権限を変更できます。確認画面で確定してください。-1 はブロック、0 は初期化、正の数は1日の上限、無制限の管理者権限は所有者のみが付与できます。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。"
+    role = (
+        "Owner 可管理管理員；Cookies、使用開關與自動通過位於高級選項。"
+        if is_owner else
+        "管理員只能管理普通用戶，不能修改 Owner、自己、其他管理員或 Owner 專用設定。"
     )
     return (
-        f"{title}\n\n"
-        "使用方式\n"
-        "• 傳送單篇 X/Twitter 貼文網址即可取得文字與媒體。\n"
-        f"• 在其他聊天輸入 {BOT_MENTION} 加貼文網址，可用內聯結果發送媒體；不會附圖片原始檔案。\n"
-        "• 引用貼文只處理提交網址本身的文字與媒體，不會切換到被引用內容。\n"
-        "• 圖片會提供預覽及未壓縮檔案；影片上限為 50 MB。\n\n"
-        "擷取順序\n"
-        "• 優先使用 FxTwitter metadata 從可信任的 twimg.com 直連下載媒體。\n"
-        "• 直連未取得檔案時，才依序嘗試 gallery-dl 匿名、gallery-dl Cookies、"
-        "yt-dlp 匿名及 yt-dlp Cookies。\n"
-        "• 普通用戶 Cookies 關閉時，會跳過普通使用者的兩個 Cookies 階段。\n\n"
-        "使用者管理\n"
-        "• 使用者與申請列表每頁顯示 20 筆。\n"
-        "• 用戶權限規則：-1 封鎖、0 初始化、正整數為每日額度、不限為管理員。\n"
-        "• 可直接傳送 User ID 查詢，或傳送「User ID 數字」建立或修改；均需二次確認。\n"
-        "• 純數字快捷辨識範圍為 100000 至 52-bit 正整數。\n"
-        f"{role_scope}"
-        "• 管理操作只允許在 Bot 私聊執行。\n\n"
-        "系統管理\n"
-        "• 系統狀態可查看佇列、用量、使用者、Cookies 與全域開關狀態。\n"
-        f"• Owner 可在高級選項管理 Cookies、使用開關與自動通過。自動通過開啟時，申請者立即取得每日 {DEFAULT_DAILY_LIMIT} 次的普通使用權限。\n"
-        "• 實現方式是每位管理員的個人設定，只影響自己的結果。\n"
-        "• 管理模式可暫時按普通用戶規則測試，並隨時切換恢復。"
-    )
+        "所有者管理說明" if is_owner else "管理員使用說明"
+    ) + f"\n\n傳送單篇 X/Twitter 貼文網址取得文字與媒體；在其他聊天輸入 {BOT_MENTION} 加網址可內聯分享。\n\n直接傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。額度 -1 為封鎖、0 為初始化、正數為每日上限；僅 Owner 可授予不限額的管理員權限。\n\n{role}\n管理操作只在 Bot 私聊有效。"
 
 
 def validate_cookie_file(content: bytes) -> str:
