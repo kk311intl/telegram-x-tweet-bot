@@ -3,3 +3,4 @@
 *.py text eol=lf
 *.service text eol=lf
 *.timer text eol=lf
+LICENSE text eol=lf

@@ -1,4 +1,4 @@
-# X/Twitter → Telegram Bot · v1.0.0
+# X/Twitter → Telegram Bot · v2.0.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -8,7 +8,7 @@
 
 > 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID、管理介面語言與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及三種介面語言（管理語言由部署設定，普通用戶自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
 
-這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。普通用戶可各自選繁體中文、日本語或 English；Owner 與管理員的介面語言由部署時的 `OWNER_LANGUAGE` 固定設定。公開版從 v1.0.0 開始，與原作者的線上實例、資料及備份互不相連。
+這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。普通用戶可各自選繁體中文、日本語或 English；Owner 與管理員的介面語言由部署時的 `OWNER_LANGUAGE` 固定設定。本公開版 v2.0.0 與原作者的線上實例、資料及備份互不相連。
 
 需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+（部署腳本會安裝 Python 3.12 執行環境）、systemd、可用的 Telegram Bot Token。部署腳本會安裝 `ffmpeg` 與 Python 依賴，建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
 
@@ -38,7 +38,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 可選的異機不停機備份保留了 ACL／額度與程式版本歸檔，但不備份 Bot Token 或 Cookies。在 Bot 主機以 `sudo env SYNC_ROLE=endpoint bash deploy.sh` 安裝唯讀匯出端點，為備份主機建立僅允許該 forced command 的 SSH 金鑰，並人工核對與固定來源主機的 SSH host key。在備份主機把 `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` 寫入權限 `0600` 的 `/etc/x-tweet-access-backup.env`，準備 `/root/.ssh/x_tweet_access_sync` 和 `/root/.ssh/x_tweet_access_sync_known_hosts`，再執行 `sudo bash deploy_backup_receiver.sh`。計時器預設每日 UTC 00:00；如需其他時間，編輯 `x-tweet-access-backup.timer` 再安裝。備份含 Telegram User ID，請限制讀取權限並遵守保留政策；恢復 ACL 前必須先停 Bot，詳見 `x-tweet-bot-config import-access` 的保護檢查。沒有異機備份需求時，完全不必設置它。
 
-本工程自有原始碼以 [MIT License](LICENSE) 授權；`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 由安裝時另行取得，各自遵循上游授權。若再分發含依賴的執行包，須另行核對其授權義務。
+本版自有原始碼 © 2026 kk311intl，以 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）授權。先前的 v1.0.0 依當時 MIT 授權發布；本次變更不追溯改變已取得該版本的權利。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 由安裝時另行取得，各自遵循上游授權；再分發含依賴的執行包時須另外核對其義務。
 
 ## 日本語
 
@@ -46,7 +46,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 > まずこの repository の README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit、テストを読んでください。そのうえで、Python・systemd・Telegram Bot API を使う X/Twitter 単一投稿メディア Bot を、私の Debian／Ubuntu Linux サーバーへ導入してください。私はプログラミングに詳しくありません。各コマンドの意味と期待結果を説明し、サーバーへのログイン方法、Bot Token、私の Telegram User ID、管理画面の言語、タイムゾーンなど、本当に不足している値だけを尋ねてください。Bot の作成、ログイン承認、Token の安全な入力、SSH 鍵の確認は私自身が行います。Secret をチャット・issue・Git に貼らせないでください。同名サービスや既存データを先に調べ、確認なしに既存環境を上書き・再起動せず、ユーザーデータ、Webhook、資格情報を初期化しないでください。構成を独断で変えず、各段階を実行して結果を確認し、最後にサービス、Bot の `/start`、公開投稿1件、3言語表示を検証してください。管理者の言語は導入設定、一般ユーザーの言語は本人の選択です。未確認の作業を完了済みと報告しないでください。
 
-この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。一般ユーザーは繁體中文・日本語・English を個別に選択でき、所有者と管理者の表示言語は `OWNER_LANGUAGE` で固定します。公開版は v1.0.0 から始まり、元の運用環境やデータとは接続されません。
+この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。一般ユーザーは繁體中文・日本語・English を個別に選択でき、所有者と管理者の表示言語は `OWNER_LANGUAGE` で固定します。この公開版 v2.0.0 は元の運用環境やデータとは接続されません。
 
 必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+（導入スクリプトは Python 3.12 の実行環境を準備）、systemd、Telegram Bot Token です。`deploy.sh` は `ffmpeg` と Python 依存関係を導入し、専用ユーザーと `/var/lib/x-tweet-telegram-bot` を作ります。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
 
@@ -76,7 +76,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 別ホストへの無停止バックアップは任意です。ACL／上限とプログラムの版を保存し、Bot Token や Cookies は保存しません。Bot 側で `sudo env SYNC_ROLE=endpoint bash deploy.sh` により読み取り専用の出力端点を導入し、バックアップ側の SSH 鍵をその forced command のみに制限します。送信元の SSH host key は本人が確認して固定してください。バックアップ側では `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` を権限 `0600` の `/etc/x-tweet-access-backup.env` に設定し、`/root/.ssh/x_tweet_access_sync` と `/root/.ssh/x_tweet_access_sync_known_hosts` を準備して、`sudo bash deploy_backup_receiver.sh` を実行します。タイマーは初期値で毎日 UTC 00:00。変更する場合は `x-tweet-access-backup.timer` を編集してから導入します。バックアップには Telegram User ID が含まれるため、アクセスと保持期間を管理してください。ACL の復元前には Bot を停止する必要があり、`x-tweet-bot-config import-access` に保護チェックがあります。不要なら設定する必要はありません。
 
-この repository の自作コードは [MIT License](LICENSE) です。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` はインストール時に別途取得され、それぞれの上流ライセンスに従います。依存関係を含むバイナリ等を再配布する場合は、その義務も確認してください。
+この版の自作コードは © 2026 kk311intl、[GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）で公開します。以前の v1.0.0 は当時の MIT ライセンスで公開されており、今回の変更は既に取得された版の権利を遡って変更しません。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` はインストール時に別途取得され、各自の上流ライセンスに従います。依存関係を含むバイナリ等を再配布する場合は、その義務も確認してください。
 
 ## English
 
@@ -84,7 +84,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 > Read this repository's README, `deploy.sh`, `bot.py`, `config_cli.py`, systemd units, and tests first. Then help me deploy this Python/systemd X/Twitter single-post media bot, which uses the Telegram Bot API, on my own Debian or Ubuntu Linux server. I am not a programmer: explain each command and its expected result, and ask only for missing values such as server access, Bot Token, my Telegram User ID, administrator language, and time zone. I must personally create the bot, approve logins, enter the Token securely, and confirm SSH keys. Do not ask me to paste secrets into chat, issues, or Git. Check for existing services and data before acting; do not overwrite or restart an existing installation without confirmation, and do not reset users, Webhooks, or credentials. Follow the current project without redesigning it. Execute and check each step, troubleshoot failures, and finally verify the service, `/start`, one public post, and all three interface languages (administrator language is deployment-wide; regular users choose individually). Mark any step you could not actually verify instead of claiming success.
 
-Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Regular users choose 繁體中文, 日本語, or English individually; the owner and administrators use one deployment setting, `OWNER_LANGUAGE`. This public project starts at v1.0.0 and is separate from the original live service and its data.
+Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Regular users choose 繁體中文, 日本語, or English individually; the owner and administrators use one deployment setting, `OWNER_LANGUAGE`. This public v2.0.0 release is separate from the original live service and its data.
 
 You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+ (the deployment script installs a Python 3.12 runtime), systemd, and a Telegram Bot Token. `deploy.sh` installs `ffmpeg` and Python packages, then creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. It uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
 
@@ -114,4 +114,4 @@ For local tests, install `requirements.txt` and run `python3 -m unittest -q test
 
 Optional off-host, no-downtime backup archives ACL/quotas and the program version, not the Bot Token or Cookies. On the bot host, `sudo env SYNC_ROLE=endpoint bash deploy.sh` installs the read-only export endpoint. Authorize the backup host's SSH key for that forced command only, and personally verify/pin the source host's SSH host key. On the backup host, place `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` in root-only (`0600`) `/etc/x-tweet-access-backup.env`, prepare `/root/.ssh/x_tweet_access_sync` and `/root/.ssh/x_tweet_access_sync_known_hosts`, then run `sudo bash deploy_backup_receiver.sh`. The timer defaults to 00:00 UTC daily; edit `x-tweet-access-backup.timer` before installation to use another schedule. Backups include Telegram User IDs, so protect access and retention. Stop the bot before restoring ACL data; `x-tweet-bot-config import-access` enforces this. Skip the entire backup setup if you do not need it.
 
-The original source in this repository is under the [MIT License](LICENSE). `requests`, `Pillow`, `yt-dlp`, and `gallery-dl` are fetched separately at install time and retain their upstream licenses. Check their obligations separately if you redistribute a bundled build.
+The original source in this release is © 2026 kk311intl and licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). The earlier v1.0.0 release was published under MIT; this change does not retroactively alter rights already granted for that version. `requests`, `Pillow`, `yt-dlp`, and `gallery-dl` are fetched separately at install time and retain their upstream licenses. Check their obligations separately if you redistribute a bundled build.
