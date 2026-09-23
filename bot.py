@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -383,6 +383,7 @@ ADMIN_TEXT = {
     "admin_cannot_self": ("管理員不能修改自己的權限。", "Administrators cannot change their own access.", "管理者は自分の権限を変更できません。"),
     "admin_cannot_admin": ("管理員不能修改其他管理員。", "Administrators cannot change other administrators.", "管理者は他の管理者を変更できません。"),
     "owner_only_admin": ("只有所有者可以新增管理員。", "Only the owner can add administrators.", "管理者の追加は所有者のみ可能です。"),
+    "advanced_owner_only": ("高級選項只允許所有者使用。", "Only the owner can use Advanced settings.", "詳細設定を使用できるのは所有者のみです。"),
 }
 
 
@@ -674,15 +675,15 @@ class ACLStore:
 
     def debug_mode(self, user_id: int) -> bool:
         record = self.data["users"].get(str(user_id)) or {}
-        return self.is_admin(user_id) and bool(record.get("debug_mode", False))
+        return user_id == self.owner_id and bool(record.get("debug_mode", False))
 
     def management_mode(self, user_id: int) -> bool:
         record = self.data["users"].get(str(user_id)) or {}
         return self.is_admin(user_id) and bool(record.get("management_mode", True))
 
     def toggle_debug_mode(self, user_id: int) -> bool:
-        if not self.is_admin(user_id):
-            raise ValueError("user is not an administrator")
+        if user_id != self.owner_id:
+            raise ValueError("only the owner can change implementation details")
         with self.lock:
             record = self.data["users"].setdefault(
                 str(user_id), {"user_id": user_id, "quota": None}
@@ -1276,12 +1277,13 @@ def confirm_quota_change_keyboard(user_id: int, quota: int) -> dict[str, Any]:
     ]}
 
 
-def status_keyboard() -> dict[str, Any]:
+def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
     rows = [[{"text": f'🔄 {admin_text("refresh")}', "callback_data": "statusrefresh:0"}]]
-    rows.append([{
-        "text": f'⚙️ {admin_text("advanced")}',
-        "callback_data": "nav:advanced",
-    }])
+    if is_owner:
+        rows.append([{
+            "text": f'⚙️ {admin_text("advanced")}',
+            "callback_data": "nav:advanced",
+        }])
     rows.append([{"text": f'↩️ {admin_text("back")}: {admin_text("menu")}', "callback_data": "nav:main"}])
     return {"inline_keyboard": rows}
 
@@ -1309,12 +1311,13 @@ def advanced_status_keyboard(
             "callback_data": "autoapprovetoggle:0",
         }],
     ] if can_configure else []
-    return {"inline_keyboard": [
-        *owner_rows,
-        [{
+    if can_configure:
+        owner_rows.append([{
             "text": f'🐞 {admin_text("implementation")}{"：" if OWNER_LANGUAGE != "en" else ": "}{debug_state}',
             "callback_data": "debugtoggle:0",
-        }],
+        }])
+    return {"inline_keyboard": [
+        *owner_rows,
         [{"text": f'↩️ {admin_text("back")}: {admin_text("status")}', "callback_data": "nav:status"}],
     ]}
 
@@ -3291,8 +3294,8 @@ class Bot:
                 f"Cookies for regular users: {state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"User access: {'Open' if self.acl.external_access_enabled else 'Paused'}\n"
                 f"Auto-approve: {state(self.acl.auto_approve_enabled)}\n"
-                f"Management mode: {state(self.acl.management_mode(viewer_id))}\n"
-                f"Implementation details: {state(self.acl.debug_mode(viewer_id))}"
+                f"Management mode: {state(self.acl.management_mode(viewer_id))}"
+                + (f"\nImplementation details: {state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
             )
         if OWNER_LANGUAGE == "ja":
             state = lambda enabled: "オン" if enabled else "オフ"
@@ -3307,8 +3310,8 @@ class Bot:
                 f"一般ユーザーの Cookies：{state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"ユーザー利用：{'許可' if self.acl.external_access_enabled else '停止'}\n"
                 f"自動承認：{state(self.acl.auto_approve_enabled)}\n"
-                f"管理モード：{state(self.acl.management_mode(viewer_id))}\n"
-                f"実装方法：{state(self.acl.debug_mode(viewer_id))}"
+                f"管理モード：{state(self.acl.management_mode(viewer_id))}"
+                + (f"\n実装方法：{state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
             )
         return (
             "系統狀態\n\n"
@@ -3326,8 +3329,8 @@ class Bot:
             f"{'開啟' if self.acl.ordinary_user_cookies_enabled else '關閉'}\n"
             f"使用開關：{'開放' if self.acl.external_access_enabled else '暫停'}\n"
             f"自動通過：{'開啟' if self.acl.auto_approve_enabled else '關閉'}\n"
-            f"管理模式：{'開啟' if self.acl.management_mode(viewer_id) else '關閉'}\n"
-            f"實現方式：{'開啟' if self.acl.debug_mode(viewer_id) else '關閉'}"
+            f"管理模式：{'開啟' if self.acl.management_mode(viewer_id) else '關閉'}"
+            + (f"\n實現方式：{'開啟' if self.acl.debug_mode(viewer_id) else '關閉'}" if viewer_id == self.acl.owner_id else "")
         )
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
@@ -3515,8 +3518,13 @@ class Bot:
                 )
             elif destination == "status":
                 text = self.system_status_text(user_id)
-                keyboard = status_keyboard()
+                keyboard = status_keyboard(is_owner)
             elif destination == "advanced":
+                if not is_owner:
+                    self.api.answer_callback(
+                        callback_id, admin_text("advanced_owner_only"), alert=True
+                    )
+                    return
                 text = self.system_status_text(user_id)
                 keyboard = advanced_status_keyboard(
                     self.acl.debug_mode(user_id),
@@ -3687,11 +3695,16 @@ class Bot:
                 chat_id,
                 message_id,
                 self.system_status_text(user_id),
-                status_keyboard(),
+                status_keyboard(is_owner),
             )
             self.api.answer_callback(callback_id, admin_text("status_refreshed"))
             return
         if action == "debugtoggle":
+            if not is_owner:
+                self.api.answer_callback(
+                    callback_id, admin_text("advanced_owner_only"), alert=True
+                )
+                return
             enabled = self.acl.toggle_debug_mode(user_id)
             self.api.edit_message(
                 chat_id,
@@ -4115,7 +4128,7 @@ class Bot:
                 chat_id,
                 self.system_status_text(actor_id),
                 message_id,
-                status_keyboard(),
+                status_keyboard(is_owner),
             )
         elif command == "/help":
             self.api.send_message(

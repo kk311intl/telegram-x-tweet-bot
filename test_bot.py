@@ -484,15 +484,17 @@ class ACLTests(unittest.TestCase):
             self.assertTrue(bot.ACLStore(path, 100).debug_mode(100))
             self.assertFalse(store.toggle_debug_mode(100))
 
-    def test_unlimited_quota_is_an_administrator_with_personal_debug(self):
+    def test_administrator_cannot_enable_implementation_details(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "acl.json"
             store = bot.ACLStore(path, 100)
             store.set_quota(200, None)
             self.assertTrue(store.is_admin(200))
             self.assertTrue(store.is_allowed(200))
-            self.assertTrue(store.toggle_debug_mode(200))
-            self.assertTrue(store.debug_mode(200))
+            with self.assertRaises(ValueError):
+                store.toggle_debug_mode(200)
+            store.data["users"]["200"]["debug_mode"] = True
+            self.assertFalse(store.debug_mode(200))
             self.assertFalse(store.debug_mode(100))
 
     def test_management_mode_is_per_admin_persistent_and_defaults_on(self):
@@ -1094,6 +1096,7 @@ class MenuTests(unittest.TestCase):
                 bot.status_keyboard()["inline_keyboard"][1][0]["text"],
                 "⚙️ 高級選項",
             )
+            self.assertNotIn("nav:advanced", str(bot.status_keyboard(False)))
             advanced = bot.advanced_status_keyboard(False)["inline_keyboard"]
             self.assertEqual(
                 advanced[0][0]["text"],
@@ -1122,12 +1125,9 @@ class MenuTests(unittest.TestCase):
             admin_advanced = bot.advanced_status_keyboard(
                 False, can_configure=False
             )["inline_keyboard"]
-            self.assertEqual(len(admin_advanced), 2)
+            self.assertEqual(len(admin_advanced), 1)
             self.assertEqual(
-                admin_advanced[0][0]["callback_data"], "debugtoggle:0"
-            )
-            self.assertEqual(
-                admin_advanced[1][0]["callback_data"], "nav:status"
+                admin_advanced[0][0]["callback_data"], "nav:status"
             )
 
             service.handle_callback({
@@ -1162,6 +1162,32 @@ class MenuTests(unittest.TestCase):
             self.assertEqual(
                 api.edit_message.call_args.args[2], "Cookies 管理"
             )
+
+    def test_administrator_cannot_open_advanced_settings_or_toggle_implementation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, None)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for language, implementation in (("zh", "實現方式"), ("ja", "実装方法"), ("en", "Implementation details")):
+                with patch.object(bot, "OWNER_LANGUAGE", language):
+                    for data in ("nav:advanced", "debugtoggle:0"):
+                        with self.subTest(language=language, data=data):
+                            api.reset_mock()
+                            service.handle_callback({
+                                "id": data, "data": data,
+                                "from": {"id": 200},
+                                "message": {"message_id": 1, "chat": {"id": 200}},
+                            })
+                            api.answer_callback.assert_called_once_with(
+                                data, bot.admin_text("advanced_owner_only"), alert=True
+                            )
+                            api.edit_message.assert_not_called()
+                    self.assertNotIn(implementation, service.system_status_text(200))
+            self.assertFalse(store.debug_mode(200))
+            service.handle_owner_command(200, 2, 200, "/status", "")
+            self.assertNotIn("nav:advanced", str(api.send_message.call_args.args[3]))
+            service.stop()
 
     def test_external_access_pause_blocks_users_but_not_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2455,7 +2481,7 @@ class InlineQueryTests(unittest.TestCase):
         ) as builder:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.set_quota(300, None)
-            store.toggle_debug_mode(300)
+            store.data["users"]["300"]["debug_mode"] = True
             store.toggle_management_mode(300)
             store.toggle_external_access(100)
             api = MagicMock()
