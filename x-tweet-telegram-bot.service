@@ -1,0 +1,42 @@
+[Unit]
+Description=Telegram bot for X post text and media
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=x-tweet-bot
+Group=x-tweet-bot
+EnvironmentFile=-/etc/x-tweet-telegram-bot.env
+Environment=STATE_DIR=/var/lib/x-tweet-telegram-bot
+ExecStart=/opt/x-tweet-telegram-bot/venv/bin/python /opt/x-tweet-telegram-bot/bot.py
+Restart=always
+RestartSec=10s
+TimeoutStopSec=60s
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/x-tweet-telegram-bot
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryHigh=1G
+MemoryMax=2G
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
