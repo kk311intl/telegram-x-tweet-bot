@@ -7,7 +7,6 @@ PROJECT_DIR=$INSTALL_DIR/project
 STATE_DIR=/var/lib/x-tweet-telegram-bot
 CONFIG_DIR=/etc/x-tweet-telegram-bot
 SERVICE=x-tweet-telegram-bot.service
-SYNC_ROLE=${SYNC_ROLE:-none}
 PROJECT_FILES=(
   VERSION
   LICENSE
@@ -19,25 +18,12 @@ PROJECT_FILES=(
   deploy.sh
   verify_deploy.sh
   x-tweet-telegram-bot.service
-  access_sync_endpoint.sh
-  access_backup.sh
-  deploy_backup_receiver.sh
-  x-tweet-access-backup.service
-  x-tweet-access-backup.timer
 )
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root" >&2
   exit 1
 fi
-
-case "$SYNC_ROLE" in
-  none|endpoint) ;;
-  *)
-    echo "SYNC_ROLE must be none or endpoint" >&2
-    exit 2
-    ;;
-esac
 
 if [[ -f "$PROJECT_DIR/VERSION" ]] && \
    [[ "$(<"$PROJECT_DIR/VERSION")" == "$(<"$SOURCE_DIR/VERSION")" ]]; then
@@ -115,12 +101,6 @@ deploy_targets=(
 for file in "${PROJECT_FILES[@]}"; do
   deploy_targets+=("$PROJECT_DIR/$file")
 done
-case "$SYNC_ROLE" in
-  endpoint)
-    deploy_targets+=(/usr/local/sbin/x-tweet-access-sync-endpoint)
-    ;;
-esac
-
 rollback_dir=$(mktemp -d "$INSTALL_DIR/.deploy-rollback.XXXXXX")
 for target in "${deploy_targets[@]}"; do
   if [[ -e $target || -L $target ]]; then
@@ -162,19 +142,6 @@ for file in "${PROJECT_FILES[@]}"; do
   install -o root -g root -m "$mode" "$SOURCE_DIR/$file" "$PROJECT_DIR/$file"
 done
 
-case "$SYNC_ROLE" in
-  none)
-    ;;
-  endpoint)
-    install -o root -g root -m 0755 "$SOURCE_DIR/access_sync_endpoint.sh" \
-      /usr/local/sbin/x-tweet-access-sync-endpoint
-    ;;
-  *)
-    echo "SYNC_ROLE must be none or endpoint" >&2
-    exit 2
-    ;;
-esac
-
 if [[ ! -f /etc/x-tweet-telegram-bot.env ]]; then
   cat >/etc/x-tweet-telegram-bot.env <<EOF
 BOOTSTRAP_CODE=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
@@ -188,7 +155,9 @@ INLINE_CACHE_SECONDS=60
 OWNER_USER_ID=0
 OWNER_LANGUAGE=zh
 BOT_TIMEZONE=UTC
+DAILY_RESET_HOUR=0
 DAILY_REPORT_HOUR=22
+DEFAULT_DAILY_LIMIT=50
 EOF
   chmod 0600 /etc/x-tweet-telegram-bot.env
 fi

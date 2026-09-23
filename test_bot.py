@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -335,6 +336,8 @@ class ACLTests(unittest.TestCase):
                 self.assertFalse(store.claim(200, "correct-code"))
 
     def test_application_metadata_approval_and_daily_report_schedule(self):
+        report_time = datetime(1970, 1, 3, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
+        next_report_time = datetime(1970, 1, 4, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -345,12 +348,12 @@ class ACLTests(unittest.TestCase):
             })
             self.assertEqual(store.request_access(200, now=100_000), "created")
             self.assertEqual(store.request_access(200, now=100_001), "pending")
-            self.assertFalse(store.daily_report_due(now=251_999))
-            self.assertTrue(store.daily_report_due(now=252_000))
+            self.assertFalse(store.daily_report_due(now=report_time - 1))
+            self.assertTrue(store.daily_report_due(now=report_time))
             self.assertEqual(store.pending()[0]["username"], "tester")
-            store.mark_daily_report(now=252_000)
-            self.assertFalse(store.daily_report_due(now=338_399))
-            self.assertTrue(store.daily_report_due(now=338_400))
+            store.mark_daily_report(now=report_time)
+            self.assertFalse(store.daily_report_due(now=next_report_time - 1))
+            self.assertTrue(store.daily_report_due(now=next_report_time))
             self.assertTrue(store.approve(200))
             self.assertTrue(store.is_allowed(200))
 
@@ -423,25 +426,41 @@ class ACLTests(unittest.TestCase):
             self.assertFalse(store.is_banned(200))
 
     def test_daily_usage_resets_at_configured_midnight(self):
+        midnight = datetime(1970, 1, 3, tzinfo=bot.BOT_TIMEZONE).timestamp()
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.set_limit(200, 2)
-            self.assertEqual(store.consume(200, now=172_799), (True, 1, 2))
-            self.assertEqual(store.consume(200, now=172_800), (True, 1, 2))
-            self.assertEqual(store.usage_summary(bot.bot_date(172_800)), (1, 1))
+            self.assertEqual(store.consume(200, now=midnight - 1), (True, 1, 2))
+            self.assertEqual(store.consume(200, now=midnight), (True, 1, 2))
+            self.assertEqual(store.usage_summary(bot.bot_date(midnight)), (1, 1))
+
+    def test_configured_reset_hour_and_report_only_once_per_calendar_day(self):
+        before = datetime(1970, 1, 3, 5, 59, tzinfo=bot.BOT_TIMEZONE).timestamp()
+        reset = datetime(1970, 1, 3, 6, tzinfo=bot.BOT_TIMEZONE).timestamp()
+        with patch.object(bot, "DAILY_RESET_HOUR", 6), patch.object(bot, "DAILY_REPORT_HOUR", 1), tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_limit(200, 2)
+            self.assertEqual(store.consume(200, now=before), (True, 1, 2))
+            self.assertEqual(store.consume(200, now=reset), (True, 1, 2))
+            self.assertTrue(store.daily_report_due(now=before))
+            store.mark_daily_report(now=before)
+            self.assertFalse(store.daily_report_due(now=reset))
+            self.assertEqual(bot.bot_date(before), "1970-01-02")
+            self.assertEqual(bot.bot_date(reset), "1970-01-03")
 
     def test_daily_report_is_sent_without_pending_requests(self):
+        report_time = datetime(1970, 1, 3, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.toggle_auto_approve(100)
             store.add(200)
-            store.consume(200, now=200_000)
+            store.consume(200, now=report_time)
             api = MagicMock()
             service = bot.Bot(api, store)
-            with patch.object(bot.time, "time", return_value=252_000):
+            with patch.object(bot.time, "time", return_value=report_time):
                 service.maybe_send_daily_report()
             text = api.send_message.call_args.args[1]
-            self.assertIn("每日使用簡報（1970-01-03，UTC）", text)
+            self.assertIn(f"每日使用簡報（{bot.bot_date(report_time)}，{bot.BOT_TIMEZONE_NAME}）", text)
             self.assertIn("活躍使用者：1", text)
             self.assertIn("處理次數：1", text)
             self.assertIn("待審批：0", text)
@@ -664,7 +683,7 @@ class MenuTests(unittest.TestCase):
             self.assertEqual(
                 [button["text"] for button in menu], expected_menus[language]
             )
-            self.assertEqual(bot.public_help_text(language), bot.public_text(language, "help_allowed"))
+            self.assertTrue(bot.public_help_text(language).startswith(bot.public_text(language, "help_allowed")))
             public_copy = " ".join((
                 bot.public_text(language, "start_allowed"),
                 bot.public_text(language, "help_allowed"),
@@ -729,7 +748,7 @@ class MenuTests(unittest.TestCase):
 
             service.handle_callback(callback)
             help_call = api.edit_message.call_args
-            self.assertEqual(help_call.args[2], bot.public_text("zh", "help_allowed"))
+            self.assertEqual(help_call.args[2], bot.public_help_text("zh"))
             self.assertEqual(help_call.kwargs["parse_mode"], "HTML")
 
             api.reset_mock()
@@ -2482,29 +2501,11 @@ class InlineQueryTests(unittest.TestCase):
 
 
 class PerformanceSafetyTests(unittest.TestCase):
-    def access_backup_script(self) -> Path:
-        candidate = Path(__file__).with_name("access_backup.sh")
-        if candidate.is_file():
-            return candidate
-        self.skipTest("access backup script is not present in this source tree")
-
-    def access_sync_endpoint_script(self) -> Path:
-        candidate = Path(__file__).with_name("access_sync_endpoint.sh")
-        if candidate.is_file():
-            return candidate
-        self.skipTest("access synchronization endpoint is not installed on this host")
-
     def deploy_script(self) -> Path:
         candidate = Path(__file__).with_name("deploy.sh")
         if candidate.is_file():
             return candidate
         self.skipTest("deployment script is not installed on this host")
-
-    def backup_deploy_script(self) -> Path:
-        candidate = Path(__file__).with_name("deploy_backup_receiver.sh")
-        if candidate.is_file():
-            return candidate
-        self.skipTest("backup receiver deployment script is not present")
 
     def test_bot_creates_configured_bounded_workers(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2660,50 +2661,14 @@ class PerformanceSafetyTests(unittest.TestCase):
             "sendChatAction", {"chat_id": 100, "action": "upload_document"}
         )
 
-    def test_access_backup_script_is_valid_bash(self):
-        bash = shutil.which("bash")
-        if not bash:
-            self.skipTest("bash is unavailable")
-        script = self.access_backup_script()
-        result = subprocess.run(
-            [bash, "-n", str(script)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_access_sync_endpoint_rejects_mutations(self):
-        script = self.access_sync_endpoint_script().read_text(encoding="utf-8")
-        bash = shutil.which("bash")
-        if not bash:
-            self.assertIn('echo "Access denied"', script)
-            self.skipTest("bash is not available")
-        for command in ("stop", "start", "import"):
-            result = subprocess.run([bash, str(self.access_sync_endpoint_script())],
-                env={**os.environ, "SSH_ORIGINAL_COMMAND": f"x-tweet-sync {command}"},
-                capture_output=True)
-            self.assertEqual(result.returncode, 126)
-
-        if bash:
-            result = subprocess.run(
-                [bash, "-n", str(self.access_sync_endpoint_script())],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_deploy_runs_tests_before_replacing_installed_bot(self):
         script = self.deploy_script().read_text(encoding="utf-8")
         self.assertLess(
             script.index('"$INSTALL_DIR/venv/bin/python" -m unittest -q test_bot.py'),
             script.index('install -o root -g root -m 0755 "$SOURCE_DIR/bot.py"'),
         )
-        self.assertIn('SYNC_ROLE=${SYNC_ROLE:-none}', script)
-        self.assertIn('/usr/local/sbin/x-tweet-access-sync-endpoint', script)
-        self.assertIn('none|endpoint', script)
-        self.assertNotIn('SYNC_ROLE == controller', script)
+        self.assertNotIn('SYNC_ROLE', script)
+        self.assertNotIn('access_sync_endpoint.sh', script)
         self.assertIn('rollback_dir=$(mktemp -d "$INSTALL_DIR/.deploy-rollback.', script)
         self.assertIn("rollback_deploy()", script)
         self.assertIn("trap rollback_deploy ERR", script)
@@ -2713,62 +2678,6 @@ class PerformanceSafetyTests(unittest.TestCase):
         if bash:
             result = subprocess.run(
                 [bash, "-n", str(self.deploy_script())],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_access_backup_is_one_way_validated_and_recoverable(self):
-        script = self.access_backup_script().read_text(encoding="utf-8")
-        self.assertIn("REMOTE_ATTEMPTS=4", script)
-        self.assertLess(
-            script.index("remote x-tweet-sync status >/dev/null"),
-            script.index("\nremote_export\n"),
-        )
-        self.assertNotIn("x-tweet-sync stop", script)
-        self.assertNotIn("x-tweet-sync start", script)
-        self.assertNotIn("x-tweet-sync import", script)
-        self.assertNotIn('systemctl stop "$SERVICE"', script)
-        self.assertIn("invalid or duplicate Telegram user ID", script)
-        self.assertIn("sha256sum -c", script)
-        self.assertIn("RETENTION_DAYS=30", script)
-
-    def test_program_backup_is_versioned_validated_and_secret_free(self):
-        backup = self.access_backup_script().read_text(encoding="utf-8")
-        endpoint = self.access_sync_endpoint_script().read_text(encoding="utf-8")
-        deploy = self.deploy_script().read_text(encoding="utf-8")
-
-        self.assertIn("x-tweet-sync code-version", backup)
-        self.assertIn("x-tweet-sync code-export", backup)
-        self.assertIn("program_backup=skipped_same_version", backup)
-        self.assertIn("invalid program backup contents", backup)
-        self.assertIn("program-current.tar.gz.sha256", backup)
-        self.assertIn('PROJECT_DIR=/opt/x-tweet-telegram-bot/project', endpoint)
-        self.assertIn('"x-tweet-sync code-version"', endpoint)
-        self.assertIn('"x-tweet-sync code-export"', endpoint)
-        self.assertIn('PROJECT_DIR=$INSTALL_DIR/project', deploy)
-        self.assertIn("Project changed without a VERSION bump", deploy)
-        for source in (backup, endpoint, deploy):
-            self.assertIn("LICENSE", source)
-        for secret in ("cookies.txt", "acl.json", "update-offset.json"):
-            self.assertNotIn(secret, endpoint)
-
-    def test_backup_receiver_switches_only_after_successful_backup(self):
-        script = self.backup_deploy_script().read_text(encoding="utf-8")
-        self.assertLess(
-            script.index('systemctl start "$BACKUP_SERVICE"'),
-            script.index('systemctl enable --now "$BACKUP_TIMER"'),
-        )
-        self.assertLess(
-            script.index("sha256sum -c access-current.json.sha256"),
-            script.index('systemctl enable --now "$BACKUP_TIMER"'),
-        )
-        self.assertNotIn("OLD_TIMER", script)
-        bash = shutil.which("bash")
-        if bash:
-            result = subprocess.run(
-                [bash, "-n", str(self.backup_deploy_script())],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -2850,6 +2759,14 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                 self.assertIn('href="https://example.com/contact?a=1&amp;b=2"', bot.public_help_text(language))
         with patch.object(bot, "OWNER_CONTACT_URL", "javascript:alert(1)"):
             self.assertEqual(bot.public_help_text("en"), bot.public_text("en", "help_allowed"))
+
+    def test_contact_label_override_is_escaped(self):
+        with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"), \
+             patch.object(bot, "OWNER_CONTACT_LABEL", 'Contact <owner>'):
+            for language in bot.PUBLIC_TEXT:
+                guide = bot.public_help_text(language)
+                self.assertIn('>Contact &lt;owner&gt;</a>', guide)
+                self.assertNotIn('>Contact <owner></a>', guide)
 
     def test_version_and_translation_catalog_are_complete(self):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)

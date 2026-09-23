@@ -18,7 +18,7 @@ import time
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "2.0.1"
+APP_VERSION = "3.1.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -51,6 +51,7 @@ BOT_MENTION = f"@{BOT_USERNAME}" if BOT_USERNAME else "@YourBotUsername"
 ENV_OWNER_ID = env_int("OWNER_USER_ID", 0, 0, (1 << 52) - 1)
 BOOTSTRAP_CODE = os.environ.get("BOOTSTRAP_CODE", "").strip()
 OWNER_CONTACT_URL = os.environ.get("OWNER_CONTACT_URL", "").strip()
+OWNER_CONTACT_LABEL = os.environ.get("OWNER_CONTACT_LABEL", "").strip()
 OWNER_LANGUAGE = os.environ.get("OWNER_LANGUAGE", "zh").strip().lower()
 if OWNER_LANGUAGE not in {"zh", "ja", "en"}:
     raise ValueError("OWNER_LANGUAGE must be zh, ja, or en")
@@ -73,7 +74,7 @@ MAX_TOTAL_BYTES = env_int(
 )
 MAX_COOKIE_BYTES = 1024 * 1024
 COOKIE_ALERT_INTERVAL = 24 * 60 * 60
-DEFAULT_DAILY_LIMIT = 50
+DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, 100_000)
 MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
@@ -83,13 +84,17 @@ INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
 DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 22, 0, 23)
+DAILY_RESET_HOUR = env_int("DAILY_RESET_HOUR", 0, 0, 23)
 
 HTTP_LOCAL = threading.local()
 
 
 def bot_date(timestamp: float | None = None) -> str:
     current = time.time() if timestamp is None else timestamp
-    return datetime.fromtimestamp(current, BOT_TIMEZONE).strftime("%Y-%m-%d")
+    local = datetime.fromtimestamp(current, BOT_TIMEZONE)
+    if local.hour < DAILY_RESET_HOUR:
+        local -= timedelta(days=1)
+    return local.strftime("%Y-%m-%d")
 
 
 def bot_hour(timestamp: float | None = None) -> int:
@@ -288,8 +293,8 @@ def public_help_text(language: str) -> str:
     help_text = public_text(language, "help_allowed")
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return help_text
-    label = {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner"}[language]
-    return help_text + "\n\n" + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{label}</a>'
+    label = OWNER_CONTACT_LABEL or {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner"}[language]
+    return help_text + "\n\n" + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{html.escape(label)}</a>'
 
 
 # Administrator UI is fixed by the deployment, unlike user-selected public text.
@@ -912,12 +917,16 @@ class ACLStore:
         current = time.time() if now is None else now
         return (
             bot_hour(current) >= DAILY_REPORT_HOUR
-            and self.data.get("last_daily_report_date") != bot_date(current)
+            and self.data.get("last_daily_report_date")
+            != datetime.fromtimestamp(current, BOT_TIMEZONE).strftime("%Y-%m-%d")
         )
 
     def mark_daily_report(self, now: float | None = None) -> None:
         with self.lock:
-            self.data["last_daily_report_date"] = bot_date(now)
+            current = time.time() if now is None else now
+            self.data["last_daily_report_date"] = datetime.fromtimestamp(
+                current, BOT_TIMEZONE
+            ).strftime("%Y-%m-%d")
             self._save()
 
     def usage_summary(self, usage_date: str) -> tuple[int, int]:
@@ -1387,12 +1396,12 @@ def owner_help_text(is_owner: bool = True) -> str:
         role = ("The owner can manage users and administrators, Cookies, access, and auto-approval." if is_owner else "Administrators can manage regular users but cannot change the owner, themselves, other administrators, or owner-only settings.")
         return (
             "Owner guide" if is_owner else "Administrator guide"
-        ) + f"\n\nSend one X/Twitter post URL to retrieve text and media. In another chat, use {BOT_MENTION} followed by a URL for inline media. Images include uncompressed files; videos are limited to 50 MB. Quoted content is not followed.\n\nUsers and requests are shown 20 per page. A quota of -1 blocks, 0 initializes, a positive number is the daily limit, and unlimited means administrator. Send a User ID to search, or a User ID and quota to change access; changes require confirmation.\n\n{role}\nManagement commands work only in a private chat with the bot. Daily usage resets at midnight in {BOT_TIMEZONE_NAME}; the report is sent at {DAILY_REPORT_HOUR:02d}:00."
+        ) + f"\n\nSend one X/Twitter post URL to retrieve text and media. In another chat, use {BOT_MENTION} followed by a URL for inline media. Images include uncompressed files; videos are limited to 50 MB. Quoted content is not followed.\n\nUsers and requests are shown 20 per page. A quota of -1 blocks, 0 initializes, a positive number is the daily limit, and unlimited means administrator. Send a User ID to search, or a User ID and quota to change access; changes require confirmation.\n\n{role}\nManagement commands work only in a private chat with the bot. Daily usage resets at {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}; the report is sent at {DAILY_REPORT_HOUR:02d}:00."
     if OWNER_LANGUAGE == "ja":
         role = ("所有者はユーザーと管理者、Cookies、利用許可、自動承認を管理できます。" if is_owner else "管理者は一般ユーザーを管理できますが、所有者、自分自身、他の管理者、所有者専用設定は変更できません。")
         return (
             "所有者向けガイド" if is_owner else "管理者向けガイド"
-        ) + f"\n\nX/Twitter の単一投稿URLを送信すると本文とメディアを取得します。他のチャットでは {BOT_MENTION} とURLでインライン送信できます。画像は元ファイルも送り、動画の上限は 50 MB です。引用先はたどりません。\n\nユーザーと申請は1ページ20件です。権限は -1 がブロック、0 が初期化、正の数が1日の上限、無制限が管理者です。User ID で検索し、User ID と上限値で変更できます。変更には確認が必要です。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。利用回数は {BOT_TIMEZONE_NAME} の午前0時にリセットされ、日次レポートは {DAILY_REPORT_HOUR:02d}:00 に送信されます。"
+        ) + f"\n\nX/Twitter の単一投稿URLを送信すると本文とメディアを取得します。他のチャットでは {BOT_MENTION} とURLでインライン送信できます。画像は元ファイルも送り、動画の上限は 50 MB です。引用先はたどりません。\n\nユーザーと申請は1ページ20件です。権限は -1 がブロック、0 が初期化、正の数が1日の上限、無制限が管理者です。User ID で検索し、User ID と上限値で変更できます。変更には確認が必要です。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。利用回数は {BOT_TIMEZONE_NAME} の {DAILY_RESET_HOUR:02d}:00 にリセットされ、日次レポートは {DAILY_REPORT_HOUR:02d}:00 に送信されます。"
     title = "所有者管理說明" if is_owner else "管理員使用說明"
     role_scope = (
         "• 可建立普通使用者，並升級或降級管理員。\n"
@@ -1425,7 +1434,7 @@ def owner_help_text(is_owner: bool = True) -> str:
         "• 管理操作只允許在 Bot 私聊執行。\n\n"
         "系統管理\n"
         "• 系統狀態可查看佇列、用量、使用者、Cookies 與全域開關狀態。\n"
-        "• Owner 可在高級選項管理 Cookies、使用開關與自動通過。自動通過開啟時，申請者立即取得每日 50 次的普通使用權限。\n"
+        f"• Owner 可在高級選項管理 Cookies、使用開關與自動通過。自動通過開啟時，申請者立即取得每日 {DEFAULT_DAILY_LIMIT} 次的普通使用權限。\n"
         "• 實現方式是每位管理員的個人設定，只影響自己的結果。\n"
         "• 管理模式可暫時按普通用戶規則測試，並隨時切換恢復。"
     )
@@ -3297,7 +3306,7 @@ class Bot:
                 f"Queue: {queue_size}/{MAX_QUEUE} ({queue_percent}%)\n\n"
                 f"Users\nRecords: {len(records)} | Regular: {ordinary} | Administrators: {administrators} | Initialized: {initialized} | Pending: {pending} | Blocked: {banned}\n"
                 f"Active today: {active_today} | Processed today: {interactions} | At quota: {exhausted}\n"
-                f"Usage reset: 00:00 {BOT_TIMEZONE_NAME}\nDaily report: {DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
+                f"Usage reset: {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\nDaily report: {DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
                 f"X Cookies: {'Configured' if cookies_set else 'Not configured'}\n"
                 f"Cookies for regular users: {state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"User access: {'Open' if self.acl.external_access_enabled else 'Paused'}\n"
@@ -3313,7 +3322,7 @@ class Bot:
                 f"待機列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
                 f"ユーザー\n記録：{len(records)}｜一般：{ordinary}｜管理者：{administrators}｜初期化：{initialized}｜審査待ち：{pending}｜ブロック：{banned}\n"
                 f"本日の利用者：{active_today}｜処理回数：{interactions}｜上限到達：{exhausted}\n"
-                f"利用回数のリセット：00:00 {BOT_TIMEZONE_NAME}\n日次レポート：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
+                f"利用回数のリセット：{DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n日次レポート：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
                 f"X Cookies：{'設定済み' if cookies_set else '未設定'}\n"
                 f"一般ユーザーの Cookies：{state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"ユーザー利用：{'許可' if self.acl.external_access_enabled else '停止'}\n"
@@ -3330,7 +3339,7 @@ class Bot:
             f"總記錄：{len(records)}｜普通：{ordinary}｜管理員：{administrators}｜"
             f"初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n"
             f"今日活躍：{active_today}｜今日互動：{interactions}｜已達額度：{exhausted}\n"
-            f"統計重置：每日 00:00 {BOT_TIMEZONE_NAME}\n"
+            f"統計重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
             f"每日簡報：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
             f"X Cookies：{'已設定' if COOKIES_PATH.exists() else '未設定'}\n"
             f"Cookies 開關："

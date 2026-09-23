@@ -1,4 +1,4 @@
-# X/Twitter → Telegram Bot · v2.0.1
+# X/Twitter → Telegram Bot · v3.1.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -27,16 +27,17 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | 設定 | 預設 | 用途 |
 | --- | --- | --- |
 | `OWNER_LANGUAGE` | `zh` | Owner／管理員介面：`zh`、`ja`、`en`。不改變普通用戶的個別語言。 |
-| `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；每日額度於該時區 00:00 換日。 |
+| `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；用於每日額度與簡報。 |
+| `DAILY_RESET_HOUR` | `0` | 該時區每日換日的整點，0–23。 |
 | `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向 Owner 發送每日用量與待審摘要。 |
+| `DEFAULT_DAILY_LIMIT` | `50` | 新獲授權的普通用戶預設每日額度，1–100000；不改動既有用戶額度。 |
 | `OWNER_CONTACT_URL` | 空白 | 可選的使用說明聯絡連結，如 `https://example.com/contact`；空白則不顯示。 |
+| `OWNER_CONTACT_LABEL` | 空白 | 可選的聯絡連結文字；空白時使用對應語言的預設文字。 |
 | `WORKER_COUNT` | `2` | 貼文處理並行數，範圍 1–8。 |
 
-其餘容量與佇列設定在 `deploy.sh` 的初始設定及 `bot.py`；先用預設值。Owner 可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。
+其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。Owner 可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
 
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實公開單篇貼文）才會進行網路擷取測試。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
-
-可選的異機不停機備份保留了 ACL／額度與程式版本歸檔，但不備份 Bot Token 或 Cookies。在 Bot 主機以 `sudo env SYNC_ROLE=endpoint bash deploy.sh` 安裝唯讀匯出端點，為備份主機建立僅允許該 forced command 的 SSH 金鑰，並人工核對與固定來源主機的 SSH host key。在備份主機把 `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` 寫入權限 `0600` 的 `/etc/x-tweet-access-backup.env`，準備 `/root/.ssh/x_tweet_access_sync` 和 `/root/.ssh/x_tweet_access_sync_known_hosts`，再執行 `sudo bash deploy_backup_receiver.sh`。計時器預設每日 UTC 00:00；如需其他時間，編輯 `x-tweet-access-backup.timer` 再安裝。備份含 Telegram User ID，請限制讀取權限並遵守保留政策；恢復 ACL 前必須先停 Bot，詳見 `x-tweet-bot-config import-access` 的保護檢查。沒有異機備份需求時，完全不必設置它。
 
 自有原始碼 © 2026 kk311intl，以 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）授權。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 各自遵循上游授權；再分發含依賴的執行包時須另外核對其義務。
 
@@ -65,16 +66,17 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | 設定 | 初期値 | 用途 |
 | --- | --- | --- |
 | `OWNER_LANGUAGE` | `zh` | 所有者・管理者の表示：`zh`、`ja`、`en`。一般ユーザーの個別設定には影響しません。 |
-| `BOT_TIMEZONE` | `UTC` | `Asia/Tokyo` などの IANA タイムゾーン。日次上限はその地域の 00:00 に切り替わります。 |
+| `BOT_TIMEZONE` | `UTC` | `Asia/Tokyo` などの IANA タイムゾーン。日次上限とレポートに適用します。 |
+| `DAILY_RESET_HOUR` | `0` | 日次上限を切り替える現地時刻（0–23 時）。 |
 | `DAILY_REPORT_HOUR` | `22` | その地域の 0–23 時。利用状況と審査待ちを所有者へ通知します。 |
+| `DEFAULT_DAILY_LIMIT` | `50` | 新しく許可した一般ユーザーの1日あたりの初期上限（1–100000）。既存の上限は変更しません。 |
 | `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先URL（例：`https://example.com/contact`）。空欄なら表示しません。 |
+| `OWNER_CONTACT_LABEL` | 空欄 | 任意の連絡先リンク表示名。空欄なら各言語の初期表示名を使います。 |
 | `WORKER_COUNT` | `2` | 投稿処理の並列数。1–8。 |
 
-その他の容量・キュー設定は `deploy.sh` と `bot.py` にあります。まずは初期値を使ってください。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。
+`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信し、切り替え前の時刻に設定した場合は前の利用日を集計します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
 
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡した場合だけ、ネットワーク経由の取得も確認します。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
-
-別ホストへの無停止バックアップは任意です。ACL／上限とプログラムの版を保存し、Bot Token や Cookies は保存しません。Bot 側で `sudo env SYNC_ROLE=endpoint bash deploy.sh` により読み取り専用の出力端点を導入し、バックアップ側の SSH 鍵をその forced command のみに制限します。送信元の SSH host key は本人が確認して固定してください。バックアップ側では `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` を権限 `0600` の `/etc/x-tweet-access-backup.env` に設定し、`/root/.ssh/x_tweet_access_sync` と `/root/.ssh/x_tweet_access_sync_known_hosts` を準備して、`sudo bash deploy_backup_receiver.sh` を実行します。タイマーは初期値で毎日 UTC 00:00。変更する場合は `x-tweet-access-backup.timer` を編集してから導入します。バックアップには Telegram User ID が含まれるため、アクセスと保持期間を管理してください。ACL の復元前には Bot を停止する必要があり、`x-tweet-bot-config import-access` に保護チェックがあります。不要なら設定する必要はありません。
 
 自作コードは © 2026 kk311intl、[GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）で公開します。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` は各自の上流ライセンスに従います。依存関係を含む実行形式を再配布する場合は、その義務も確認してください。
 
@@ -103,15 +105,16 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `OWNER_LANGUAGE` | `zh` | Owner/admin UI: `zh`, `ja`, or `en`. Does not change individual user languages. |
-| `BOT_TIMEZONE` | `UTC` | IANA zone such as `Asia/Tokyo`; daily usage rolls over at 00:00 in that zone. |
+| `BOT_TIMEZONE` | `UTC` | IANA zone such as `Asia/Tokyo`, used for daily limits and reports. |
+| `DAILY_RESET_HOUR` | `0` | Local hour when the daily usage period rolls over, 0–23. |
 | `DAILY_REPORT_HOUR` | `22` | Hour 0–23 in that zone for the owner's usage/pending report. |
+| `DEFAULT_DAILY_LIMIT` | `50` | Initial daily quota for newly approved regular users, 1–100000; existing quotas stay unchanged. |
 | `OWNER_CONTACT_URL` | empty | Optional help-page contact link, e.g. `https://example.com/contact`; omitted when empty. |
+| `OWNER_CONTACT_LABEL` | empty | Optional contact-link text; defaults to a translated label. |
 | `WORKER_COUNT` | `2` | Concurrent post jobs, from 1 to 8. |
 
-Other size and queue limits have initial values in `deploy.sh` and `bot.py`; keep them until you have a reason to tune them. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled.
+You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; if its time precedes the reset, it summarizes the previous usage day. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL to include network retrieval. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
-
-Optional off-host, no-downtime backup archives ACL/quotas and the program version, not the Bot Token or Cookies. On the bot host, `sudo env SYNC_ROLE=endpoint bash deploy.sh` installs the read-only export endpoint. Authorize the backup host's SSH key for that forced command only, and personally verify/pin the source host's SSH host key. On the backup host, place `BACKUP_SOURCE_HOST=YOUR_SERVER_IP` in root-only (`0600`) `/etc/x-tweet-access-backup.env`, prepare `/root/.ssh/x_tweet_access_sync` and `/root/.ssh/x_tweet_access_sync_known_hosts`, then run `sudo bash deploy_backup_receiver.sh`. The timer defaults to 00:00 UTC daily; edit `x-tweet-access-backup.timer` before installation to use another schedule. Backups include Telegram User IDs, so protect access and retention. Stop the bot before restoring ACL data; `x-tweet-bot-config import-access` enforces this. Skip the entire backup setup if you do not need it.
 
 Project source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). `requests`, `Pillow`, `yt-dlp`, and `gallery-dl` retain their upstream licenses; check their obligations separately if you redistribute a bundled build.
