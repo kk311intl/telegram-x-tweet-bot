@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.3"
+APP_VERSION = "3.1.4"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -95,11 +95,6 @@ def bot_date(timestamp: float | None = None) -> str:
     if local.hour < DAILY_RESET_HOUR:
         local -= timedelta(days=1)
     return local.strftime("%Y-%m-%d")
-
-
-def bot_hour(timestamp: float | None = None) -> int:
-    current = time.time() if timestamp is None else timestamp
-    return datetime.fromtimestamp(current, BOT_TIMEZONE).hour
 
 
 def http_session() -> requests.Session:
@@ -823,13 +818,6 @@ class ACLStore:
     def remove(self, user_id: int) -> None:
         self.set_quota(user_id, 0)
 
-    def users(self) -> list[int]:
-        return sorted(
-            int(key)
-            for key in self.data["users"]
-            if int(key) != self.owner_id and self.is_allowed(int(key))
-        )
-
     def has_user(self, user_id: int) -> bool:
         with self.lock:
             return str(user_id) in self.data["users"]
@@ -916,10 +904,11 @@ class ACLStore:
 
     def daily_report_due(self, now: float | None = None) -> bool:
         current = time.time() if now is None else now
+        local_now = datetime.fromtimestamp(current, BOT_TIMEZONE)
         return (
-            bot_hour(current) >= DAILY_REPORT_HOUR
+            local_now.hour >= DAILY_REPORT_HOUR
             and self.data.get("last_daily_report_date")
-            != datetime.fromtimestamp(current, BOT_TIMEZONE).strftime("%Y-%m-%d")
+            != local_now.strftime("%Y-%m-%d")
         )
 
     def mark_daily_report(self, now: float | None = None) -> None:
@@ -955,9 +944,6 @@ class ACLStore:
             record.pop("daily_limit", None)
             self.data["pending_applications"].pop(str(user_id), None)
             self._save()
-
-    def set_limit(self, user_id: int, daily_limit: int) -> None:
-        self.set_quota(user_id, daily_limit)
 
     def consume(self, user_id: int, now: float | None = None,
                 job: tuple[int, int, int, str] | None = None) -> tuple[bool, int, int]:
@@ -1052,12 +1038,6 @@ def owner_keyboard(management_mode: bool = True) -> dict[str, Any]:
             ],
         ],
     }
-
-
-def administrator_keyboard(
-    is_owner: bool, management_mode: bool = True
-) -> dict[str, Any]:
-    return owner_keyboard(management_mode)
 
 
 def user_menu_keyboard() -> dict[str, Any]:
@@ -1167,7 +1147,7 @@ def start_keyboard(
     rows = []
     if is_admin and management_mode:
         rows.extend(
-            administrator_keyboard(is_owner, management_mode)["inline_keyboard"]
+            owner_keyboard(management_mode)["inline_keyboard"]
         )
     elif not is_allowed:
         rows.append([{
@@ -2935,7 +2915,7 @@ class Bot:
                     chat_id,
                     admin_text("owner_only_cookies"),
                     message_id,
-                    administrator_keyboard(False),
+                    owner_keyboard(),
                 )
                 return
             if command != "/finduser":
@@ -3473,7 +3453,7 @@ class Bot:
             enabled = self.acl.toggle_management_mode(user_id)
             if enabled:
                 text = admin_text("menu")
-                keyboard = administrator_keyboard(is_owner, True)
+                keyboard = owner_keyboard(True)
             else:
                 self.pending_user_searches.discard(user_id)
                 text = public_text(language, "start_allowed")
@@ -3504,7 +3484,7 @@ class Bot:
             destination = data.split(":", 1)[1]
             self.pending_user_searches.discard(user_id)
             if destination == "main":
-                text, keyboard = admin_text("menu"), administrator_keyboard(is_owner, True)
+                text, keyboard = admin_text("menu"), owner_keyboard(True)
             elif destination == "users":
                 text, keyboard = admin_text("users"), user_menu_keyboard()
             elif destination == "cookies":
@@ -3533,9 +3513,7 @@ class Bot:
                     is_owner,
                 )
             elif destination == "help":
-                text, keyboard = owner_help_text(is_owner), administrator_keyboard(
-                    is_owner, True
-                )
+                text, keyboard = owner_help_text(is_owner), owner_keyboard(True)
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
@@ -4027,7 +4005,7 @@ class Bot:
                 chat_id,
                 admin_text("menu_ready"),
                 message_id,
-                administrator_keyboard(is_owner),
+                owner_keyboard(),
             )
         elif command == "/usermenu":
             self.pending_user_searches.discard(actor_id)
@@ -4135,7 +4113,7 @@ class Bot:
                 chat_id,
                 owner_help_text(is_owner),
                 message_id,
-                administrator_keyboard(is_owner),
+                owner_keyboard(),
             )
         elif command == "/cookies":
             self.pending_cookie_uploads.add(actor_id)
@@ -4165,14 +4143,14 @@ class Bot:
         elif command == "/cancel":
             self.pending_cookie_uploads.discard(actor_id)
             self.api.send_message(
-                chat_id, admin_text("cancelled"), message_id, administrator_keyboard(is_owner)
+                chat_id, admin_text("cancelled"), message_id, owner_keyboard()
             )
         else:
             self.api.send_message(
                 chat_id,
                 owner_help_text(is_owner),
                 message_id,
-                administrator_keyboard(is_owner),
+                owner_keyboard(),
             )
 
     def _worker(self) -> None:
