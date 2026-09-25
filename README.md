@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.1.4
+# Telegram X／Twitter 貼文媒體 Bot · v3.1.5
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -41,7 +41,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 高級選項（包括「實現方式」）僅 Owner 可開啟與修改；管理員仍可管理普通用戶及查看系統狀態。
 
-驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實公開單篇貼文）才會進行網路擷取測試。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
+驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
 自有原始碼 © 2026 kk311intl，以 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）授權。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 各自遵循上游授權；再分發含依賴的執行包時須另外核對其義務。
 
@@ -84,7 +84,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 詳細設定（「実装方法」を含む）の表示・変更は所有者のみ。管理者は一般ユーザーの管理とシステム状態の確認を引き続き行えます。
 
-テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡した場合だけ、ネットワーク経由の取得も確認します。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
+テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
 自作コードは © 2026 kk311intl、[GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）で公開します。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` は各自の上流ライセンスに従います。依存関係を含む実行形式を再配布する場合は、その義務も確認してください。
 
@@ -127,6 +127,6 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 
 Only the owner can open or change Advanced settings, including Implementation details. Administrators can still manage regular users and view system status.
 
-For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL to include network retrieval. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
+For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 
 Project source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). `requests`, `Pillow`, `yt-dlp`, and `gallery-dl` retain their upstream licenses; check their obligations separately if you redistribute a bundled build.

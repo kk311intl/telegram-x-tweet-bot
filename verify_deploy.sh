@@ -12,17 +12,24 @@ echo "TEXT_TEST"
 runuser -u x-tweet-bot -- env PYTHONPATH="$APP_DIR" \
   "$APP_DIR/venv/bin/python" - "$TEST_URL" <<'PY'
 import sys
-from bot import fetch_tweet_text, media_caption
+from bot import (fetch_fxtwitter, fetch_tweet_text, fxtwitter_text_author,
+                 media_caption, normalize_status_url)
 
-text, author, author_url = fetch_tweet_text(sys.argv[1])
+url = normalize_status_url(sys.argv[1])
+if not url:
+    raise SystemExit("TEST_URL must be an X/Twitter single-post URL")
+tweet = fetch_fxtwitter(url)
+text, author, author_url = fxtwitter_text_author(tweet) if tweet else ("", "", "")
+if not text:
+    text, author, author_url = fetch_tweet_text(url)
 print(f"author={author}")
 print(f"author_url={author_url}")
 print(f"text_chars={len(text)}")
 if not text:
-    raise SystemExit("oEmbed returned no tweet text")
+    raise SystemExit("The post has no retrievable text; use a public post with text and media")
 if not author_url.startswith("https://x.com/"):
-    raise SystemExit("oEmbed returned no trusted author profile URL")
-caption = media_caption(author, author_url, text, sys.argv[1])
+    raise SystemExit("The post has no trusted author profile URL")
+caption = media_caption(author, author_url, text, url)
 expected_link = f'<a href="{author_url}">{author}</a>:'
 if not caption.startswith(expected_link):
     raise SystemExit("author profile URL is not linked from the author name")
@@ -30,8 +37,43 @@ PY
 text_rc=$?
 
 echo "MEDIA_TEST"
-timeout 45s runuser -u x-tweet-bot -- \
-  "$APP_DIR/venv/bin/gallery-dl" --simulate "$TEST_URL"
+timeout 240s runuser -u x-tweet-bot -- env PYTHONPATH="$APP_DIR" STATE_DIR=/var/lib/x-tweet-telegram-bot \
+  "$APP_DIR/venv/bin/python" - "$TEST_URL" <<'PY'
+import sys
+import tempfile
+from pathlib import Path
+
+from PIL import Image
+from bot import (TMP_DIR, download_fxtwitter_media, download_media, fetch_fxtwitter,
+                 fxtwitter_media, normalize_status_url, prepare_image, trim_files,
+                 video_dimensions)
+
+url = normalize_status_url(sys.argv[1])
+if not url:
+    raise SystemExit("TEST_URL must be an X/Twitter single-post URL")
+with tempfile.TemporaryDirectory(prefix="verify-media-", dir=TMP_DIR) as temporary:
+    directory = Path(temporary)
+    tweet = fetch_fxtwitter(url)
+    files = []
+    method = ""
+    if tweet and fxtwitter_media(tweet):
+        files, _, _ = download_fxtwitter_media(tweet, directory)
+        if files:
+            method = "FxTwitter"
+    if not files:
+        files, _, method, _ = download_media(url, directory, allow_cookies=False)
+    files, rejected = trim_files(files)
+    if not files:
+        raise SystemExit("No media downloaded; use a public post with an image or video")
+    for path in files:
+        if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+            with Image.open(prepare_image(path)) as image:
+                image.verify()
+        elif path.suffix.lower() in {".mp4", ".mov", ".m4v"}:
+            if not video_dimensions(path):
+                raise SystemExit("Downloaded video has no readable dimensions")
+    print(f"method={method} media_count={len(files)} rejected={len(rejected)}")
+PY
 media_rc=$?
 else
   echo "NETWORK_TEST_SKIPPED Set TEST_URL to a public single-post URL to run it."

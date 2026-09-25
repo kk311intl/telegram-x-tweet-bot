@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.4"
+APP_VERSION = "3.1.5"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -192,6 +192,7 @@ PUBLIC_TEXT = {
         "quota": "目前暫時無法繼續處理，請稍後再試。",
         "approved": "你的 Bot 使用申請已通過，現在可以開始使用。",
         "failed": "處理失敗，請稍後重試。",
+        "post_unavailable": "目前無法取得這則貼文的文字或媒體，請確認貼文仍可公開瀏覽，或稍後再試。",
         "url_only": "此帳號只接受 X/Twitter 單篇貼文連結。",
         "inline_apply": "開啟機器人申請使用權限",
         "video_oversized": "有 {count} 個影片超過 50 MB，已略過且未處理。",
@@ -229,6 +230,7 @@ PUBLIC_TEXT = {
         "quota": "Processing is temporarily unavailable. Try again later.",
         "approved": "Your Bot access request was approved. You can start using it now.",
         "failed": "Processing failed. Try again later.",
+        "post_unavailable": "This post's text and media are unavailable. Check that it is still public, or try again later.",
         "url_only": "This account only accepts single-post X/Twitter URLs.",
         "inline_apply": "Open the Bot to request access",
         "video_oversized": "{count} video(s) exceeded 50 MB and were skipped.",
@@ -266,6 +268,7 @@ PUBLIC_TEXT = {
         "quota": "現在は一時的に処理できません。しばらくしてから再試行してください。",
         "approved": "Bot の利用申請が承認されました。すぐに利用できます。",
         "failed": "処理に失敗しました。しばらくしてから再試行してください。",
+        "post_unavailable": "この投稿の本文とメディアを取得できません。投稿が公開されているか確認するか、しばらくしてから再試行してください。",
         "url_only": "このアカウントでは X/Twitter の単一投稿URLのみ受け付けます。",
         "inline_apply": "Botを開いて利用を申請",
         "video_oversized": "{count} 件の動画が 50 MB を超えたため、処理せずスキップしました。",
@@ -1970,7 +1973,7 @@ def tweet_html(
     heading_limit = max(0, limit - len(suffix_text))
     heading = author_text_html(author, author_url, text, heading_limit)
     if not heading:
-        heading = html.escape(truncate_text(url, heading_limit))
+        return html.escape(truncate_text(url + (f"\n\n{note}" if note else ""), limit))
     return heading + html.escape(suffix_text)
 
 
@@ -1993,6 +1996,13 @@ def fetch_tweet_text(url: str) -> tuple[str, str, str]:
             str(payload.get("author_name", "")).strip(),
             normalize_author_url(str(payload.get("author_url", ""))),
         )
+    except requests.HTTPError as error:
+        status = error.response.status_code if error.response is not None else None
+        if status in {403, 404}:
+            LOG.info("oEmbed unavailable (HTTP %s)", status)
+        else:
+            LOG.exception("oEmbed text extraction failed")
+        return "", "", ""
     except (requests.RequestException, ValueError, TypeError):
         LOG.exception("oEmbed text extraction failed")
         return "", "", ""
@@ -2011,6 +2021,13 @@ def fetch_fxtwitter(url: str) -> dict[str, Any] | None:
         payload = response.json()
         tweet = payload.get("tweet") or payload.get("status")
         return tweet if isinstance(tweet, dict) else None
+    except requests.HTTPError as error:
+        status = error.response.status_code if error.response is not None else None
+        if status in {403, 404}:
+            LOG.info("FxTwitter unavailable (HTTP %s)", status)
+        else:
+            LOG.exception("FxTwitter fallback failed")
+        return None
     except (requests.RequestException, ValueError, TypeError):
         LOG.exception("FxTwitter fallback failed")
         return None
@@ -4254,6 +4271,15 @@ class Bot:
                 if files:
                     method = "FxTwitter 備援"
             files, rejected = trim_files(files)
+            if not files and not text and not rejected and not fallback_oversized_videos:
+                LOG.warning("Post text and media unavailable after extraction: %s: %s", effective_url, extractor_log)
+                if self.can_process(user_id):
+                    self.api.send_message(
+                        chat_id,
+                        public_text(self.acl.language(user_id), "post_unavailable"),
+                        message_id,
+                    )
+                return
             caption = media_caption(
                 author,
                 author_url,
@@ -4336,8 +4362,6 @@ class Bot:
                         names=", ".join(rejected_other),
                     ),
                 )
-            if not files:
-                LOG.warning("No media downloaded for %s: %s", effective_url, extractor_log)
 
 
 def main() -> int:

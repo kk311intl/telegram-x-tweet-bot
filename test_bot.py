@@ -170,6 +170,34 @@ class ConfigurationCLITests(unittest.TestCase):
         self.assertEqual((text, author), ("Tweet body", "NASA"))
         self.assertEqual(author_url, "https://x.com/NASA")
 
+    def test_unavailable_sources_log_expected_status_without_tracebacks(self):
+        url = "https://x.com/NASA/status/123"
+        for fetch, status, expected in (
+            (bot.fetch_tweet_text, 403, ("", "", "")),
+            (bot.fetch_fxtwitter, 404, None),
+        ):
+            with self.subTest(fetch=fetch.__name__), patch.object(
+                bot, "http_session"
+            ) as session, patch.object(bot.LOG, "info") as info, patch.object(
+                bot.LOG, "exception"
+            ) as exception:
+                response = session.return_value.get.return_value
+                response.status_code = status
+                response.raise_for_status.side_effect = bot.requests.HTTPError(response=response)
+                self.assertEqual(fetch(url), expected)
+                info.assert_called_once()
+                exception.assert_not_called()
+
+    def test_unexpected_source_http_failure_keeps_error_traceback(self):
+        response = MagicMock(status_code=500)
+        response.raise_for_status.side_effect = bot.requests.HTTPError(response=response)
+        with patch.object(bot, "http_session") as session, patch.object(
+            bot.LOG, "exception"
+        ) as exception:
+            session.return_value.get.return_value = response
+            self.assertEqual(bot.fetch_tweet_text("https://x.com/NASA/status/123"), ("", "", ""))
+            exception.assert_called_once_with("oEmbed text extraction failed")
+
     def test_author_profile_url_rejects_untrusted_or_invalid_values(self):
         self.assertEqual(bot.normalize_author_url("https://example.com/NASA"), "")
         self.assertEqual(bot.author_profile_url("invalid/name"), "")
@@ -205,6 +233,14 @@ class ConfigurationCLITests(unittest.TestCase):
         )
         self.assertIn("one &lt; two &amp; three", caption)
         self.assertNotIn("<b>Author</b>", caption)
+
+    def test_caption_without_text_or_author_shows_url_once(self):
+        url = "https://x.com/example/status/123"
+        self.assertEqual(bot.tweet_html("", "", "", url, 1024), url)
+        self.assertEqual(
+            bot.tweet_html("", "", "", url, 1024, "No media"),
+            url + "\n\nNo media",
+        )
 
 
 class ACLTests(unittest.TestCase):
@@ -2151,6 +2187,30 @@ class MediaTests(unittest.TestCase):
                 service.process_url(100, 10, 100, "https://x.com/author/status/123")
 
             self.assertIn("元ファイル", api.send_message.call_args.args[1])
+
+    def test_unavailable_post_reports_reason_in_each_user_language(self):
+        url = "https://x.com/author/status/123"
+        for language in ("zh", "en", "ja"):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(
+                bot, "TMP_DIR", Path(temporary)
+            ), patch.object(
+                bot, "fetch_fxtwitter", return_value=None
+            ), patch.object(
+                bot, "fetch_tweet_text", return_value=("", "", "")
+            ), patch.object(
+                bot, "download_media", return_value=([], "unavailable", "", False)
+            ):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, 50)
+                store.set_language(200, language)
+                api = MagicMock()
+                bot.Bot(api, store).process_url(200, 10, 200, url)
+                self.assertEqual(
+                    api.send_message.call_args.args[1],
+                    bot.public_text(language, "post_unavailable"),
+                )
+                api.send_previews.assert_not_called()
+                api.send_documents.assert_not_called()
 
     def test_preview_failure_reports_localized_retry_guidance(self):
         tweet = {
