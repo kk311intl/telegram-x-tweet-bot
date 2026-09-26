@@ -1,6 +1,8 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.1.5
+# Telegram X／Twitter 貼文媒體 Bot · v3.1.6
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
+
+Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 ## 中文
 
