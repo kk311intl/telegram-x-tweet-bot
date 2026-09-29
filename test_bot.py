@@ -938,7 +938,7 @@ class MenuTests(unittest.TestCase):
     def test_user_list_copies_id_when_username_is_missing(self):
         records = [{
             "user_id": 9876543210123456,
-            "first_name": "No Username",
+            "first_name": "ABCDEFGHIJ",
             "quota": 50,
         }]
         with tempfile.TemporaryDirectory() as temporary:
@@ -947,9 +947,12 @@ class MenuTests(unittest.TestCase):
             text, _, _ = service.users_page(records, 0)
         self.assertIn(
             "<code>9876543210123456</code>｜普通｜50｜0｜"
-            "<code>No Username</code>",
+            "<code>ABCDEFGHIJ</code>",
             text,
         )
+        records[0]["first_name"] = "ABCDEFGHIJK"
+        truncated, _, _ = service.users_page(records, 0)
+        self.assertIn("<code>ABCDEFGHIJ…</code>", truncated)
 
     def test_user_list_uses_profile_refreshed_on_next_day(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -997,13 +1000,13 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page([record], 0)
         self.assertIn("<code>200</code>", text)
-        self.assertIn("&lt;b&gt;Not markup", text)
+        self.assertIn("&lt;b&gt;Not mar…", text)
         self.assertNotIn("https://t.me/", text)
 
         record["username"] = "valid_user"
         linked_text, _, _ = service.users_page([record], 0)
         self.assertIn(
-            '<a href="https://t.me/valid_user">&lt;b&gt;Not markup', linked_text
+            '<a href="https://t.me/valid_user">&lt;b&gt;Not mar…', linked_text
         )
 
     def test_user_list_normalizes_and_truncates_long_names_to_one_line(self):
@@ -1026,7 +1029,7 @@ class MenuTests(unittest.TestCase):
             name = name_field.split(">", 1)[1].removesuffix("</a>")
             self.assertIn("…", name)
             self.assertNotIn("\n", name)
-            self.assertLessEqual(bot.display_width(name), bot.USER_LIST_NAME_WIDTH)
+            self.assertEqual(len(name.removesuffix("…")), bot.USER_LIST_NAME_LENGTH)
 
     def test_batch_approval_only_approves_the_selected_page(self):
         with tempfile.TemporaryDirectory() as temporary:
