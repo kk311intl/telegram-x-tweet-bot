@@ -953,6 +953,12 @@ class MenuTests(unittest.TestCase):
         records[0]["first_name"] = "ABCDEFGHIJK"
         truncated, _, _ = service.users_page(records, 0)
         self.assertIn("<code>ABCDEFGHIJ…</code>", truncated)
+        records[0]["first_name"] = "中文測試名字"
+        truncated, _, _ = service.users_page(records, 0)
+        self.assertIn("<code>中文測試名…</code>", truncated)
+        records[0]["first_name"] = "AB.CDEFGHI"
+        truncated, _, _ = service.users_page(records, 0)
+        self.assertIn("<code>AB.CDEFGH…</code>", truncated)
 
     def test_user_list_uses_profile_refreshed_on_next_day(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1000,13 +1006,13 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page([record], 0)
         self.assertIn("<code>200</code>", text)
-        self.assertIn("&lt;b&gt;Not mar…", text)
+        self.assertIn("&lt;b&gt;Not m…", text)
         self.assertNotIn("https://t.me/", text)
 
         record["username"] = "valid_user"
         linked_text, _, _ = service.users_page([record], 0)
         self.assertIn(
-            '<a href="https://t.me/valid_user">&lt;b&gt;Not mar…', linked_text
+            '<a href="https://t.me/valid_user">&lt;b&gt;Not m…', linked_text
         )
 
     def test_user_list_normalizes_and_truncates_long_names_to_one_line(self):
@@ -1029,7 +1035,7 @@ class MenuTests(unittest.TestCase):
             name = name_field.split(">", 1)[1].removesuffix("</a>")
             self.assertIn("…", name)
             self.assertNotIn("\n", name)
-            self.assertEqual(len(name.removesuffix("…")), bot.USER_LIST_NAME_LENGTH)
+            self.assertEqual(name, "♣ 闇猫 ・…")
 
     def test_batch_approval_only_approves_the_selected_page(self):
         with tempfile.TemporaryDirectory() as temporary:

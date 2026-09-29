@@ -29,7 +29,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.10"
+APP_VERSION = "3.1.11"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -78,7 +78,7 @@ DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, MAX_DAILY_LIMIT)
 MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
-USER_LIST_NAME_LENGTH = 10
+USER_LIST_NAME_WIDTH = 10
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
@@ -3171,10 +3171,16 @@ class Bot:
             else:
                 status, quota_text = admin_text("ordinary"), str(quota)
             name = user_name(record)
-            name = html.escape(
-                name[:USER_LIST_NAME_LENGTH]
-                + ("…" if len(name) > USER_LIST_NAME_LENGTH else "")
-            )
+            if name != admin_text("not_named"):
+                width = 0
+                for index, character in enumerate(name):
+                    width += 1 if character.isascii() and (
+                        character.isalnum() or character == " "
+                    ) else 2
+                    if width > USER_LIST_NAME_WIDTH:
+                        name = name[:index] + "…"
+                        break
+            name = html.escape(name)
             username = telegram_username(record)
             name_text = (
                 f'<a href="https://t.me/{username}">{name}</a>'
