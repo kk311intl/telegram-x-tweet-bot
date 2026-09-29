@@ -915,7 +915,7 @@ class MenuTests(unittest.TestCase):
             ["userspage:0", "noop:0", "userspage:2"],
         )
 
-    def test_user_list_uses_linked_id_and_places_plain_name_last(self):
+    def test_user_list_copies_id_and_links_name_when_username_exists(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -926,11 +926,11 @@ class MenuTests(unittest.TestCase):
             store.set_quota(200, 50)
             service = bot.Bot(MagicMock(), store)
             text, keyboard, _ = service.users_page(store.records(), 0)
-            user_line = next(line for line in text.splitlines() if ">200</a>" in line)
+            user_line = next(line for line in text.splitlines() if "<code>200</code>" in line)
             self.assertEqual(
                 user_line,
-                '<a href="https://t.me/example_user">200</a>｜普通｜50｜0｜'
-                '<code>Example</code>',
+                '<code>200</code>｜普通｜50｜0｜'
+                '<a href="https://t.me/example_user">Example</a>',
             )
             self.assertNotIn("@example_user", user_line)
             self.assertEqual(len(keyboard["inline_keyboard"]), 2)
@@ -968,10 +968,11 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page(store.records(), 0)
             self.assertIn(
-                '<a href="https://t.me/new_user">200</a>｜普通｜50｜0｜'
-                '<code>New Name</code>',
+                '<code>200</code>｜普通｜50｜0｜'
+                '<a href="https://t.me/new_user">New Name</a>',
                 text,
             )
+            self.assertNotIn('https://t.me/old_user', text)
             self.assertNotIn("@new_user", text)
 
     def test_user_label_without_name_does_not_repeat_user_id(self):
@@ -999,13 +1000,19 @@ class MenuTests(unittest.TestCase):
         self.assertIn("&lt;b&gt;Not markup", text)
         self.assertNotIn("https://t.me/", text)
 
+        record["username"] = "valid_user"
+        linked_text, _, _ = service.users_page([record], 0)
+        self.assertIn(
+            '<a href="https://t.me/valid_user">&lt;b&gt;Not markup', linked_text
+        )
+
     def test_user_list_normalizes_and_truncates_long_names_to_one_line(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
                 "id": 200,
                 "first_name": "♣ 闇猫\n・ヴィクトリカ・ド・ブロワ ♣",
-                "username": "an_extremely_long_username_for_testing",
+                "username": "example_long_username",
             })
             store.set_quota(200, 50)
             service = bot.Bot(MagicMock(), store)
@@ -1014,9 +1021,9 @@ class MenuTests(unittest.TestCase):
                 line for line in text.splitlines() if "<code>200</code>" in line
             )
             name_field = user_line.rsplit("｜", 1)[1]
-            self.assertTrue(name_field.startswith("<code>"))
-            self.assertTrue(name_field.endswith("</code>"))
-            name = name_field.removeprefix("<code>").removesuffix("</code>")
+            self.assertTrue(name_field.startswith('<a href="https://t.me/'))
+            self.assertTrue(name_field.endswith("</a>"))
+            name = name_field.split(">", 1)[1].removesuffix("</a>")
             self.assertIn("…", name)
             self.assertNotIn("\n", name)
             self.assertLessEqual(bot.display_width(name), bot.USER_LIST_NAME_WIDTH)

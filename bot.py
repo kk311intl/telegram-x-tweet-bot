@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.8"
+APP_VERSION = "3.1.9"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3195,17 +3195,17 @@ class Bot:
                 status, quota_text = admin_text("initialized"), "0"
             else:
                 status, quota_text = admin_text("ordinary"), str(quota)
-            username = telegram_username(record)
-            if username:
-                id_text = f'<a href="https://t.me/{username}">{user_id}</a>'
-            else:
-                id_text = f"<code>{user_id}</code>"
             name = html.escape(
                 truncate_display(user_name(record), USER_LIST_NAME_WIDTH)
             )
+            username = telegram_username(record)
+            name_text = (
+                f'<a href="https://t.me/{username}">{name}</a>'
+                if username else f"<code>{name}</code>"
+            )
             usage = int(record.get("usage_count", 0) or 0)
             lines.append(
-                f"{id_text}｜{status}｜{quota_text}｜{usage}｜<code>{name}</code>"
+                f"<code>{user_id}</code>｜{status}｜{quota_text}｜{usage}｜{name_text}"
             )
         return "\n".join(lines), users_page_keyboard(page, len(records)), page
 
