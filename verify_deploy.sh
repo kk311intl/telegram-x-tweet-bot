@@ -138,7 +138,7 @@ def validate_acl(payload, label):
         if quota is not None and (
             not isinstance(quota, int)
             or isinstance(quota, bool)
-            or not -1 <= quota <= 10000
+            or not -1 <= quota <= 100000
         ):
             raise SystemExit(f"{label} contains an invalid quota")
         updated_at = record.get("quota_updated_at", 0)

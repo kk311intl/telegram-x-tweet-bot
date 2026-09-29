@@ -36,9 +36,16 @@ if [[ -f "$PROJECT_DIR/VERSION" ]] && \
   done
 fi
 
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  ca-certificates ffmpeg python3 python3-venv tzdata
+missing_packages=()
+for package in ca-certificates ffmpeg python3 python3-venv tzdata; do
+  if [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true) != 'install ok installed' ]]; then
+    missing_packages+=("$package")
+  fi
+done
+if (( ${#missing_packages[@]} )); then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
+fi
 
 if ! id x-tweet-bot >/dev/null 2>&1; then
   useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin x-tweet-bot
@@ -51,43 +58,32 @@ if [[ -f "$CONFIG_DIR/cookies.txt" && ! -f "$STATE_DIR/cookies.txt" ]]; then
     "$CONFIG_DIR/cookies.txt" "$STATE_DIR/cookies.txt"
   rm -f -- "$CONFIG_DIR/cookies.txt"
 fi
-venv_compatible=false
-if [[ -x "$INSTALL_DIR/venv/bin/python" ]] && \
-  "$INSTALL_DIR/venv/bin/python" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' && \
-  [[ "$(readlink -f "$INSTALL_DIR/venv/bin/python")" == "$INSTALL_DIR"/* ]]; then
-  venv_compatible=true
+if ! command -v uv >/dev/null 2>&1; then
+  bootstrap_venv=$(mktemp -d /tmp/x-tweet-uv-bootstrap.XXXXXX)
+  python3 -m venv "$bootstrap_venv"
+  "$bootstrap_venv/bin/pip" install --disable-pip-version-check uv==0.12.7
+  install -o root -g root -m 0755 "$bootstrap_venv/bin/uv" /usr/local/bin/uv
+  rm -rf -- "$bootstrap_venv"
 fi
-
-if [[ $venv_compatible != true ]]; then
-  if ! command -v uv >/dev/null 2>&1; then
-    bootstrap_venv=/tmp/x-tweet-uv-bootstrap
-    rm -rf -- "$bootstrap_venv"
-    python3 -m venv "$bootstrap_venv"
-    "$bootstrap_venv/bin/pip" install --disable-pip-version-check uv==0.12.7
-    install -o root -g root -m 0755 "$bootstrap_venv/bin/uv" /usr/local/bin/uv
-    rm -rf -- "$bootstrap_venv"
+export UV_PYTHON_INSTALL_DIR="$INSTALL_DIR/python"
+uv python install 3.12
+candidate_venv=$(mktemp -d "$INSTALL_DIR/.venv-candidate.XXXXXX")
+chmod 0755 "$candidate_venv"
+cleanup_candidate() {
+  if [[ -n $candidate_venv && $candidate_venv == "$INSTALL_DIR"/.venv-candidate.* ]]; then
+    rm -rf -- "$candidate_venv"
   fi
-  export UV_PYTHON_INSTALL_DIR="$INSTALL_DIR/python"
-  uv python install 3.12
-  rm -rf -- "$INSTALL_DIR/venv"
-  uv venv --python 3.12 "$INSTALL_DIR/venv"
-fi
+}
+trap cleanup_candidate EXIT
+uv venv --python 3.12 "$candidate_venv"
+uv pip install --python "$candidate_venv/bin/python" \
+  -r "$SOURCE_DIR/requirements.txt"
 
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --python "$INSTALL_DIR/venv/bin/python" \
-    -r "$SOURCE_DIR/requirements.txt"
-else
-  "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check \
-    --upgrade pip wheel
-  "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check \
-    -r "$SOURCE_DIR/requirements.txt"
-fi
-
-PYTHONPATH="$SOURCE_DIR" "$INSTALL_DIR/venv/bin/python" -m py_compile \
+PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
   "$SOURCE_DIR/bot.py" "$SOURCE_DIR/config_cli.py" "$SOURCE_DIR/test_bot.py"
 (
   cd "$SOURCE_DIR"
-  PYTHONPATH="$SOURCE_DIR" "$INSTALL_DIR/venv/bin/python" -m unittest -q test_bot.py
+  PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m unittest -q test_bot.py
 )
 
 deploy_targets=(
@@ -102,6 +98,10 @@ for file in "${PROJECT_FILES[@]}"; do
   deploy_targets+=("$PROJECT_DIR/$file")
 done
 rollback_dir=$(mktemp -d "$INSTALL_DIR/.deploy-rollback.XXXXXX")
+previous_venv_target=""
+if [[ -L "$INSTALL_DIR/venv" ]]; then
+  previous_venv_target=$(readlink -f "$INSTALL_DIR/venv" || true)
+fi
 for target in "${deploy_targets[@]}"; do
   if [[ -e $target || -L $target ]]; then
     cp -a --parents "$target" "$rollback_dir"
@@ -111,6 +111,15 @@ done
 rollback_deploy() {
   exit_code=$?
   trap - ERR
+  if [[ $swapped_venv == true ]]; then
+    systemctl stop "$SERVICE" || true
+    if [[ -L "$INSTALL_DIR/venv" ]]; then
+      rm -f -- "$INSTALL_DIR/venv"
+    fi
+    if [[ -e "$rollback_dir/venv" || -L "$rollback_dir/venv" ]]; then
+      mv -- "$rollback_dir/venv" "$INSTALL_DIR/venv"
+    fi
+  fi
   for target in "${deploy_targets[@]}"; do
     backup="$rollback_dir$target"
     if [[ -e $backup || -L $backup ]]; then
@@ -126,7 +135,17 @@ rollback_deploy() {
   fi
   exit "$exit_code"
 }
+swapped_venv=false
 trap rollback_deploy ERR
+
+if systemctl cat "$SERVICE" >/dev/null 2>&1; then
+  systemctl stop "$SERVICE"
+fi
+swapped_venv=true
+if [[ -e "$INSTALL_DIR/venv" || -L "$INSTALL_DIR/venv" ]]; then
+  mv -- "$INSTALL_DIR/venv" "$rollback_dir/venv"
+fi
+ln -s "$candidate_venv" "$INSTALL_DIR/venv"
 
 install -o root -g root -m 0755 "$SOURCE_DIR/bot.py" "$INSTALL_DIR/bot.py"
 install -o root -g root -m 0644 "$SOURCE_DIR/test_bot.py" "$INSTALL_DIR/test_bot.py"
@@ -167,11 +186,18 @@ python3 -m py_compile "$INSTALL_DIR/bot.py" /usr/local/sbin/x-tweet-bot-config
 systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
+sleep 3
 systemctl is-active --quiet "$SERVICE"
+[[ $(systemctl show "$SERVICE" -p MainPID --value) =~ ^[1-9][0-9]*$ ]]
 trap - ERR
 if [[ $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then
   rm -rf -- "$rollback_dir"
 fi
+if [[ $previous_venv_target == "$INSTALL_DIR"/.venv-candidate.* && \
+      $previous_venv_target != "$candidate_venv" ]]; then
+  rm -rf -- "$previous_venv_target"
+fi
+candidate_venv=""
 
 echo "service=$(systemctl is-active "$SERVICE")"
 /usr/local/sbin/x-tweet-bot-config status

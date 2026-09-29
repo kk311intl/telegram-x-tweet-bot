@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.6"
+APP_VERSION = "3.1.8"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -74,7 +74,8 @@ MAX_TOTAL_BYTES = env_int(
 )
 MAX_COOKIE_BYTES = 1024 * 1024
 COOKIE_ALERT_INTERVAL = 24 * 60 * 60
-DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, 100_000)
+MAX_DAILY_LIMIT = 100_000
+DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, MAX_DAILY_LIMIT)
 MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
@@ -361,7 +362,7 @@ ADMIN_TEXT = {
     "default_quota_invalid": ("預設額度無效。", "Invalid default limit.", "初期上限値が無効です。"),
     "permission_missing": ("缺少權限值。", "Missing access value.", "権限値がありません。"),
     "permission_invalid": ("權限值無效。", "Invalid access value.", "権限値が無効です。"),
-    "quota_range": ("額度必須是 -1、0 或 1 至 10000。", "The limit must be -1, 0, or 1–10000.", "上限値は -1、0、または 1～10000 にしてください。"),
+    "quota_range": ("額度必須是 -1、0 或 1 至 100000。", "The limit must be -1, 0, or 1–100000.", "上限値は -1、0、または 1～100000 にしてください。"),
     "user_created": ("使用者已建立。", "User created.", "ユーザーを作成しました。"),
     "user_exists": ("該 User ID 已存在，未覆寫現有資料。", "That User ID already exists; no data was overwritten.", "その User ID は既に存在します。データは上書きしていません。"),
     "user_missing": ("使用者已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。"),
@@ -620,7 +621,7 @@ class ACLStore:
             quota = item.get("quota")
             if quota is not None:
                 quota = int(quota)
-                if quota < -1 or quota > 10000:
+                if quota < -1 or quota > MAX_DAILY_LIMIT:
                     raise ValueError("quota out of range")
             updated_at = int(item.get("updated_at", 0) or 0)
             if updated_at <= 0:
@@ -936,7 +937,7 @@ class ACLStore:
     def set_quota(self, user_id: int, quota: int | None) -> None:
         if user_id == self.owner_id:
             raise ValueError("owner quota cannot be changed")
-        if quota is not None and (quota < -1 or quota > 10000):
+        if quota is not None and (quota < -1 or quota > MAX_DAILY_LIMIT):
             raise ValueError("quota out of range")
         with self.lock:
             record = self.data["users"].setdefault(
@@ -1598,7 +1599,9 @@ class TelegramAPI:
             "disable_web_page_preview": "true",
         }
         if reply_to:
-            data["reply_parameters"] = json.dumps({"message_id": reply_to})
+            data["reply_parameters"] = json.dumps({
+                "message_id": reply_to, "allow_sending_without_reply": True,
+            })
         if reply_markup:
             data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
         if parse_mode:
@@ -1891,17 +1894,56 @@ class TelegramAPI:
             )
 
 
-def run_command(command: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str], timeout: int, directory: Path
+) -> subprocess.CompletedProcess[str]:
     LOG.info("Running extractor: %s", command[0])
-    return subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
-        check=False,
-        env={**os.environ, "HOME": str(STATE_DIR)},
-    )
+    with tempfile.NamedTemporaryFile(
+        dir=directory, prefix=".extract-", suffix=".txt"
+    ) as output:
+        process = subprocess.Popen(
+            command,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name != "nt",
+            env={**os.environ, "HOME": str(STATE_DIR)},
+        )
+        try:
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                try:
+                    process.wait(timeout=max(0, min(0.2, remaining)))
+                except subprocess.TimeoutExpired:
+                    pass
+                try:
+                    total = sum(
+                        path.stat().st_size
+                        for path in directory.rglob("*") if path.is_file()
+                    )
+                except FileNotFoundError:
+                    continue  # A downloader renamed a partial file while we counted.
+                if total > MAX_TOTAL_BYTES:
+                    raise ValueError("Extractor exceeded the media directory limit")
+                if process.poll() is not None:
+                    break
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+        finally:
+            if process.poll() is None:
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.wait()
+        output.seek(0, os.SEEK_END)
+        output.seek(max(0, output.tell() - 65536))
+        return subprocess.CompletedProcess(
+            command, process.returncode, output.read().decode("utf-8", "replace")
+        )
 
 
 def normalize_author_url(value: str) -> str:
@@ -2487,6 +2529,8 @@ def download_media(
     command = [
         "/opt/x-tweet-telegram-bot/venv/bin/gallery-dl",
         "--ignore-config",
+        "--range", "1-10",
+        "--filesize-max", str(max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)),
         "--directory",
         str(directory),
         "--filename",
@@ -2506,14 +2550,15 @@ def download_media(
         "-o",
         "downloader.ytdl.format=best[filesize<45M]/best[filesize_approx<45M]/worst",
     ]
-    result = run_command([*command, url], timeout=240)
+    result = run_command([*command, url], timeout=240, directory=directory)
     files = media_files(directory)
     method = "gallery-dl（匿名）" if files else ""
     cookie_invalid = False
 
     if not files and allow_cookies and COOKIES_PATH.exists():
         result = run_command(
-            [*command, "--cookies", str(COOKIES_PATH), url], timeout=240
+            [*command, "--cookies", str(COOKIES_PATH), url],
+            timeout=240, directory=directory,
         )
         cookie_invalid = cookies_look_invalid(result.stdout)
         files = media_files(directory)
@@ -2525,6 +2570,7 @@ def download_media(
             "/opt/x-tweet-telegram-bot/venv/bin/yt-dlp",
             "--no-config",
             "--no-playlist",
+            "--max-filesize", str(MAX_VIDEO_BYTES),
             "--restrict-filenames",
             "--merge-output-format",
             "mp4",
@@ -2533,14 +2579,15 @@ def download_media(
             "--output",
             str(directory / "%(id)s.%(ext)s"),
         ]
-        result = run_command([*fallback, url], timeout=240)
+        result = run_command([*fallback, url], timeout=240, directory=directory)
         files = media_files(directory)
         if files:
             method = "yt-dlp（匿名）"
 
         if not files and allow_cookies and COOKIES_PATH.exists():
             result = run_command(
-                [*fallback, "--cookies", str(COOKIES_PATH), url], timeout=240
+                [*fallback, "--cookies", str(COOKIES_PATH), url],
+                timeout=240, directory=directory,
             )
             cookie_invalid = cookie_invalid or cookies_look_invalid(result.stdout)
             files = media_files(directory)
@@ -2785,7 +2832,7 @@ class Bot:
                 if len(numeric_parts) == 2:
                     try:
                         quota = int(numeric_parts[1])
-                        if quota < -1 or quota > 10000:
+                        if quota < -1 or quota > MAX_DAILY_LIMIT:
                             raise ValueError
                     except ValueError:
                         self.api.send_message(
@@ -3618,7 +3665,7 @@ class Bot:
                 return
             try:
                 quota = int(extra[0])
-                if quota < -1 or quota > 10000:
+                if quota < -1 or quota > MAX_DAILY_LIMIT:
                     raise ValueError
             except (ValueError, TypeError):
                 self.api.answer_callback(callback_id, admin_text("default_quota_invalid"), alert=True)
@@ -3650,7 +3697,7 @@ class Bot:
                 return
             try:
                 quota = int(extra[0])
-                if quota < -1 or quota > 10000:
+                if quota < -1 or quota > MAX_DAILY_LIMIT:
                     raise ValueError
             except (ValueError, TypeError):
                 self.api.answer_callback(callback_id, admin_text("permission_invalid"), alert=True)
@@ -4191,6 +4238,10 @@ class Bot:
                         message_id,
                     )
                     self.acl.finish_job(chat_id, message_id)
+                except TelegramAPIError as error:
+                    if error.status_code in {400, 403}:
+                        self.acl.finish_job(chat_id, message_id)
+                    LOG.exception("Could not send failure response")
                 except Exception:
                     LOG.exception("Could not send failure response")
             finally:

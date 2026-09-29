@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -77,6 +78,21 @@ class ReliabilityTests(unittest.TestCase):
             restored.finish_job(200, 42)
             self.assertFalse(bot.ACLStore(path, 100).data["pending_jobs"])
             service.stop()
+
+    def test_permanent_delivery_failure_discards_pending_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            job = (100, 42, 100, "https://x.com/test/status/123")
+            self.assertTrue(store.consume(100, job=job)[0])
+            api = MagicMock()
+            api.send_message.side_effect = bot.TelegramAPIError("sendMessage", 403)
+            service = bot.Bot(api, store)
+            service.process_url = MagicMock(side_effect=RuntimeError("delivery failed"))
+            service.workers[0].start()
+            service.jobs.join()
+            service.stop()
+            service.workers[0].join(timeout=2)
+            self.assertFalse(store.data["pending_jobs"])
 
     def test_full_inline_slots_do_not_charge(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -314,12 +330,20 @@ class ACLTests(unittest.TestCase):
                 "version": 1,
                 "users": [
                     {"user_id": 200, "quota": 50, "updated_at": 1},
-                    {"user_id": 300, "quota": 10001, "updated_at": 2},
+                    {"user_id": 300, "quota": 100001, "updated_at": 2},
                 ],
             }
             with self.assertRaises(ValueError):
                 store.import_access(snapshot)
             self.assertFalse(store.has_user(200))
+
+    def test_maximum_daily_limit_survives_access_export_and_import(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = bot.ACLStore(Path(temporary) / "source.json", 100)
+            target = bot.ACLStore(Path(temporary) / "target.json", 100)
+            source.set_quota(200, bot.MAX_DAILY_LIMIT)
+            self.assertEqual(target.import_access(source.export_access()), 1)
+            self.assertEqual(target.quota(200), bot.MAX_DAILY_LIMIT)
 
     def test_owner_and_allowlist(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1894,6 +1918,44 @@ class TelegramConfigurationTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_extractor_stops_when_temporary_media_exceeds_limit(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            bot, "MAX_TOTAL_BYTES", 1024
+        ):
+            directory = Path(temporary)
+            command = [sys.executable, "-c", (
+                "from pathlib import Path; "
+                f"Path({str(directory / 'large.mp4')!r}).write_bytes(b'x' * 4096)"
+            )]
+            with self.assertRaisesRegex(ValueError, "directory limit"):
+                bot.run_command(command, timeout=5, directory=directory)
+
+    def test_extractor_stops_a_running_download_at_the_limit(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            bot, "MAX_TOTAL_BYTES", 2048
+        ):
+            directory = Path(temporary)
+            script = (
+                "from pathlib import Path\nimport time\n"
+                f"with Path({str(directory / 'growing.mp4')!r}).open('wb') as out:\n"
+                "    while True:\n"
+                "        out.write(b'x' * 512)\n        out.flush()\n"
+                "        time.sleep(0.01)\n"
+            )
+            with self.assertRaisesRegex(ValueError, "directory limit"):
+                bot.run_command(
+                    [sys.executable, "-c", script], timeout=5, directory=directory
+                )
+
+    def test_extractor_returns_bounded_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = bot.run_command(
+                [sys.executable, "-c", "print('ok')"],
+                timeout=5, directory=Path(temporary),
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "ok")
+
     def test_fxtwitter_prefers_largest_mp4(self):
         tweet = {
             "media": {
@@ -2076,6 +2138,9 @@ class MediaTests(unittest.TestCase):
             command = runner.call_args.args[0]
             self.assertNotIn("--cookies", command)
             self.assertIn("extractor.twitter.quoted=false", command)
+            self.assertIn("--filesize-max", command)
+            self.assertIn("1-10", command)
+            self.assertEqual(runner.call_args.kwargs["directory"], Path(temporary))
             self.assertEqual(len(files), 1)
             self.assertEqual(method, "gallery-dl（匿名）")
             self.assertFalse(cookie_invalid)
@@ -2748,17 +2813,38 @@ class PerformanceSafetyTests(unittest.TestCase):
             "sendChatAction", {"chat_id": 100, "action": "upload_document"}
         )
 
+    def test_reply_survives_deleted_original_message(self):
+        api = bot.TelegramAPI("12345678:test-token-value-for-unit-tests")
+        api.call = MagicMock()
+        api.send_message(100, "done", reply_to=42)
+        payload = api.call.call_args.args[1]
+        self.assertEqual(json.loads(payload["reply_parameters"]), {
+            "message_id": 42, "allow_sending_without_reply": True,
+        })
+
     def test_deploy_runs_tests_before_replacing_installed_bot(self):
         script = self.deploy_script().read_text(encoding="utf-8")
         self.assertLess(
-            script.index('"$INSTALL_DIR/venv/bin/python" -m unittest -q test_bot.py'),
+            script.index('"$candidate_venv/bin/python" -m unittest -q test_bot.py'),
             script.index('install -o root -g root -m 0755 "$SOURCE_DIR/bot.py"'),
         )
+        self.assertLess(
+            script.index('"$candidate_venv/bin/python" -m unittest -q test_bot.py'),
+            script.index('ln -s "$candidate_venv" "$INSTALL_DIR/venv"'),
+        )
+        self.assertIn('mv -- "$rollback_dir/venv" "$INSTALL_DIR/venv"', script)
         self.assertNotIn('SYNC_ROLE', script)
         self.assertNotIn('access_sync_endpoint.sh', script)
         self.assertIn('rollback_dir=$(mktemp -d "$INSTALL_DIR/.deploy-rollback.', script)
         self.assertIn("rollback_deploy()", script)
         self.assertIn("trap rollback_deploy ERR", script)
+        self.assertIn('chmod 0755 "$candidate_venv"', script)
+        self.assertLess(
+            script.index('chmod 0755 "$candidate_venv"'),
+            script.index('ln -s "$candidate_venv" "$INSTALL_DIR/venv"'),
+        )
+        self.assertIn('sleep 3\nsystemctl is-active --quiet "$SERVICE"', script)
+        self.assertIn('systemctl show "$SERVICE" -p MainPID --value', script)
         self.assertIn('systemctl is-active --quiet "$SERVICE"', script)
 
         bash = shutil.which("bash")
