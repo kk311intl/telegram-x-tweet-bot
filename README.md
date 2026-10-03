@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.2
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.3
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -10,7 +10,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 > 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID 與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及四種介面語言（所有角色均自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
 
-這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括所有者與管理員）均可從 Language 選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
+這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括所有者與管理員）均可從「語言/Language」選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
 
 需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換，並建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
 
@@ -58,7 +58,7 @@ Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁�
 
 > まずこの repository の README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit、テストを読んでください。そのうえで、Python・systemd・Telegram Bot API を使う X/Twitter 単一投稿メディア Bot を、私の Debian／Ubuntu Linux サーバーへ導入してください。私はプログラミングに詳しくありません。各コマンドの意味と期待結果を説明し、サーバーへのログイン方法、Bot Token、私の Telegram User ID、タイムゾーンなど、本当に不足している値だけを尋ねてください。Bot の作成、ログイン承認、Token の安全な入力、SSH 鍵の確認は私自身が行います。Secret をチャット・issue・Git に貼らせないでください。同名サービスや既存データを先に調べ、確認なしに既存環境を上書き・再起動せず、ユーザーデータ、Webhook、資格情報を初期化しないでください。構成を独断で変えず、各段階を実行して結果を確認し、最後にサービス、Bot の `/start`、公開投稿1件、4言語表示を検証してください。所有者・管理者を含む全ユーザーが個別に言語を選びます。未確認の作業を完了済みと報告しないでください。
 
-この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。所有者・管理者を含む全ユーザーが Language から简体中文・繁體中文・English・日本語を選べます。初期表示は繁體中文（`zh`）で、端末言語による自動切り替えはありません。選択は ACL に保存され、導入時の言語設定は不要です。
+この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。所有者・管理者を含む全ユーザーが「語言/Language」から简体中文・繁體中文・English・日本語を選べます。初期表示は繁體中文（`zh`）で、端末言語による自動切り替えはありません。選択は ACL に保存され、導入時の言語設定は不要です。
 
 必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+、systemd、Telegram Bot Token です。`deploy.sh` は Python 3.12 を再利用または導入し、独立した候補環境で依存関係を導入・テストしてから切り替えます。専用ユーザーと `/var/lib/x-tweet-telegram-bot` を準備し、`ffmpeg` がなければ導入します。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
 
@@ -106,7 +106,7 @@ Telegram のコマンドメニューと紹介文は端末言語に対応しま�
 
 > Read this repository's README, `deploy.sh`, `bot.py`, `config_cli.py`, systemd unit, and tests first. Then help me deploy this Python/systemd X/Twitter single-post media bot, which uses the Telegram Bot API, on my own Debian or Ubuntu Linux server. I am not a programmer: explain each command and its expected result, and ask only for missing values such as server access, Bot Token, my Telegram User ID, and time zone. I must personally create the bot, approve logins, enter the Token securely, and confirm SSH keys. Do not ask me to paste secrets into chat, issues, or Git. Check for existing services and data before acting; do not overwrite or restart an existing installation without confirmation, and do not reset users, Webhooks, or credentials. Follow the current project without redesigning it. Execute and check each step, troubleshoot failures, and finally verify the service, `/start`, one public post, and all four interface languages (every role chooses individually). Mark any step you could not actually verify instead of claiming success.
 
-Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Every user, including the owner and administrators, can choose 简体中文, 繁體中文, English, or 日本語 from Language. The default is Traditional Chinese (`zh`), not the client's language. Preferences are saved in the ACL; no deployment language setting is needed.
+Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Every user, including the owner and administrators, can choose 简体中文, 繁體中文, English, or 日本語 from 語言/Language. The default is Traditional Chinese (`zh`), not the client's language. Preferences are saved in the ACL; no deployment language setting is needed.
 
 You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+, systemd, and a Telegram Bot Token. `deploy.sh` reuses or installs Python 3.12, installs and tests packages in a separate candidate environment before switching, and creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. It installs `ffmpeg` if missing. The bot uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
 

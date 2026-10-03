@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.2"
+APP_VERSION = "3.3.3"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -182,10 +182,9 @@ PUBLIC_TEXT = {
         "help_allowed": (
             "使用说明\n\n"
             "发送单篇 X/Twitter 推文链接，即可获取文字、图片和视频。\n"
-            f"在其他聊天输入 {BOT_MENTION} 加上推文链接，可选择并分享媒体。\n"
-            "视频上限 50 MB。"
+            f"在其他聊天输入 {BOT_MENTION} 加上推文链接，可选择并分享媒体。"
         ),
-        "language_menu": "🌐 Language",
+        "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使用说明",
         "choose_language": "请选择语言。",
         "back": "↩️ 返回",
@@ -205,7 +204,7 @@ PUBLIC_TEXT = {
         "post_unavailable": "无法获取这条推文，请确认推文可公开浏览或稍后再试。",
         "url_only": "请发送有效的 X/Twitter 单篇推文链接。",
         "inline_apply": "开启机器人申请使用权限",
-        "video_oversized": "{count} 个视频超过 50 MB，已跳过。",
+        "video_oversized": "{count} 个视频超过 Telegram 的 50 MB 上限，已跳过。",
         "images_skipped": "部分图片超过大小限制，已跳过。",
         "preview_failed": "媒体预览发送失败，请稍后重试。",
         "originals_failed": "部分原始文件发送失败，请稍后重试。",
@@ -217,10 +216,9 @@ PUBLIC_TEXT = {
         "help_allowed": (
             "使用說明\n\n"
             "傳送單篇 X/Twitter 貼文網址，即可取得文字、圖片和影片。\n"
-            f"在其他聊天輸入 {BOT_MENTION} 加上貼文網址，可選擇並分享媒體。\n"
-            "影片上限 50 MB。"
+            f"在其他聊天輸入 {BOT_MENTION} 加上貼文網址，可選擇並分享媒體。"
         ),
-        "language_menu": "🌐 Language",
+        "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使用說明",
         "choose_language": "請選擇語言。",
         "back": "↩️ 返回",
@@ -240,7 +238,7 @@ PUBLIC_TEXT = {
         "post_unavailable": "無法取得這則貼文，請確認貼文可公開瀏覽或稍後再試。",
         "url_only": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "inline_apply": "開啟機器人申請使用權限",
-        "video_oversized": "{count} 個影片超過 50 MB，已略過。",
+        "video_oversized": "{count} 個影片超過 Telegram 的 50 MB 上限，已略過。",
         "images_skipped": "部分圖片超過大小限制，已略過。",
         "preview_failed": "媒體預覽傳送失敗，請稍後重試。",
         "originals_failed": "部分原始檔案傳送失敗，請稍後重試。",
@@ -252,10 +250,9 @@ PUBLIC_TEXT = {
         "help_allowed": (
             "How to use\n\n"
             "Send a single X/Twitter post URL to get its text, images and videos.\n"
-            f"In another chat, type {BOT_MENTION} followed by the post URL to select and share media.\n"
-            "Video limit: 50 MB."
+            f"In another chat, type {BOT_MENTION} followed by the post URL to select and share media."
         ),
-        "language_menu": "🌐 Language",
+        "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ How to use",
         "choose_language": "Choose a language.",
         "back": "↩️ Back",
@@ -275,7 +272,7 @@ PUBLIC_TEXT = {
         "post_unavailable": "Couldn't get this post. Check that it is public or try again later.",
         "url_only": "Send a valid single-post X/Twitter URL.",
         "inline_apply": "Open the Bot to request access",
-        "video_oversized": "{count} video(s) exceeded 50 MB and were skipped.",
+        "video_oversized": "{count} video(s) exceeded Telegram's 50 MB limit and were skipped.",
         "images_skipped": "Some images were too large and were skipped.",
         "preview_failed": "Couldn't send the media preview. Try again later.",
         "originals_failed": "Couldn't send some original files. Try again later.",
@@ -287,10 +284,9 @@ PUBLIC_TEXT = {
         "help_allowed": (
             "使い方\n\n"
             "X/Twitter の単一投稿URLを送ると、本文・画像・動画を取得できます。\n"
-            f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると、メディアを選んで共有できます。\n"
-            "動画は 50 MB まで。"
+            f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると、メディアを選んで共有できます。"
         ),
-        "language_menu": "🌐 Language",
+        "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使い方",
         "choose_language": "言語を選択してください。",
         "back": "↩️ 戻る",
@@ -310,7 +306,7 @@ PUBLIC_TEXT = {
         "post_unavailable": "投稿を取得できません。公開されているか確認するか、しばらくしてから再試行してください。",
         "url_only": "有効な X/Twitter の単一投稿URLを送信してください。",
         "inline_apply": "Botを開いて利用を申請",
-        "video_oversized": "{count} 件の動画が 50 MB を超えたため、スキップしました。",
+        "video_oversized": "{count} 件の動画が Telegram の 50 MB 上限を超えたため、スキップしました。",
         "images_skipped": "一部の画像はサイズが大きすぎるため、スキップしました。",
         "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから再試行してください。",
         "originals_failed": "一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
@@ -355,10 +351,10 @@ ADMIN_TEXT = {
         "服务：{service}\n运行时间：{uptime}\n处理队列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
     ),
     "status_users": (
-        "用戶\n總記錄：{total}｜普通：{ordinary}｜管理員：{administrators}｜初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n",
-        "Users\nRecords: {total} | Regular: {ordinary} | Administrators: {administrators} | Initialized: {initialized} | Pending: {pending} | Blocked: {banned}\nActive today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n",
-        "ユーザー\n記録：{total}｜一般：{ordinary}｜管理者：{administrators}｜初期化：{initialized}｜審査待ち：{pending}｜ブロック：{banned}\n本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n",
-        "用户\n总记录：{total}｜普通：{ordinary}｜管理员：{administrators}｜初始化：{initialized}｜待审批：{pending}｜封禁：{banned}\n今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n",
+        "用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n",
+        "Users\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\nActive today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n",
+        "ユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n",
+        "用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n",
     ),
     "status_schedule": (
         "統計重置：每日 {reset_hour:02d}:00 {timezone}\n每日簡報：{report_hour:02d}:00 {timezone}\n\n",
@@ -366,16 +362,8 @@ ADMIN_TEXT = {
         "利用回数のリセット：{reset_hour:02d}:00 {timezone}\n日次レポート：{report_hour:02d}:00 {timezone}\n\n",
         "统计重置：每日 {reset_hour:02d}:00 {timezone}\n每日简报：{report_hour:02d}:00 {timezone}\n\n",
     ),
-    "status_cookies": (
-        "X Cookies：{configured}\nCookies 開關：{enabled}\n",
-        "X Cookies: {configured}\nCookies for regular users: {enabled}\n",
-        "X Cookies：{configured}\n一般ユーザーの Cookies：{enabled}\n",
-        "X Cookies：{configured}\nCookies 开关：{enabled}\n",
-    ),
     "running": ("正常", "Running", "稼働中", "正常"),
     "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
-    "configured": ("已設定", "Configured", "設定済み", "已设置"),
-    "not_configured": ("未設定", "Not configured", "未設定", "未设置"),
     "help": ("使用說明", "Help", "使い方", "使用说明"),
     "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
     "implementation": ("實現方式", "Implementation details", "実装方法", "实现方式"),
@@ -1171,7 +1159,7 @@ def owner_keyboard() -> dict[str, Any]:
             [
                 {"text": f'👤 {admin_text("users")}', "callback_data": "nav:users"},
                 {
-                    "text": "🌐 Language",
+                    "text": public_text(ui_language(), "language_menu"),
                     "callback_data": "public:language",
                 },
             ],
@@ -3491,7 +3479,6 @@ class Bot:
         )
         queue_size = self.jobs.qsize()
         queue_percent = round(queue_size * 100 / MAX_QUEUE) if MAX_QUEUE else 0
-        separator = ": " if ui_language() == "en" else "："
         text = admin_text("status") + "\n\n"
         text += admin_text("status_runtime").format(
             service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
@@ -3506,15 +3493,7 @@ class Bot:
         text += admin_text("status_schedule").format(
             reset_hour=DAILY_RESET_HOUR, report_hour=DAILY_REPORT_HOUR, timezone=BOT_TIMEZONE_NAME,
         )
-        text += admin_text("status_cookies").format(
-            configured=admin_text("configured" if COOKIES_PATH.exists() else "not_configured"),
-            enabled=admin_text("on" if self.acl.ordinary_user_cookies_enabled else "off"),
-        )
-        text += admin_text("access_switch") + separator + admin_text("open" if self.acl.external_access_enabled else "paused") + "\n"
-        text += admin_text("auto_approve") + separator + admin_text("on" if self.acl.auto_approve_enabled else "off") + "\n"
-        if viewer_id == self.acl.owner_id:
-            text += "\n" + admin_text("implementation") + separator + admin_text("on" if self.acl.debug_mode(viewer_id) else "off")
-        return text
+        return text.rstrip()
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         user_id = int((callback.get("from") or {}).get("id", 0) or 0)
@@ -3674,7 +3653,7 @@ class Bot:
                         callback_id, admin_text("advanced_owner_only"), alert=True
                     )
                     return
-                text = self.system_status_text(user_id)
+                text = admin_text("advanced")
                 keyboard = advanced_status_keyboard(
                     self.acl.debug_mode(user_id),
                     self.acl.external_access_enabled,
@@ -3911,7 +3890,7 @@ class Bot:
             self.api.edit_message(
                 chat_id,
                 message_id,
-                self.system_status_text(user_id),
+                admin_text("advanced"),
                 advanced_status_keyboard(
                     self.acl.debug_mode(user_id),
                     self.acl.external_access_enabled,

@@ -1278,6 +1278,47 @@ class CookieTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
+    def test_status_counts_are_separate_and_advanced_pages_do_not_repeat_statistics(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as directory, bot.language_scope(language):
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                store.set_language(100, language)
+                store.add(200)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                status = service.system_status_text(100)
+                counts = bot.admin_text("status_users").format(
+                    total=2, ordinary=1, administrators=0, initialized=0, pending=0,
+                    banned=0, active_today=0, interactions=0, exhausted=0,
+                ).splitlines()[1:7]
+                self.assertEqual(len(counts), 6)
+                for line in counts:
+                    self.assertIn(line, status.splitlines())
+                    self.assertNotIn("｜", line)
+                    self.assertNotIn(" | ", line)
+                for detail in ("Cookies", bot.admin_text("access_switch"), bot.admin_text("auto_approve"), bot.admin_text("implementation")):
+                    self.assertNotIn(detail, status)
+                for action in ("nav:advanced", "debugtoggle:0", "externaltoggle:0", "autoapprovetoggle:0", "nav:cookies", "nav:cookiehelp", "nav:defaultquota"):
+                    api.reset_mock()
+                    service.handle_callback({
+                        "id": "page", "data": action, "from": {"id": 100},
+                        "message": {"message_id": 1, "chat": {"id": 100}},
+                    })
+                    text = api.edit_message.call_args.args[2]
+                    for line in counts:
+                        self.assertNotIn(line, text)
+                    if action == "nav:advanced" or action.endswith("toggle:0"):
+                        self.assertEqual(text, bot.admin_text("advanced"))
+                        self.assertIn("nav:status", str(api.edit_message.call_args.args[3]))
+                service.handle_callback({
+                    "id": "back", "data": "nav:status", "from": {"id": 100},
+                    "message": {"message_id": 1, "chat": {"id": 100}},
+                })
+                for line in counts:
+                    self.assertIn(line, api.edit_message.call_args.args[2].splitlines())
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
     def test_usage_labels_and_chinese_user_terms_are_consistent_in_four_languages(self):
         for language, usage_label, old_label in (("zh-cn", "用量", "处理次数"), ("zh", "用量", "處理次數"), ("ja", "使用量", "処理回数"), ("en", "Usage", "Processed")):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
@@ -1352,7 +1393,7 @@ class MenuTests(unittest.TestCase):
             [button["callback_data"] for button in keyboard[1]],
             ["public:language", "public:help"],
         )
-        self.assertEqual(keyboard[1][0]["text"], "🌐 Language")
+        self.assertEqual(keyboard[1][0]["text"], "🌐 語言/Language")
         self.assertEqual(
             bot.public_text("zh", "start_allowed"),
             "請傳送有效的 X/Twitter 單篇貼文網址。",
@@ -1360,16 +1401,16 @@ class MenuTests(unittest.TestCase):
         self.assertIn("使い方", bot.public_text("ja", "help_allowed"))
         for language in bot.PUBLIC_TEXT:
             guide = bot.public_text(language, "help_allowed")
-            self.assertEqual(len(guide.splitlines()), 5)
+            self.assertEqual(len(guide.splitlines()), 4)
             self.assertIn(bot.BOT_MENTION, guide)
-            self.assertIn("50 MB", guide)
+            self.assertNotIn("50 MB", guide)
             for detail in ("/id", "引用", "quoted", "未壓縮", "未压缩", "uncompressed", "インライン"):
                 self.assertNotIn(detail, guide)
         expected_menus = {
-            "zh-cn": ["🌐 Language", "ℹ️ 使用说明"],
-            "zh": ["🌐 Language", "ℹ️ 使用說明"],
-            "en": ["🌐 Language", "ℹ️ How to use"],
-            "ja": ["🌐 Language", "ℹ️ 使い方"],
+            "zh-cn": ["🌐 語言/Language", "ℹ️ 使用说明"],
+            "zh": ["🌐 語言/Language", "ℹ️ 使用說明"],
+            "en": ["🌐 語言/Language", "ℹ️ How to use"],
+            "ja": ["🌐 語言/Language", "ℹ️ 使い方"],
         }
         for language in ("zh-cn", "zh", "en", "ja"):
             menu = bot.start_keyboard(language, False, True)["inline_keyboard"][0]
@@ -1818,8 +1859,8 @@ class MenuTests(unittest.TestCase):
             self.assertEqual(
                 cookies[1][0]["text"], "🍪 Cookies 使用：開啟"
             )
-            self.assertIn("Cookies 開關：開啟", status)
-            self.assertIn("自動通過：關閉", status)
+            self.assertNotIn("Cookies", status)
+            self.assertNotIn("自動通過", status)
             self.assertNotIn("管理模式", status)
 
             admin_advanced = bot.advanced_status_keyboard(
@@ -3452,6 +3493,9 @@ class PublicReleaseLanguageTests(unittest.TestCase):
         for language, messages in bot.PUBLIC_TEXT.items():
             with self.subTest(language=language):
                 self.assertEqual(messages["apply_auto_approved"], messages["approved"])
+                self.assertNotIn("50 MB", messages["help_allowed"])
+                self.assertIn("Telegram", messages["video_oversized"])
+                self.assertIn("50 MB", messages["video_oversized"])
                 self.assertNotIn("{names}", messages["images_skipped"])
                 self.assertLessEqual(len(messages["help_allowed"]), 260)
                 for key, text in messages.items():
