@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.3"
+APP_VERSION = "3.3.4"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -86,6 +86,9 @@ MAX_TOTAL_BYTES = env_int(
     "MAX_TOTAL_BYTES", 160 * 1024 * 1024, 1024 * 1024, 500 * 1024 * 1024
 )
 MAX_COOKIE_BYTES = 1024 * 1024
+MIN_FREE_DISK_BYTES = env_int("MIN_FREE_DISK_BYTES", 1024 ** 3, 64 * 1024 ** 2, 20 * 1024 ** 3)
+TEMP_SOFT_LIMIT_BYTES = env_int("TEMP_SOFT_LIMIT_BYTES", 1024 ** 3, 64 * 1024 ** 2, 100 * 1024 ** 3)
+TEMP_RETENTION_HOURS = env_int("TEMP_RETENTION_HOURS", 24, 1, 720)
 COOKIE_ALERT_INTERVAL = 24 * 60 * 60
 MAX_DAILY_LIMIT = 100_000
 DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, MAX_DAILY_LIMIT)
@@ -101,6 +104,8 @@ DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 22, 0, 23)
 DAILY_RESET_HOUR = env_int("DAILY_RESET_HOUR", 0, 0, 23)
 
 HTTP_LOCAL = threading.local()
+MEDIA_DISK_LOCK = threading.Lock()
+ACTIVE_MEDIA_DIRS: set[Path] = set()
 
 
 def bot_date(timestamp: float | None = None) -> str:
@@ -161,6 +166,62 @@ def load_update_offset(path: Path = UPDATE_OFFSET_PATH) -> int:
 
 def save_update_offset(offset: int, path: Path = UPDATE_OFFSET_PATH) -> None:
     atomic_write_text(path, json.dumps({"offset": max(0, int(offset))}) + "\n")
+
+
+def media_disk_available() -> bool:
+    try:
+        if TMP_DIR.is_symlink():
+            return False
+        filesystem = TMP_DIR
+        while not filesystem.exists():
+            if filesystem.parent == filesystem:
+                return False
+            filesystem = filesystem.parent
+        if shutil.disk_usage(filesystem).free < MIN_FREE_DISK_BYTES:
+            return False
+        total = sum(path.stat().st_size for path in TMP_DIR.rglob("*")
+                    if path.is_file() and not path.is_symlink())
+        return total < TEMP_SOFT_LIMIT_BYTES
+    except OSError:
+        LOG.warning("Could not check media disk space")
+        return False
+
+
+def cleanup_stale_media() -> None:
+    # Never trim ACL recovery files or credentials to meet a space target.
+    cutoff = time.time() - TEMP_RETENTION_HOURS * 3600
+    if TMP_DIR.is_symlink():
+        LOG.warning("Skipping media cleanup on a symlinked temporary root")
+        return
+    with MEDIA_DISK_LOCK:
+        for directory in TMP_DIR.glob("tweet-*"):
+            try:
+                if directory in ACTIVE_MEDIA_DIRS or directory.is_symlink() or not directory.is_dir():
+                    continue
+                if directory.stat().st_mtime >= cutoff or any(path.lstat().st_mtime >= cutoff for path in directory.rglob("*")):
+                    continue
+                if directory.resolve().parent == TMP_DIR.resolve():
+                    shutil.rmtree(directory)
+            except OSError:
+                LOG.warning("Could not clean an expired media directory")
+    if len(list(STATE_DIR.glob("acl.json.corrupt-*"))) > 3:
+        LOG.warning("More than three ACL recovery files retained; review manually")
+
+
+@contextmanager
+def media_temporary_directory():
+    with MEDIA_DISK_LOCK:
+        temporary = tempfile.TemporaryDirectory(prefix="tweet-", dir=TMP_DIR)
+        directory = Path(temporary.name)
+        ACTIVE_MEDIA_DIRS.add(directory)
+    try:
+        yield directory
+    finally:
+        with MEDIA_DISK_LOCK:
+            try:
+                temporary.cleanup()
+            finally:
+                ACTIVE_MEDIA_DIRS.discard(directory)
 
 OWNER_BUTTONS = {
     "👤 用戶管理": "/usermenu",
@@ -351,10 +412,10 @@ ADMIN_TEXT = {
         "服务：{service}\n运行时间：{uptime}\n处理队列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
     ),
     "status_users": (
-        "用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n",
-        "Users\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\nActive today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n",
-        "ユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n",
-        "用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n",
+        "用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n今日活躍：{active_today}\n今日用量：{interactions}\n已達額度：{exhausted}\n",
+        "Users\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\nActive today: {active_today}\nUsage today: {interactions}\nAt quota: {exhausted}\n",
+        "ユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n本日の利用者：{active_today}\n本日の使用量：{interactions}\n上限到達：{exhausted}\n",
+        "用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n今日活跃：{active_today}\n今日用量：{interactions}\n已达额度：{exhausted}\n",
     ),
     "status_schedule": (
         "統計重置：每日 {reset_hour:02d}:00 {timezone}\n每日簡報：{report_hour:02d}:00 {timezone}\n\n",
@@ -2006,7 +2067,7 @@ def run_command(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=os.name != "nt",
-            env={**os.environ, "HOME": str(STATE_DIR)},
+            env={**os.environ, "HOME": str(STATE_DIR), "XDG_CACHE_HOME": str(directory / ".cache")},
         )
         try:
             deadline = time.monotonic() + timeout
@@ -2023,7 +2084,7 @@ def run_command(
                     )
                 except FileNotFoundError:
                     continue  # A downloader renamed a partial file while we counted.
-                if total > MAX_TOTAL_BYTES:
+                if total > MAX_TOTAL_BYTES or shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
                     raise ValueError("Extractor exceeded the media directory limit")
                 if process.poll() is not None:
                     break
@@ -2514,6 +2575,7 @@ def media_files(directory: Path) -> list[Path]:
         path
         for path in directory.rglob("*")
         if path.is_file() and path.suffix.lower() not in ignored
+        and ".cache" not in path.relative_to(directory).parts
     )
 
 
@@ -2739,6 +2801,7 @@ class Bot:
         self.inline_usage_lock = threading.Lock()
         self.inline_usage: dict[tuple[int, str], float] = {}
         self.started_at = time.time()
+        self.last_disk_cleanup = 0.0
 
     def clear_pending_input(self, user_id: int) -> None:
         self.pending_cookie_uploads.discard(user_id)
@@ -2762,6 +2825,8 @@ class Bot:
         return user_id == chat_id
 
     def start(self) -> None:
+        cleanup_stale_media()
+        self.last_disk_cleanup = time.monotonic()
         try:
             self.api.configure_commands()
         except (requests.RequestException, RuntimeError, ValueError):
@@ -2803,6 +2868,9 @@ class Bot:
                     offset = next_offset
                     save_update_offset(offset)
                 self.maybe_send_daily_report()
+                if time.monotonic() - self.last_disk_cleanup >= 3600:
+                    cleanup_stale_media()
+                    self.last_disk_cleanup = time.monotonic()
             except (requests.RequestException, RuntimeError, ValueError):
                 LOG.exception("Polling failed")
                 time.sleep(5)
@@ -3127,6 +3195,9 @@ class Bot:
             return
         job = (chat_id, message_id, user_id, url)
         if f"{chat_id}:{message_id}" in self.acl.data["pending_jobs"]:
+            return
+        if not media_disk_available():
+            self.api.send_message(chat_id, public_text(language, "queue_full"), message_id)
             return
         quota_ok, used, limit = self.acl.consume(user_id, job=job)
         if not quota_ok:
@@ -4378,6 +4449,8 @@ class Bot:
     ) -> None:
         if not self.can_process(user_id):
             return
+        if not media_disk_available():
+            raise RuntimeError("Media storage is temporarily unavailable")
         self.api.send_action(chat_id, "upload_document")
         root_tweet = fetch_fxtwitter(url)
         effective_url = fxtwitter_tweet_url(root_tweet) if root_tweet else None
@@ -4388,8 +4461,7 @@ class Bot:
                 text, author, author_url = fetch_tweet_text(effective_url)
         else:
             text, author, author_url = fetch_tweet_text(effective_url)
-        with tempfile.TemporaryDirectory(prefix="tweet-", dir=TMP_DIR) as temporary:
-            directory = Path(temporary)
+        with media_temporary_directory() as directory:
             files: list[Path] = []
             extractor_log = ""
             method = ""

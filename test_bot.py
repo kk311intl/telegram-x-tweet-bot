@@ -353,7 +353,7 @@ class ReliabilityTests(unittest.TestCase):
             service = bot.Bot(api, store)
             service.workers = []
             service.handle_update = MagicMock(side_effect=OSError("disk full"))
-            with patch.object(bot, "load_update_offset", return_value=0), patch.object(bot, "save_update_offset") as save:
+            with patch.object(bot, "load_update_offset", return_value=0), patch.object(bot, "save_update_offset") as save, patch.object(bot, "cleanup_stale_media"):
                 with self.assertRaises(OSError):
                     service.start()
                 save.assert_not_called()
@@ -1290,8 +1290,8 @@ class MenuTests(unittest.TestCase):
                 counts = bot.admin_text("status_users").format(
                     total=2, ordinary=1, administrators=0, initialized=0, pending=0,
                     banned=0, active_today=0, interactions=0, exhausted=0,
-                ).splitlines()[1:7]
-                self.assertEqual(len(counts), 6)
+                ).splitlines()[1:]
+                self.assertEqual(len(counts), 9)
                 for line in counts:
                     self.assertIn(line, status.splitlines())
                     self.assertNotIn("｜", line)
@@ -2550,6 +2550,127 @@ class TelegramConfigurationTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_disk_soft_limits_reject_downloads_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "TMP_DIR", Path(temporary)), patch.object(
+            bot, "TEMP_SOFT_LIMIT_BYTES", 4096
+        ), patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=bot.MIN_FREE_DISK_BYTES)) as usage:
+            self.assertTrue(bot.media_disk_available())
+            path = Path(temporary) / "media.mp4"
+            path.write_bytes(b"x" * 4096)
+            self.assertFalse(bot.media_disk_available())
+            path.unlink()
+            usage.return_value.free = bot.MIN_FREE_DISK_BYTES - 1
+            self.assertFalse(bot.media_disk_available())
+            usage.side_effect = OSError("unavailable")
+            with self.assertLogs(bot.LOG, level="WARNING"):
+                self.assertFalse(bot.media_disk_available())
+
+    def test_stale_cleanup_preserves_live_recent_and_unrelated_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            root = state / "tmp"
+            root.mkdir()
+            old = bot.time.time() - bot.TEMP_RETENTION_HOURS * 3600 - 10
+            for name in ("tweet-expired", "tweet-active", "tweet-recent-file", "unrelated"):
+                directory = root / name
+                directory.mkdir()
+                file = directory / "media.mp4"
+                file.write_bytes(b"data")
+                if name != "tweet-recent-file":
+                    os.utime(file, (old, old))
+                os.utime(directory, (old, old))
+            recent = root / "tweet-new"
+            recent.mkdir()
+            for name in ("acl.json", "cookies.txt", "acl.json.corrupt-1"):
+                (state / name).write_bytes(b"preserve")
+            with patch.object(bot, "STATE_DIR", state), patch.object(bot, "TMP_DIR", root), patch.object(
+                bot, "ACTIVE_MEDIA_DIRS", {root / "tweet-active"}
+            ):
+                bot.cleanup_stale_media()
+            self.assertFalse((root / "tweet-expired").exists())
+            self.assertEqual({path.name for path in root.iterdir()}, {
+                "tweet-active", "tweet-recent-file", "tweet-new", "unrelated",
+            })
+            for name in ("acl.json", "cookies.txt", "acl.json.corrupt-1"):
+                self.assertEqual((state / name).read_bytes(), b"preserve")
+
+    @unittest.skipIf(os.name == "nt", "symlink protection is verified on Linux")
+    def test_media_cleanup_does_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            root, outside = state / "tmp", state / "outside"
+            root.mkdir()
+            outside.mkdir()
+            target = outside / "important"
+            target.write_bytes(b"preserve")
+            (root / "tweet-link").symlink_to(outside, target_is_directory=True)
+            nested = root / "tweet-expired"
+            nested.mkdir()
+            (nested / "link").symlink_to(outside, target_is_directory=True)
+            old = bot.time.time() - bot.TEMP_RETENTION_HOURS * 3600 - 10
+            os.utime(nested / "link", (old, old), follow_symlinks=False)
+            os.utime(nested, (old, old))
+            with patch.object(bot, "STATE_DIR", state), patch.object(bot, "TMP_DIR", root):
+                bot.cleanup_stale_media()
+            self.assertFalse(nested.exists())
+            self.assertTrue((root / "tweet-link").is_symlink())
+            self.assertEqual(target.read_bytes(), b"preserve")
+            with patch.object(bot, "TMP_DIR", root / "tweet-link"):
+                self.assertFalse(bot.media_disk_available())
+                with self.assertLogs(bot.LOG, level="WARNING"):
+                    bot.cleanup_stale_media()
+            self.assertEqual(target.read_bytes(), b"preserve")
+
+    def test_media_temporary_directory_is_registered_and_removed_on_error(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "TMP_DIR", Path(temporary)), patch.object(
+            bot, "ACTIVE_MEDIA_DIRS", set()
+        ):
+            with self.assertRaisesRegex(ValueError, "test failure"):
+                with bot.media_temporary_directory() as directory:
+                    self.assertIn(directory, bot.ACTIVE_MEDIA_DIRS)
+                    (directory / "media.mp4").write_bytes(b"data")
+                    raise ValueError("test failure")
+            self.assertFalse(directory.exists())
+            self.assertFalse(bot.ACTIVE_MEDIA_DIRS)
+
+    def test_low_disk_admission_preserves_quota_and_localized_notice(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary:
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.add(200)
+                store.set_language(200, language)
+                service = bot.Bot(MagicMock(), store)
+                with patch.object(bot, "media_disk_available", return_value=False), patch.object(store, "consume") as consume:
+                    service.handle_update({"message": {"message_id": 1, "chat": {"id": 200, "type": "private"},
+                                                       "from": {"id": 200}, "text": "https://x.com/example/status/123456789"}})
+                consume.assert_not_called()
+                self.assertFalse(store.data["pending_jobs"])
+                self.assertTrue(service.jobs.empty())
+                service.api.send_message.assert_called_with(200, bot.public_text(language, "queue_full"), 1)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_extractor_cache_is_temporary_and_not_sent_as_media(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = bot.run_command([sys.executable, "-c", "import os; print(os.environ['XDG_CACHE_HOME'])"],
+                                     timeout=5, directory=directory)
+            self.assertEqual(result.stdout.strip(), str(directory / ".cache"))
+            cache = directory / ".cache" / "gallery-dl"
+            cache.mkdir(parents=True)
+            (cache / "cache.sqlite3").write_bytes(b"cache")
+            media = directory / "image.jpg"
+            media.write_bytes(b"image")
+            self.assertEqual(bot.media_files(directory), [media])
+
+    def test_running_extractor_stops_when_free_space_is_low(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            bot.shutil, "disk_usage", return_value=MagicMock(free=bot.MIN_FREE_DISK_BYTES - 1)
+        ):
+            with self.assertRaisesRegex(ValueError, "directory limit"):
+                bot.run_command([sys.executable, "-c", "import time; time.sleep(10)"],
+                                timeout=5, directory=Path(temporary))
+
     def test_extractor_stops_when_temporary_media_exceeds_limit(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             bot, "MAX_TOTAL_BYTES", 1024
@@ -3477,7 +3598,7 @@ class PerformanceSafetyTests(unittest.TestCase):
             service.maybe_send_daily_report = MagicMock()
             with patch.object(bot, "load_update_offset", return_value=0), patch.object(
                 bot, "save_update_offset"
-            ) as save_offset:
+            ) as save_offset, patch.object(bot, "cleanup_stale_media"):
                 service.start()
 
             self.assertEqual(service.handle_update.call_count, 2)
