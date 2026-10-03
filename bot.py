@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.6"
+APP_VERSION = "3.3.7"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -412,10 +412,10 @@ ADMIN_TEXT = {
     "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
     "status": ("系統狀態", "System status", "システム状態", "系统状态"),
     "status_runtime": (
-        "服務：{service}\n運行時間：{uptime}\n處理佇列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
-        "Service: {service}\nUptime: {uptime}\nQueue: {queue_size}/{queue_limit} ({queue_percent}%)\n\n",
-        "サービス：{service}\n稼働時間：{uptime}\n待機列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
-        "服务：{service}\n运行时间：{uptime}\n处理队列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
+        "服務：{service}\n運行時間：{uptime}\n\n",
+        "Service: {service}\nUptime: {uptime}\n\n",
+        "サービス：{service}\n稼働時間：{uptime}\n\n",
+        "服务：{service}\n运行时间：{uptime}\n\n",
     ),
     "status_users": (
         "用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n今日活躍：{active_today}\n今日用量：{interactions}\n已達額度：{exhausted}\n",
@@ -3569,13 +3569,10 @@ class Bot:
             and int(item.get("usage_count", 0) or 0)
             >= int(item.get("quota", 0))
         )
-        queue_size = self.jobs.qsize()
-        queue_percent = round(queue_size * 100 / MAX_QUEUE) if MAX_QUEUE else 0
         text = admin_text("status") + "\n\n"
         text += admin_text("status_runtime").format(
             service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
             uptime=format_duration(time.time() - self.started_at),
-            queue_size=queue_size, queue_limit=MAX_QUEUE, queue_percent=queue_percent,
         )
         text += admin_text("status_users").format(
             total=len(records), ordinary=ordinary, administrators=administrators,

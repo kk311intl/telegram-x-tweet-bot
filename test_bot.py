@@ -1374,6 +1374,8 @@ class MenuTests(unittest.TestCase):
                 self.assertNotIn(bot.BOT_TIMEZONE_NAME, status)
                 self.assertNotIn("00:00", status)
                 self.assertNotIn("22:00", status)
+                for label in ("處理佇列", "Queue:", "待機列", "处理队列"):
+                    self.assertNotIn(label, status)
                 counts = bot.admin_text("status_users").format(
                     total=2, ordinary=1, administrators=0, initialized=0, pending=0,
                     banned=0, active_today=0, interactions=0, exhausted=0,
