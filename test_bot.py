@@ -157,6 +157,57 @@ class URLTests(unittest.TestCase):
 
 
 class ConfigurationCLITests(unittest.TestCase):
+    def test_status_reports_effective_default_and_source_without_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            for state, expected in (({"users": {}, "default_daily_limit": 100}, "default_daily_limit=100 source=acl"), ({"users": {}}, "default_daily_limit=75 source=env")):
+                path.write_text(json.dumps(state), encoding="utf-8")
+                before = path.read_bytes()
+                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli.subprocess, "run"), patch("builtins.print") as output:
+                    self.assertEqual(config_cli.main(), 0)
+                    output.assert_any_call(expected)
+                self.assertEqual(path.read_bytes(), before)
+            for invalid in (0, 100001, True, "100", None):
+                path.write_text(json.dumps({"default_daily_limit": invalid}), encoding="utf-8")
+                before = path.read_bytes()
+                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={}), patch.object(config_cli, "STATE_PATH", path), patch("builtins.print") as output:
+                    self.assertEqual(config_cli.main(), 1)
+                    output.assert_any_call("state=invalid")
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_export_uses_configured_environment_default_without_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            bot.ACLStore(path, 100)
+            before = path.read_bytes()
+            with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "export-access"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli, "APP_DIR", Path(__file__).parent), patch("builtins.print") as output:
+                self.assertEqual(config_cli.main(), 0)
+                snapshot = json.loads(output.call_args.args[0])
+            self.assertEqual(snapshot["default_daily_limit"], 75)
+            self.assertEqual(snapshot["default_daily_limit_updated_at"], 0)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_verify_deploy_checks_default_limit_in_primary_and_backup(self):
+        script = (Path(__file__).parent / "verify_deploy.sh").read_text(encoding="utf-8")
+        validator = script.split('echo "STATE_JSON"\n', 1)[1].split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            base = {"users": {}, "pending_applications": {}}
+            cases = [({}, 0), ({"default_daily_limit": 1}, 0), ({"default_daily_limit": 100000, "default_daily_limit_updated_at": 0}, 0)]
+            cases += [({"default_daily_limit": value}, 1) for value in (0, 100001, True, "100", None)]
+            cases += [({"default_daily_limit": 100, "default_daily_limit_updated_at": value}, 1) for value in (-1, True, "1", None)]
+            cases += [({"default_daily_limit_updated_at": 1}, 1)]
+            for values, code in cases:
+                path.write_text(json.dumps({**base, **values}), encoding="utf-8")
+                before = path.read_bytes()
+                result = subprocess.run([sys.executable, "-B", "-"], input=validator, capture_output=True, text=True, env={**os.environ, "STATE_DIR": temporary, "PYTHONPATH": str(Path(__file__).parent)})
+                self.assertEqual(result.returncode, code, values)
+                self.assertEqual(path.read_bytes(), before)
+            path.write_text(json.dumps(base), encoding="utf-8")
+            path.with_name("acl.json.bak").write_text(json.dumps({**base, "default_daily_limit": 0}), encoding="utf-8")
+            result = subprocess.run([sys.executable, "-B", "-"], input=validator, capture_output=True, text=True, env={**os.environ, "STATE_DIR": temporary, "PYTHONPATH": str(Path(__file__).parent)})
+            self.assertEqual(result.returncode, 1)
+
     def test_owner_assignment_cannot_replace_claimed_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "acl.json"
@@ -291,7 +342,8 @@ class ACLTests(unittest.TestCase):
             store.add(900)
             self.assertEqual([store.quota(user_id) for user_id in (600, 700, 800, 900)], [100] * 4)
             self.assertTrue(store.is_admin(801))
-            self.assertNotIn("default_daily_limit", store.export_access())
+            self.assertEqual(store.export_access()["default_daily_limit"], 100)
+            self.assertEqual(set(store.export_access()), {"version", "users", "default_daily_limit", "default_daily_limit_updated_at"})
             store.set_quota(250, 50)
             self.assertEqual(store.set_default_daily_limit(100, 200), 6)
             self.assertEqual([store.quota(user_id) for user_id in (200, 201, 600, 700, 800, 900)], [200] * 6)
@@ -380,6 +432,47 @@ class ACLTests(unittest.TestCase):
             self.assertEqual(first.quota(200), 200)
             self.assertEqual(second.import_access(older), 0)
             self.assertEqual(second.quota(200), 200)
+
+    def test_access_snapshot_restores_default_without_batch_updates_and_rejects_stale_default(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = bot.ACLStore(Path(temporary) / "source.json", 100)
+            target = bot.ACLStore(Path(temporary) / "target.json", 100)
+            source.set_default_daily_limit(100, 100)
+            snapshot = source.export_access()
+            target.set_quota(200, 50)
+            target.set_quota(201, 150)
+            target.consume(200)
+            before = json.loads(json.dumps(target.data))
+            self.assertEqual(target.import_access(snapshot), 0)
+            self.assertEqual(target.data["users"], before["users"])
+            self.assertEqual(bot.ACLStore(target.path, 100).default_daily_limit, 100)
+            target.add(202)
+            self.assertEqual(target.quota(202), 100)
+            target.set_default_daily_limit(100, 200)
+            self.assertEqual(target.import_access(snapshot), 0)
+            self.assertEqual(target.default_daily_limit, 200)
+            legacy = {"version": 1, "users": []}
+            target.import_access(legacy)
+            self.assertEqual(target.default_daily_limit, 200)
+            fresh = bot.ACLStore(Path(temporary) / "fresh.json", 100)
+            fresh.import_access(bot.ACLStore.read_access_snapshot(target.path))
+            self.assertEqual(fresh.default_daily_limit, 200)
+            self.assertEqual(fresh.quota(201), 150)
+
+    def test_access_snapshot_rejects_invalid_defaults_before_any_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, 50)
+            before = store.path.read_bytes()
+            cases = [{"default_daily_limit": value} for value in (0, 100001, True, "100", None)]
+            cases += [{"default_daily_limit": 100, "default_daily_limit_updated_at": value} for value in (-1, True, "1", None)]
+            cases += [{"default_daily_limit_updated_at": 1}]
+            for values in cases:
+                with self.assertRaises(ValueError):
+                    store.import_access({"version": 1, "users": [{"user_id": 200, "quota": 100, "updated_at": 2**63}], **values})
+                self.assertEqual(store.path.read_bytes(), before)
+                self.assertEqual(store.quota(200), 50)
+                self.assertNotIn("default_daily_limit", store.data)
 
     def test_access_snapshot_only_changes_id_and_quota(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -593,8 +686,8 @@ class ACLTests(unittest.TestCase):
                 service.maybe_send_daily_report()
             text = api.send_message.call_args.args[1]
             self.assertIn(f"每日使用簡報（{bot.bot_date(report_time)}，{bot.BOT_TIMEZONE_NAME}）", text)
-            self.assertIn("活躍使用者：1", text)
-            self.assertIn("處理次數：1", text)
+            self.assertIn("活躍用戶：1", text)
+            self.assertIn("用量：1", text)
             self.assertIn("待審批：0", text)
             self.assertIsNone(api.send_message.call_args.kwargs["reply_markup"])
             service.stop()
@@ -790,6 +883,26 @@ class CookieTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
+    def test_usage_labels_and_chinese_user_terms_are_consistent_in_three_languages(self):
+        for language, usage_label, old_label in (("zh", "用量", "處理次數"), ("ja", "使用量", "処理回数"), ("en", "Usage", "Processed")):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.add(200)
+                store.consume(200)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                service.maybe_send_daily_report(force=True)
+                report = api.send_message.call_args.args[1]
+                status = service.system_status_text(100)
+                page = service.users_page(store.records(), 0)[0]
+                card = service.user_search_result(200, 100)[0]
+                for text in (report, status, page, card):
+                    self.assertIn(usage_label, text)
+                    self.assertNotIn(old_label, text)
+                    self.assertNotIn("使用者", text)
+                service.stop()
+        self.assertTrue(all("使用者" not in values[0] for values in bot.ADMIN_TEXT.values()))
+
     def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
         for language in ("zh", "en", "ja"):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
@@ -1208,7 +1321,7 @@ class MenuTests(unittest.TestCase):
             })
 
             api.edit_message.assert_called_once_with(
-                100, 77, "使用者管理", bot.user_menu_keyboard()
+                100, 77, "用戶管理", bot.user_menu_keyboard()
             )
             api.send_message.assert_not_called()
 
@@ -1278,7 +1391,7 @@ class MenuTests(unittest.TestCase):
             self.assertIn("服務：正常", status)
             self.assertIn("普通：1", status)
             self.assertIn("待審批：1", status)
-            self.assertIn("今日互動：1", status)
+            self.assertIn("今日用量：1", status)
             self.assertIn("已達額度：1", status)
             self.assertEqual(
                 bot.status_keyboard()["inline_keyboard"][0][0]["callback_data"],
@@ -1557,7 +1670,7 @@ class MenuTests(unittest.TestCase):
 
             self.assertEqual(store.quota(987654321), 50)
             self.assertFalse(store.is_admin(987654321))
-            self.assertIn("普通使用者", api.edit_message.call_args.args[2])
+            self.assertIn("普通用戶", api.edit_message.call_args.args[2])
 
     def test_owner_can_cancel_unknown_user_creation(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -119,6 +119,15 @@ def validate_acl(payload, label):
     ):
         if setting in payload and not isinstance(payload[setting], bool):
             raise SystemExit(f"{label} contains an invalid {setting}")
+    if "default_daily_limit" in payload:
+        limit = payload["default_daily_limit"]
+        if type(limit) is not int or not 1 <= limit <= 100000:
+            raise SystemExit(f"{label} contains an invalid default daily limit")
+        updated_at = payload.get("default_daily_limit_updated_at", 0)
+        if type(updated_at) is not int or updated_at < 0:
+            raise SystemExit(f"{label} contains an invalid default daily limit timestamp")
+    elif "default_daily_limit_updated_at" in payload:
+        raise SystemExit(f"{label} contains a default timestamp without a limit")
 
     used_today = 0
     active_today = 0
@@ -227,7 +236,8 @@ fi
 
 echo "CONFIG_STATUS"
 x-tweet-bot-config status
+config_rc=$?
 
-if (( text_rc != 0 || media_rc != 0 || state_rc != 0 || listener_rc != 0 )); then
+if (( text_rc != 0 || media_rc != 0 || state_rc != 0 || listener_rc != 0 || config_rc != 0 )); then
   exit 1
 fi

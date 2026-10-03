@@ -29,7 +29,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -149,11 +149,11 @@ def save_update_offset(offset: int, path: Path = UPDATE_OFFSET_PATH) -> None:
     atomic_write_text(path, json.dumps({"offset": max(0, int(offset))}) + "\n")
 
 OWNER_BUTTONS = {
-    "👤 使用者管理": "/usermenu",
+    "👤 用戶管理": "/usermenu",
     "🍪 Cookies 管理": "/cookiemenu",
     "📊 系統狀態": "/status",
     "ℹ️ 使用說明": "/help",
-    "👥 使用者列表": "/users",
+    "👥 用戶列表": "/users",
     "📝 申請審批": "/requests",
     "🔐 用戶權限修改": "/finduser",
     "🍪 匯入 Cookies": "/cookies",
@@ -299,8 +299,8 @@ def public_help_text(language: str) -> str:
 ADMIN_TEXT = {
     "menu": ("管理選單", "Management menu", "管理メニュー"),
     "menu_ready": ("管理選單已載入。", "Management menu loaded.", "管理メニューを表示しました。"),
-    "users": ("使用者管理", "User management", "ユーザー管理"),
-    "user_list": ("使用者列表", "Users", "ユーザー一覧"),
+    "users": ("用戶管理", "User management", "ユーザー管理"),
+    "user_list": ("用戶列表", "Users", "ユーザー一覧"),
     "requests": ("申請審批", "Access requests", "利用申請"),
     "permissions": ("用戶權限修改", "Change access", "権限を変更"),
     "cookies": ("Cookies 管理", "Cookies management", "Cookies 管理"),
@@ -370,7 +370,7 @@ ADMIN_TEXT = {
     "page_changed": ("已切換頁面。", "Page changed.", "ページを切り替えました。"),
     "current_page": ("目前頁面", "Current page", "現在のページ"),
     "cancelled": ("已取消。", "Cancelled.", "キャンセルしました。"),
-    "create_cancelled": ("已取消建立使用者。", "User creation cancelled.", "ユーザー作成を中止しました。"),
+    "create_cancelled": ("已取消建立用戶。", "User creation cancelled.", "ユーザー作成を中止しました。"),
     "change_cancelled": ("已取消修改權限。", "Access change cancelled.", "権限の変更を中止しました。"),
     "quota_missing": ("缺少額度。", "Missing limit.", "上限値がありません。"),
     "default_quota_missing": ("缺少預設額度。", "Missing default limit.", "初期上限値がありません。"),
@@ -379,9 +379,9 @@ ADMIN_TEXT = {
     "permission_missing": ("缺少權限值。", "Missing access value.", "権限値がありません。"),
     "permission_invalid": ("權限值無效。", "Invalid access value.", "権限値が無効です。"),
     "quota_range": ("額度必須是 -1、0 或 1 至 100000。", "The limit must be -1, 0, or 1–100000.", "上限値は -1、0、または 1～100000 にしてください。"),
-    "user_created": ("使用者已建立。", "User created.", "ユーザーを作成しました。"),
+    "user_created": ("用戶已建立。", "User created.", "ユーザーを作成しました。"),
     "user_exists": ("該 User ID 已存在，未覆寫現有資料。", "That User ID already exists; no data was overwritten.", "その User ID は既に存在します。データは上書きしていません。"),
-    "user_missing": ("使用者已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。"),
+    "user_missing": ("用戶已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。"),
     "permission_changed": ("權限已修改。", "Access changed.", "権限を変更しました。"),
     "id_invalid": ("User ID 範圍無效。", "User ID is out of range.", "User ID が有効範囲外です。"),
     "status_refreshed": ("狀態已更新。", "Status refreshed.", "状態を更新しました。"),
@@ -391,7 +391,7 @@ ADMIN_TEXT = {
     "auto_owner_only": ("自動通過只允許所有者切換。", "Only the owner can change auto-approval.", "自動承認の切り替えは所有者のみ可能です。"),
     "cookie_owner_only": ("Cookies 開關只允許所有者切換。", "Only the owner can change the Cookies setting.", "Cookies 設定の切り替えは所有者のみ可能です。"),
     "cookie_cleared": ("X/Twitter Cookies 已清除。", "X/Twitter Cookies cleared.", "X/Twitter の Cookies を削除しました。"),
-    "approve_missing": ("申請不存在或使用者已被封鎖。", "Request not found or user blocked.", "申請がないか、ユーザーがブロックされています。"),
+    "approve_missing": ("申請不存在或用戶已被封鎖。", "Request not found or user blocked.", "申請がないか、ユーザーがブロックされています。"),
     "choose_access": ("選擇用戶權限。", "Choose access.", "権限を選択してください。"),
     "owner_cannot_ban": ("不能封鎖所有者。", "The owner cannot be blocked.", "所有者はブロックできません。"),
     "owner_cannot_change": ("不能修改所有者。", "The owner cannot be changed.", "所有者は変更できません。"),
@@ -501,6 +501,12 @@ class ACLStore:
             if type(limit) is not int or not 1 <= limit <= MAX_DAILY_LIMIT:
                 raise ValueError("invalid default daily limit")
             data["default_daily_limit"] = limit
+            updated_at = raw.get("default_daily_limit_updated_at", migration_timestamp)
+            if type(updated_at) is not int or updated_at < 0:
+                raise ValueError("invalid default daily limit timestamp")
+            data["default_daily_limit_updated_at"] = updated_at
+        elif "default_daily_limit_updated_at" in raw:
+            raise ValueError("default daily limit timestamp without a limit")
         legacy_allowed = {int(value) for value in raw.get("allowed_user_ids", [])}
         legacy_banned = {int(value) for value in raw.get("banned_user_ids", [])}
         known_ids = (
@@ -548,12 +554,12 @@ class ACLStore:
         self.data = data
 
     @classmethod
-    def read_access_snapshot(cls, path: Path) -> dict[str, Any]:
+    def read_access_snapshot(cls, path: Path, default_daily_limit: int | None = None) -> dict[str, Any]:
         # Read exactly one atomic file generation; never migrate or write state.
         store = cls.__new__(cls)
         with path.open(encoding="utf-8") as source:
             store._apply_state(json.load(source), os.fstat(source.fileno()).st_mtime_ns)
-        return store.export_access()
+        return store.export_access(default_daily_limit)
 
     def finish_job(self, chat_id: int, message_id: int) -> None:
         with self.lock:
@@ -610,7 +616,10 @@ class ACLStore:
     def _quota_timestamp() -> int:
         return time.time_ns()
 
-    def export_access(self) -> dict[str, Any]:
+    def export_access(self, default_daily_limit: int | None = None) -> dict[str, Any]:
+        limit = self.data.get("default_daily_limit", self.default_daily_limit if default_daily_limit is None else default_daily_limit)
+        if type(limit) is not int or not 1 <= limit <= MAX_DAILY_LIMIT:
+            raise ValueError("invalid default daily limit")
         users = []
         for key, record in self.data["users"].items():
             user_id = int(key)
@@ -624,7 +633,12 @@ class ACLStore:
                     "updated_at": int(record.get("quota_updated_at", 0) or 0),
                 }
             )
-        return {"version": 1, "users": sorted(users, key=lambda item: item["user_id"])}
+        return {
+            "version": 1,
+            "users": sorted(users, key=lambda item: item["user_id"]),
+            "default_daily_limit": limit,
+            "default_daily_limit_updated_at": self.data.get("default_daily_limit_updated_at", 0),
+        }
 
     def import_access(self, snapshot: dict[str, Any]) -> int:
         if not isinstance(snapshot, dict) or snapshot.get("version") != 1:
@@ -632,6 +646,16 @@ class ACLStore:
         users = snapshot.get("users")
         if not isinstance(users, list):
             raise ValueError("access snapshot users must be a list")
+        has_default = "default_daily_limit" in snapshot
+        default_limit = snapshot.get("default_daily_limit")
+        default_updated_at = snapshot.get("default_daily_limit_updated_at", 0)
+        if has_default:
+            if type(default_limit) is not int or not 1 <= default_limit <= MAX_DAILY_LIMIT:
+                raise ValueError("invalid default daily limit")
+            if type(default_updated_at) is not int or default_updated_at < 0:
+                raise ValueError("invalid default daily limit timestamp")
+        elif "default_daily_limit_updated_at" in snapshot:
+            raise ValueError("default daily limit timestamp without a limit")
         validated = []
         for item in users:
             if not isinstance(item, dict):
@@ -652,6 +676,13 @@ class ACLStore:
         changed = 0
         dirty = False
         with self.lock:
+            if has_default and (
+                "default_daily_limit" not in self.data
+                or default_updated_at > self.data.get("default_daily_limit_updated_at", 0)
+            ):
+                self.data["default_daily_limit"] = default_limit
+                self.data["default_daily_limit_updated_at"] = default_updated_at
+                dirty = True
             for user_id, quota, updated_at in validated:
                 key = str(user_id)
                 record = self.data["users"].get(key)
@@ -706,6 +737,8 @@ class ACLStore:
             self.data["default_daily_limit"] = limit
             changed = 0
             timestamp = self._quota_timestamp()
+            if previous_limit != limit or "default_daily_limit_updated_at" not in self.data:
+                self.data["default_daily_limit_updated_at"] = timestamp
             for key, record in self.data["users"].items():
                 quota = self.quota(int(key))
                 if (quota != previous_limit or quota == limit
@@ -2863,7 +2896,7 @@ class Bot:
             if is_owner and not self.acl.has_user(target):
                 self.api.send_message(
                     chat_id,
-                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {self.acl.default_daily_limit} 建立此使用者？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {self.acl.default_daily_limit}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {self.acl.default_daily_limit} で作成しますか？"}[OWNER_LANGUAGE],
+                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {self.acl.default_daily_limit} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {self.acl.default_daily_limit}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {self.acl.default_daily_limit} で作成しますか？"}[OWNER_LANGUAGE],
                     message_id,
                     confirm_new_user_keyboard(target, self.acl.default_daily_limit),
                 )
@@ -2904,7 +2937,7 @@ class Bot:
                 if not self.acl.has_user(target):
                     self.api.send_message(
                         chat_id,
-                        {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {quota} 建立此使用者？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {quota}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {quota} で作成しますか？"}[OWNER_LANGUAGE],
+                        {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {quota} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {quota}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {quota} で作成しますか？"}[OWNER_LANGUAGE],
                         message_id,
                         confirm_new_user_keyboard(target, quota),
                     )
@@ -3213,9 +3246,9 @@ class Bot:
         report_date = bot_date(now)
         active, total = self.acl.usage_summary(report_date)
         text = {
-            "zh": f"每日使用簡報（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活躍使用者：{active}\n處理次數：{total}\n待審批：{len(records)}",
-            "en": f"Daily usage report ({report_date}, {BOT_TIMEZONE_NAME})\n\nActive users: {active}\nProcessed requests: {total}\nPending approvals: {len(records)}",
-            "ja": f"日次利用レポート（{report_date}、{BOT_TIMEZONE_NAME}）\n\n利用ユーザー：{active}\n処理回数：{total}\n審査待ち：{len(records)}",
+            "zh": f"每日使用簡報（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活躍用戶：{active}\n用量：{total}\n待審批：{len(records)}",
+            "en": f"Daily usage report ({report_date}, {BOT_TIMEZONE_NAME})\n\nActive users: {active}\nUsage: {total}\nPending approvals: {len(records)}",
+            "ja": f"日次利用レポート（{report_date}、{BOT_TIMEZONE_NAME}）\n\n利用ユーザー：{active}\n使用量：{total}\n審査待ち：{len(records)}",
         }[OWNER_LANGUAGE]
         keyboard = pending_keyboard(records, 0) if records else None
         self.api.send_message(
@@ -3232,13 +3265,13 @@ class Bot:
         page = max(0, min(page, pages - 1))
         start = page * MANAGEMENT_PAGE_SIZE
         title = {
-            "zh": f"使用者列表（第 {page + 1}/{pages} 頁，共 {len(records)} 位）",
+            "zh": f"用戶列表（第 {page + 1}/{pages} 頁，共 {len(records)} 位）",
             "en": f"Users (page {page + 1}/{pages}, {len(records)} total)",
             "ja": f"ユーザー一覧（{page + 1}/{pages} ページ、計 {len(records)} 人）",
         }[OWNER_LANGUAGE]
         lines = [
             title,
-            {"zh": "ID｜狀態｜額度｜今日使用｜名稱", "en": "ID | Status | Limit | Used today | Name", "ja": "ID｜状態｜上限｜本日の利用｜名前"}[OWNER_LANGUAGE],
+            {"zh": "ID｜狀態｜額度｜今日用量｜名稱", "en": "ID | Status | Limit | Usage today | Name", "ja": "ID｜状態｜上限｜本日の使用量｜名前"}[OWNER_LANGUAGE],
         ]
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             user_id = int(record["user_id"])
@@ -3313,16 +3346,16 @@ class Bot:
         elif quota == 0:
             status, quota_text = admin_text("initialized"), "0"
         else:
-            status, quota_text = ("普通使用者" if OWNER_LANGUAGE == "zh" else admin_text("ordinary")), str(quota)
+            status, quota_text = ("普通用戶" if OWNER_LANGUAGE == "zh" else admin_text("ordinary")), str(quota)
         can_modify = (
             actor_id is None
             or self.target_management_error(actor_id, target) is None
         )
         used = int(record.get("usage_count", 0) or 0)
         summary = {
-            "zh": f"{user_label(record)}\nUser ID：{target}\n狀態：{status}\n每日額度：{quota_text}\n今日已使用：{used} 次",
-            "en": f"{user_label(record)}\nUser ID: {target}\nStatus: {status}\nDaily limit: {quota_text}\nUsed today: {used}",
-            "ja": f"{user_label(record)}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の利用：{used} 回",
+            "zh": f"{user_label(record)}\nUser ID：{target}\n狀態：{status}\n每日額度：{quota_text}\n今日用量：{used} 次",
+            "en": f"{user_label(record)}\nUser ID: {target}\nStatus: {status}\nDaily limit: {quota_text}\nUsage today: {used}",
+            "ja": f"{user_label(record)}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の使用量：{used} 回",
         }[OWNER_LANGUAGE]
         return (
             summary,
@@ -3343,7 +3376,7 @@ class Bot:
             self.api.send_message(
                 chat_id,
                 {
-                    "zh": f"找不到 User ID {target}。此使用者可能尚未與 Bot 互動。",
+                    "zh": f"找不到 User ID {target}。此用戶可能尚未與 Bot 互動。",
                     "en": f"User ID {target} was not found. They may not have interacted with the bot yet.",
                     "ja": f"User ID {target} が見つかりません。まだ Bot を利用していない可能性があります。",
                 }[OWNER_LANGUAGE],
@@ -3401,7 +3434,7 @@ class Bot:
                 f"Uptime: {format_duration(time.time() - self.started_at)}\n"
                 f"Queue: {queue_size}/{MAX_QUEUE} ({queue_percent}%)\n\n"
                 f"Users\nRecords: {len(records)} | Regular: {ordinary} | Administrators: {administrators} | Initialized: {initialized} | Pending: {pending} | Blocked: {banned}\n"
-                f"Active today: {active_today} | Processed today: {interactions} | At quota: {exhausted}\n"
+                f"Active today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n"
                 f"Usage reset: {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\nDaily report: {DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
                 f"X Cookies: {'Configured' if cookies_set else 'Not configured'}\n"
                 f"Cookies for regular users: {state(self.acl.ordinary_user_cookies_enabled)}\n"
@@ -3417,7 +3450,7 @@ class Bot:
                 f"稼働時間：{format_duration(time.time() - self.started_at)}\n"
                 f"待機列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
                 f"ユーザー\n記録：{len(records)}｜一般：{ordinary}｜管理者：{administrators}｜初期化：{initialized}｜審査待ち：{pending}｜ブロック：{banned}\n"
-                f"本日の利用者：{active_today}｜処理回数：{interactions}｜上限到達：{exhausted}\n"
+                f"本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n"
                 f"利用回数のリセット：{DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n日次レポート：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
                 f"X Cookies：{'設定済み' if cookies_set else '未設定'}\n"
                 f"一般ユーザーの Cookies：{state(self.acl.ordinary_user_cookies_enabled)}\n"
@@ -3431,10 +3464,10 @@ class Bot:
             f"服務：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作執行緒未運行'}\n"
             f"運行時間：{format_duration(time.time() - self.started_at)}\n"
             f"處理佇列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
-            "使用者\n"
+            "用戶\n"
             f"總記錄：{len(records)}｜普通：{ordinary}｜管理員：{administrators}｜"
             f"初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n"
-            f"今日活躍：{active_today}｜今日互動：{interactions}｜已達額度：{exhausted}\n"
+            f"今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n"
             f"統計重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
             f"每日簡報：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
             f"X Cookies：{'已設定' if COOKIES_PATH.exists() else '未設定'}\n"

@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.2.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.2.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -45,6 +45,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 Owner 可在「預設額度」輸入 1–100000 並確認，只修改每日額度等於修改前預設值的已授權普通用戶；其他額度保持不變，新獲授權或新建立的普通用戶使用新值。例如預設 50 改為 100，現有額度 50 改為 100，額度 200 不變。初始化、待審、封鎖和管理員不變，當日用量不重置。此設定保存在 ACL，重啟後仍有效，優先於 `DEFAULT_DAILY_LIMIT`。
 
+`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。
+
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
 自有原始碼 © 2026 kk311intl，以 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）授權。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 各自遵循上游授權；再分發含依賴的執行包時須另外核對其義務。
@@ -90,6 +92,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 所有者は「標準上限」に 1～100000 を入力し、確認すると、変更前の標準上限と同じ日次上限の承認済み一般ユーザーのみ更新できます。他の上限は維持し、新しく承認・作成する一般ユーザーには新しい値を使います。例えば標準上限を 50 から 100 にすると、上限 50 のユーザーは 100 に変わり、上限 200 のユーザーは変わりません。初期状態、審査待ち、ブロック中のユーザーと管理者は対象外で、当日の使用量はリセットしません。設定は ACL に保存され、再起動後も維持され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
+`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。
+
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
 自作コードは © 2026 kk311intl、[GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）で公開します。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` は各自の上流ライセンスに従います。依存関係を含む実行形式を再配布する場合は、その義務も確認してください。
@@ -134,6 +138,8 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 Only the owner can open or change Advanced settings, including Implementation details. Administrators can still manage regular users and view system status.
 
 Under Default limit, the owner can enter 1–100000 and confirm to update only approved regular users whose daily quota matches the previous default. Other quotas stay unchanged; newly approved or created regular users use the new value. For example, changing the default from 50 to 100 updates users with a quota of 50 to 100, while a quota of 200 stays unchanged. Initialized, pending, blocked, and administrator accounts are excluded; today's usage is not reset. The setting is saved in the ACL, survives restarts, and takes precedence over `DEFAULT_DAILY_LIMIT`.
+
+`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 

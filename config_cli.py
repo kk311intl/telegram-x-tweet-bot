@@ -41,6 +41,19 @@ def restart() -> None:
     subprocess.run(["systemctl", "restart", "x-tweet-telegram-bot.service"], check=True)
 
 
+def default_limit_status(values: dict[str, str], state: dict) -> tuple[int, str]:
+    if "default_daily_limit" in state:
+        limit = state["default_daily_limit"]
+        if type(limit) is not int or not 1 <= limit <= 100000:
+            raise ValueError("invalid default daily limit")
+        return limit, "acl"
+    try:
+        limit = int(values.get("DEFAULT_DAILY_LIMIT", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    return max(1, min(limit, 100000)), "env"
+
+
 def telegram_bot_username(token: str) -> str:
     with urllib.request.urlopen(
         f"https://api.telegram.org/bot{token}/getMe", timeout=15
@@ -135,7 +148,8 @@ def main() -> int:
     elif command == "export-access":
         sys.path.insert(0, str(APP_DIR))
         from bot import ACLStore
-        print(json.dumps(ACLStore.read_access_snapshot(STATE_PATH), ensure_ascii=False))
+        limit, _source = default_limit_status(values, {})
+        print(json.dumps(ACLStore.read_access_snapshot(STATE_PATH, limit), ensure_ascii=False))
     elif command == "import-access":
         if subprocess.run(["systemctl", "is-active", "--quiet", "x-tweet-telegram-bot.service"]).returncode == 0:
             raise SystemExit("Stop the Bot before restoring access data")
@@ -151,6 +165,8 @@ def main() -> int:
         if STATE_PATH.exists():
             try:
                 state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                limit, source = default_limit_status(values, state)
+                print(f"default_daily_limit={limit} source={source}")
                 users = state.get("users") or {}
                 pending = state.get("pending_applications") or {}
                 quotas = [record.get("quota", 0) for record in users.values()]
@@ -178,7 +194,10 @@ def main() -> int:
                 )
             except (OSError, TypeError, ValueError, json.JSONDecodeError):
                 print("state=invalid")
+                return 1
         else:
+            limit, source = default_limit_status(values, {})
+            print(f"default_daily_limit={limit} source={source}")
             print(
                 "owner="
                 + ("bootstrap configured" if values.get("OWNER_USER_ID") else "not configured")
