@@ -17,6 +17,8 @@ STATE_PATH = Path("/var/lib/x-tweet-telegram-bot/acl.json")
 COOKIE_PATH = Path("/var/lib/x-tweet-telegram-bot/cookies.txt")
 COOKIE_ALERT_PATH = Path("/var/lib/x-tweet-telegram-bot/cookie-alert.json")
 APP_DIR = Path("/opt/x-tweet-telegram-bot")
+sys.path.insert(0, str(APP_DIR))
+from bot import atomic_write_text, validate_cookie_file, MAX_COOKIE_BYTES
 
 
 def load_env() -> dict[str, str]:
@@ -30,11 +32,9 @@ def load_env() -> dict[str, str]:
 
 
 def save_env(values: dict[str, str]) -> None:
-    ENV_PATH.write_text(
+    atomic_write_text(ENV_PATH,
         "\n".join(f"{key}={value}" for key, value in sorted(values.items())) + "\n",
-        encoding="utf-8",
     )
-    os.chmod(ENV_PATH, 0o600)
 
 
 def restart() -> None:
@@ -127,12 +127,12 @@ def main() -> int:
         if len(sys.argv) != 3:
             raise SystemExit("Usage: x-tweet-bot-config set-cookies <cookies.txt>")
         source = Path(sys.argv[2]).resolve()
-        first_line = source.read_text(encoding="utf-8", errors="replace").splitlines()[0]
-        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
-            raise SystemExit("cookies.txt must use Netscape format")
-        COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, COOKIE_PATH)
-        os.chmod(COOKIE_PATH, 0o600)
+        try:
+            with source.open("rb") as handle:
+                text = validate_cookie_file(handle.read(MAX_COOKIE_BYTES + 1))
+        except (OSError, ValueError):
+            raise SystemExit("Invalid cookies.txt: use a UTF-8 Netscape file with X/Twitter cookies, up to 1 MB") from None
+        atomic_write_text(COOKIE_PATH, text)
         shutil.chown(COOKIE_PATH, user="x-tweet-bot", group="x-tweet-bot")
         COOKIE_ALERT_PATH.unlink(missing_ok=True)
         restart()

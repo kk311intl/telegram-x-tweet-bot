@@ -66,7 +66,7 @@ if ! command -v uv >/dev/null 2>&1; then
   rm -rf -- "$bootstrap_venv"
 fi
 export UV_PYTHON_INSTALL_DIR="$INSTALL_DIR/python"
-uv python install 3.12
+(umask 022; uv python install 3.12)
 candidate_venv=$(mktemp -d "$INSTALL_DIR/.venv-candidate.XXXXXX")
 chmod 0755 "$candidate_venv"
 cleanup_candidate() {
@@ -75,9 +75,12 @@ cleanup_candidate() {
   fi
 }
 trap cleanup_candidate EXIT
-uv venv --python 3.12 "$candidate_venv"
-uv pip install --python "$candidate_venv/bin/python" \
-  -r "$SOURCE_DIR/requirements.txt"
+(
+  umask 022
+  uv venv --python 3.12 "$candidate_venv"
+  uv pip install --python "$candidate_venv/bin/python" \
+    -r "$SOURCE_DIR/requirements.txt"
+)
 
 PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
   "$SOURCE_DIR/bot.py" "$SOURCE_DIR/config_cli.py" "$SOURCE_DIR/test_bot.py"
@@ -85,6 +88,7 @@ PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
   cd "$SOURCE_DIR"
   PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m unittest -q test_bot.py
 )
+runuser -u x-tweet-bot -- "$candidate_venv/bin/python" -c 'import requests, PIL, yt_dlp, gallery_dl'
 
 deploy_targets=(
   "$INSTALL_DIR/bot.py"
@@ -162,6 +166,7 @@ for file in "${PROJECT_FILES[@]}"; do
 done
 
 if [[ ! -f /etc/x-tweet-telegram-bot.env ]]; then
+  install -o root -g root -m 0600 /dev/null /etc/x-tweet-telegram-bot.env
   cat >/etc/x-tweet-telegram-bot.env <<EOF
 BOOTSTRAP_CODE=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
 MAX_MEDIA_BYTES=47000000

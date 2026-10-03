@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -10,7 +10,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 > 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID 與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及四種介面語言（所有角色均自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
 
-這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括 Owner 與管理員）均可從 Language 選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
+這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括所有者與管理員）均可從 Language 選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
 
 需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換，並建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
 
@@ -30,21 +30,21 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | --- | --- | --- |
 | `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；用於每日額度與簡報。 |
 | `DAILY_RESET_HOUR` | `0` | 該時區每日換日的整點，0–23。 |
-| `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向 Owner 發送每日用量與待審摘要。 |
+| `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向所有者發送每日用量與待審摘要。 |
 | `DEFAULT_DAILY_LIMIT` | `50` | 未在 Bot 設定「預設額度」時，新獲授權普通用戶的每日額度，1–100000；修改此環境值不會批次改動既有額度。 |
 | `OWNER_CONTACT_URL` | 空白 | 可選的使用說明聯絡連結，如 `https://example.com/contact`；空白則不顯示。 |
 | `OWNER_CONTACT_LABEL` | 空白 | 可選的聯絡連結文字；空白時使用對應語言的預設文字。 |
 | `WORKER_COUNT` | `2` | 貼文處理並行數，範圍 1–8。 |
 
-其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。Owner 可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
+其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
 
-管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有 Owner 能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受 Owner 開關控制。
+管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
 
-高級選項（包括「實現方式」）僅 Owner 可開啟與修改；管理員可管理普通用戶及查看系統狀態，權限按角色生效，不再有管理模式開關。
+高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或返回選單會取消輸入。批次審批名單若已變更，須重新確認。
 
 Telegram 的簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文描述；這不影響 Bot 內的四語選擇。
 
-Owner 可在「預設額度」輸入 1–100000 並確認，只修改每日額度等於修改前預設值的已授權普通用戶；其他額度保持不變，新獲授權或新建立的普通用戶使用新值。例如預設 50 改為 100，現有額度 50 改為 100，額度 200 不變。初始化、待審、封鎖和管理員不變，當日用量不重置。此設定保存在 ACL，重啟後仍有效，優先於 `DEFAULT_DAILY_LIMIT`。
+「預設額度」接受 1–100000，確認後只更新沿用舊預設的正常普通用戶，新用戶採用新值。自訂額度、初始化、待審、封鎖和管理員不變，當日用量不重置。設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。
 
 `status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。
 
@@ -88,11 +88,11 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
-詳細設定（「実装方法」を含む）の表示・変更は所有者のみ。管理者は一般ユーザーの管理とシステム状態を確認できます。権限は役割で決まり、管理モードの切り替えはありません。
+詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` またはメニューへの移動で入力を中止します。一括承認の一覧が変わった場合は再確認が必要です。
 
 Telegram の紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、紹介文の簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
-所有者は「標準上限」に 1～100000 を入力し、確認すると、変更前の標準上限と同じ日次上限の承認済み一般ユーザーのみ更新できます。他の上限は維持し、新しく承認・作成する一般ユーザーには新しい値を使います。例えば標準上限を 50 から 100 にすると、上限 50 のユーザーは 100 に変わり、上限 200 のユーザーは変わりません。初期状態、審査待ち、ブロック中のユーザーと管理者は対象外で、当日の使用量はリセットしません。設定は ACL に保存され、再起動後も維持され、`DEFAULT_DAILY_LIMIT` より優先されます。
+「標準上限」は 1～100000 を指定し、確認すると旧標準値を使う承認済み一般ユーザーだけを更新します。新規ユーザーには新しい値を使います。独自の上限、初期状態、審査待ち、ブロック中のユーザー、管理者と当日の使用量は変更しません。設定は ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
 `status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。
 
@@ -136,11 +136,11 @@ You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WOR
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
-Only the owner can open or change Advanced settings, including Implementation details. Administrators can manage regular users and view system status. Permissions follow roles; there is no management-mode switch.
+Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or returning to a menu cancels input. If a batch approval list changes, review it again before approving.
 
 Telegram's short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these descriptions cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 
-Under Default limit, the owner can enter 1–100000 and confirm to update only approved regular users whose daily quota matches the previous default. Other quotas stay unchanged; newly approved or created regular users use the new value. For example, changing the default from 50 to 100 updates users with a quota of 50 to 100, while a quota of 200 stays unchanged. Initialized, pending, blocked, and administrator accounts are excluded; today's usage is not reset. The setting is saved in the ACL, survives restarts, and takes precedence over `DEFAULT_DAILY_LIMIT`.
+Default limit accepts 1–100000. Confirmation updates only approved regular users matching the old default; new users use the new value. Custom quotas, initialized, pending, blocked and administrator accounts, and today's usage stay unchanged. The value is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`.
 
 `status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries.
 

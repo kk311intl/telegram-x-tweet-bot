@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.3.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -394,7 +394,7 @@ ADMIN_TEXT = {
     "cancel": ("取消", "Cancel", "キャンセル", "取消"),
     "owner_account": ("所有者帳號", "Owner account", "所有者アカウント", "所有者账号"),
     "admin_read_only": ("管理員帳號（唯讀）", "Administrator (read-only)", "管理者（閲覧のみ）", "管理员账号（唯读）"),
-    "default_quota": ("預設許可 ({limit})", "Default ({limit})", "標準 ({limit})", "预设许可 ({limit})"),
+    "default_quota": ("預設額度 ({limit})", "Default limit ({limit})", "標準上限 ({limit})", "预设额度 ({limit})"),
     "default_limit": ("預設額度", "Default limit", "標準上限", "预设额度"),
     "default_limit_prompt": (
         "目前預設額度：{limit}。\n請輸入新的每日額度（1–100000）。",
@@ -424,8 +424,7 @@ ADMIN_TEXT = {
     "owner_only_cookies": ("Cookies 只允許所有者管理。", "Only the owner can manage Cookies.", "Cookies を管理できるのは所有者のみです。", "Cookies 只允许所有者管理。"),
     "admin_only": ("只有管理員可以執行此操作。", "Only administrators can do this.", "この操作は管理者のみ実行できます。", "只有管理员可以执行此操作。"),
     "menu_invalid_page": ("頁碼無效。", "Invalid page number.", "ページ番号が無効です。", "页码无效。"),
-    "page_changed": ("已切換頁面。", "Page changed.", "ページを切り替えました。", "已切换页面。"),
-    "current_page": ("目前頁面", "Current page", "現在のページ", "目前页面"),
+    "requests_changed": ("申請列表已變更，請確認後再操作。", "Requests changed. Review the updated list first.", "申請一覧が変わりました。確認してから操作してください。", "申请列表已变更，请确认后再操作。"),
     "cancelled": ("已取消。", "Cancelled.", "キャンセルしました。", "已取消。"),
     "create_cancelled": ("已取消建立用戶。", "User creation cancelled.", "ユーザー作成を中止しました。", "已取消建立用户。"),
     "change_cancelled": ("已取消修改權限。", "Access change cancelled.", "権限の変更を中止しました。", "已取消修改权限。"),
@@ -441,7 +440,6 @@ ADMIN_TEXT = {
     "user_missing": ("用戶已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。", "用户已不存在，未进行修改。"),
     "permission_changed": ("權限已修改。", "Access changed.", "権限を変更しました。", "权限已修改。"),
     "id_invalid": ("User ID 範圍無效。", "User ID is out of range.", "User ID が有効範囲外です。", "User ID 范围无效。"),
-    "status_refreshed": ("狀態已更新。", "Status refreshed.", "状態を更新しました。", "状态已更新。"),
     "access_owner_only": ("使用開關只允許所有者切換。", "Only the owner can change user access.", "ユーザー利用の切り替えは所有者のみ可能です。", "使用开关只允许所有者切换。"),
     "auto_owner_only": ("自動通過只允許所有者切換。", "Only the owner can change auto-approval.", "自動承認の切り替えは所有者のみ可能です。", "自动通过只允许所有者切换。"),
     "cookie_owner_only": ("Cookies 開關只允許所有者切換。", "Only the owner can change the Cookies setting.", "Cookies 設定の切り替えは所有者のみ可能です。", "Cookies 开关只允许所有者切换。"),
@@ -991,13 +989,14 @@ class ACLStore:
             if self.is_banned(user_id):
                 return False
             key = str(user_id)
-            existed = key in self.data["pending_applications"]
+            if key not in self.data["pending_applications"] or self.is_admin(user_id):
+                return False
             self.data["pending_applications"].pop(key, None)
             record = self.data["users"].setdefault(key, {"user_id": user_id})
             record["quota"] = self.default_daily_limit
             record["quota_updated_at"] = self._quota_timestamp()
             self._save()
-            return existed
+            return True
 
     def deny(self, user_id: int) -> bool:
         with self.lock:
@@ -1167,7 +1166,7 @@ def user_menu_keyboard() -> dict[str, Any]:
                 {"text": f'📝 {admin_text("requests")}', "callback_data": "nav:requests"},
             ],
             [{"text": f'🔐 {admin_text("permissions")}', "callback_data": "nav:finduser"}],
-            [{"text": f'↩️ {admin_text("back")}: {admin_text("menu")}', "callback_data": "nav:main"}],
+            [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("menu")}', "callback_data": "nav:main"}],
         ],
     }
 
@@ -1183,11 +1182,11 @@ def cookie_menu_keyboard(
                 {"text": f'📖 {admin_text("cookie_help")}', "callback_data": "nav:cookiehelp"},
             ],
             [{
-                "text": f'{admin_text("cookie_switch")}{"：" if ui_language() != "en" else ": "}{cookie_state}',
+                "text": f'🍪 {admin_text("cookie_switch")}{"：" if ui_language() != "en" else ": "}{cookie_state}',
                 "callback_data": "ordinarycookiestoggle:0",
             }],
             [{"text": f'🗑 {admin_text("cookie_clear")}', "callback_data": "nav:clearcookies"}],
-            [{"text": f'↩️ {admin_text("back")}: {admin_text("advanced")}', "callback_data": "nav:advanced"}],
+            [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("advanced")}', "callback_data": "nav:advanced"}],
         ],
     }
 
@@ -1236,7 +1235,6 @@ def start_keyboard(
     language: str,
     is_admin: bool,
     is_allowed: bool,
-    is_owner: bool = False,
 ) -> dict[str, Any]:
     rows = []
     if is_admin:
@@ -1269,6 +1267,13 @@ def pagination_row(prefix: str, page: int, total: int) -> list[dict[str, str]]:
     return row
 
 
+def pending_page_fingerprint(records: list[dict[str, Any]], page: int) -> str:
+    start = page * MANAGEMENT_PAGE_SIZE
+    applications = [(record["user_id"], record.get("requested_at", 0))
+                    for record in records[start:start + MANAGEMENT_PAGE_SIZE]]
+    return hashlib.sha256(json.dumps(applications).encode("ascii")).hexdigest()[:16]
+
+
 def pending_keyboard(
     records: list[dict[str, Any]], page: int = 0
 ) -> dict[str, Any]:
@@ -1283,7 +1288,7 @@ def pending_keyboard(
         ])
     rows.append([{
         "text": admin_text("approve_page"),
-        "callback_data": f"approvepage:{page}",
+        "callback_data": f"approvepage:{page}:{pending_page_fingerprint(records, page)}",
     }])
     rows.append(pagination_row("requestspage", page, len(records)))
     rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
@@ -1353,7 +1358,7 @@ def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
             "text": f'⚙️ {admin_text("advanced")}',
             "callback_data": "nav:advanced",
         }])
-    rows.append([{"text": f'↩️ {admin_text("back")}: {admin_text("menu")}', "callback_data": "nav:main"}])
+    rows.append([{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("menu")}', "callback_data": "nav:main"}])
     return {"inline_keyboard": rows}
 
 
@@ -1392,7 +1397,7 @@ def advanced_status_keyboard(
         }])
     return {"inline_keyboard": [
         *owner_rows,
-        [{"text": f'↩️ {admin_text("back")}: {admin_text("status")}', "callback_data": "nav:status"}],
+        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("status")}', "callback_data": "nav:status"}],
     ]}
 
 
@@ -1428,10 +1433,6 @@ def quota_choices_keyboard(
         ])
     rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
     return {"inline_keyboard": rows}
-
-
-def limit_choices_keyboard(user_id: int) -> dict[str, Any]:
-    return quota_choices_keyboard(user_id)
 
 
 def access_request_text(user_id: int, language: str = "zh") -> str:
@@ -1482,36 +1483,36 @@ def cookie_help_text() -> str:
 def owner_help_text(is_owner: bool = True) -> str:
     if ui_language() == "en":
         role = (
-            "The owner can manage administrators; Cookies, access, auto-approval, and the default limit are in Advanced settings."
+            "Only the owner can grant administrator access and use Advanced settings."
             if is_owner else
-            "Administrators can manage regular users, but not the owner, themselves, other administrators, or owner-only settings."
+            "Administrators can manage regular users only, not the owner, themselves, or other administrators."
         )
         return (
             "Owner guide" if is_owner else "Administrator guide"
-        ) + f"\n\nSend one X/Twitter post URL for text and media. In another chat, use {BOT_MENTION} followed by the URL for inline sharing.\n\nSend a User ID to find a user, or a User ID and quota to change access; confirm the change when prompted. Quotas: -1 blocks, 0 initializes, a positive number is the daily limit; only the owner can grant unlimited administrator access.\n\n{role}\nManagement works only in a private chat with the bot."
+        ) + f"\n\nIn a private chat, send a User ID to search, or ‘User ID quota’ to change access; confirm when prompted.\n-1: blocked · 0: initialized · positive: daily limit\n\n{role}"
     if ui_language() == "ja":
         role = (
-            "所有者は管理者を管理できます。Cookies、利用許可、自動承認、標準上限は詳細設定にあります。"
+            "管理者権限の付与と詳細設定は所有者のみ利用できます。"
             if is_owner else
-            "管理者が変更できるのは一般ユーザーのみです。所有者、自分、他の管理者、所有者専用設定は変更できません。"
+            "管理者が変更できるのは一般ユーザーのみです。所有者、自分、他の管理者は変更できません。"
         )
         return (
             "所有者向けガイド" if is_owner else "管理者向けガイド"
-        ) + f"\n\nX/Twitter の単一投稿URLで本文とメディアを取得できます。他のチャットでは {BOT_MENTION} とURLでインライン共有できます。\n\nUser ID でユーザーを検索し、「User ID 上限値」で権限を変更できます。確認画面で確定してください。-1 はブロック、0 は初期化、正の数は1日の上限、無制限の管理者権限は所有者のみが付与できます。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。"
+        ) + f"\n\n個別チャットで User ID を送ると検索、「User ID 上限値」で権限を変更できます。確認画面で確定してください。\n-1：ブロック · 0：初期化 · 正の数：1日の上限\n\n{role}"
     role = (
-        {"zh": ("Owner 可管理管理員；Cookies、使用開關、自動通過與預設額度位於高級選項。"
+        {"zh": ("僅所有者可授予管理員權限及使用高級選項。"
         if is_owner else
-        "管理員只能管理普通用戶，不能修改 Owner、自己、其他管理員或 Owner 專用設定。"), "zh-cn": ("Owner 可管理管理员；Cookies、使用开关、自动通过与预设额度位于高级选项。"
+        "管理員只能管理普通用戶，不能修改所有者、自己或其他管理員。"), "zh-cn": ("仅所有者可授予管理员权限及使用高级选项。"
         if is_owner else
-        "管理员只能管理普通用户，不能修改 Owner、自己、其他管理员或 Owner 专用设置。")}[ui_language()]
+        "管理员只能管理普通用户，不能修改所有者、自己或其他管理员。")}[ui_language()]
     )
     return {
         "zh": ((
             "所有者管理說明" if is_owner else "管理員使用說明"
-        ) + f"\n\n傳送單篇 X/Twitter 貼文網址取得文字與媒體；在其他聊天輸入 {BOT_MENTION} 加網址可內聯分享。\n\n直接傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。額度 -1 為封鎖、0 為初始化、正數為每日上限；僅 Owner 可授予不限額的管理員權限。\n\n{role}\n管理操作只在 Bot 私聊有效。"),
+        ) + f"\n\n在 Bot 私聊傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。\n-1：封鎖 · 0：初始化 · 正數：每日上限\n\n{role}"),
         "zh-cn": ((
             "所有者管理说明" if is_owner else "管理员使用说明"
-        ) + f"\n\n发送单篇 X/Twitter 推文链接获取文字与媒体；在其他聊天输入 {BOT_MENTION} 加链接可内联分享。\n\n直接发送 User ID 查找用户，或发送「User ID 额度」修改权限，依提示确认。额度 -1 为封禁、0 为初始化、正数为每日上限；仅 Owner 可授予不限额的管理员权限。\n\n{role}\n管理操作只在 Bot 私聊有效。"),
+        ) + f"\n\n在 Bot 私聊发送 User ID 查找用户，或发送「User ID 额度」修改权限，依提示确认。\n-1：封禁 · 0：初始化 · 正数：每日上限\n\n{role}"),
     }[ui_language()]
 
 
@@ -1542,21 +1543,8 @@ def validate_cookie_file(content: bytes) -> str:
 
 
 def save_cookie_file(text: str) -> None:
-    COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix="cookies-", suffix=".tmp", dir=COOKIES_PATH.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        temporary.replace(COOKIES_PATH)
-        COOKIE_ALERT_PATH.unlink(missing_ok=True)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write_text(COOKIES_PATH, text)
+    COOKIE_ALERT_PATH.unlink(missing_ok=True)
 
 
 def cookies_look_invalid(output: str) -> bool:
@@ -1591,14 +1579,9 @@ def cookie_alert_due(path: Path = COOKIE_ALERT_PATH, now: float | None = None) -
 
 def record_cookie_alert(path: Path = COOKIE_ALERT_PATH, now: float | None = None) -> None:
     current = time.time() if now is None else now
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(
+    atomic_write_text(path,
         json.dumps({"last_sent": current}, separators=(",", ":")) + "\n",
-        encoding="utf-8",
     )
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
 
 
 def safe_telegram_description(value: Any) -> str:
@@ -1756,7 +1739,7 @@ class TelegramAPI:
             raise
         return True
 
-    def configure_commands(self, owner_id: int) -> None:
+    def configure_commands(self) -> None:
         command_sets = {
             "": [
                 {"command": "start", "description": "啟動並顯示操作選單"},
@@ -2755,11 +2738,17 @@ class Bot:
             tuple[str, bool, str], tuple[float, list[dict[str, Any]]]
         ] = {}
         self.pending_cookie_uploads: set[int] = set()
+        self.cookie_alert_lock = threading.Lock()
         self.pending_user_searches: set[int] = set()
         self.pending_default_quotas: dict[int, int | None] = {}
         self.inline_usage_lock = threading.Lock()
         self.inline_usage: dict[tuple[int, str], float] = {}
         self.started_at = time.time()
+
+    def clear_pending_input(self, user_id: int) -> None:
+        self.pending_cookie_uploads.discard(user_id)
+        self.pending_user_searches.discard(user_id)
+        self.pending_default_quotas.pop(user_id, None)
 
     def target_management_error(self, actor_id: int, target_id: int) -> str | None:
         if not is_telegram_user_id(target_id):
@@ -2779,7 +2768,7 @@ class Bot:
 
     def start(self) -> None:
         try:
-            self.api.configure_commands(self.acl.owner_id)
+            self.api.configure_commands()
         except (requests.RequestException, RuntimeError, ValueError):
             LOG.exception("Could not configure Telegram command menu")
         try:
@@ -2876,7 +2865,6 @@ class Bot:
                         language,
                         is_admin,
                         self.acl.is_allowed(user_id),
-                        is_owner,
                     ),
                 )
             return
@@ -3006,6 +2994,7 @@ class Bot:
                 return
 
         if command == "/start":
+            self.clear_pending_input(user_id)
             is_allowed = self.acl.is_allowed(user_id)
             text_key = "start_owner" if is_admin else "start_allowed"
             text = (
@@ -3021,7 +3010,6 @@ class Bot:
                     language,
                     is_admin,
                     is_allowed,
-                    is_owner,
                 ),
             )
             return
@@ -3036,17 +3024,17 @@ class Bot:
         if command == "/claim":
             if not is_private_chat:
                 self.api.send_message(
-                    chat_id, {"zh": "Owner 認領只允許在 Bot 私聊完成。", "en": "Owner claim is available only in a private chat with the bot.", "ja": "所有者の登録は Bot との個別チャットでのみ可能です。", "zh-cn": ("Owner 认领只允许在 Bot 私聊完成。")}[ui_language()], message_id
+                    chat_id, {"zh": "所有者認領只允許在 Bot 私聊完成。", "en": "Owner claim is available only in a private chat with the bot.", "ja": "所有者の登録は Bot との個別チャットでのみ可能です。", "zh-cn": ("所有者认领只允许在 Bot 私聊完成。")}[ui_language()], message_id
                 )
                 return
             if self.acl.claim(user_id, argument):
-                self.api.configure_commands(user_id)
+                self.api.configure_commands()
                 self.api.remove_reply_keyboard(chat_id)
                 self.api.send_message(
-                    chat_id, {"zh": "Owner 設定完成，管理選單已載入。", "en": "Owner configured. Management menu loaded.", "ja": "所有者を設定し、管理メニューを表示しました。", "zh-cn": ("Owner 设置完成，管理菜单已加载。")}[ui_language()], message_id, owner_keyboard()
+                    chat_id, {"zh": "所有者設定完成，管理選單已載入。", "en": "Owner configured. Management menu loaded.", "ja": "所有者を設定し、管理メニューを表示しました。", "zh-cn": ("所有者设置完成，管理菜单已加载。")}[ui_language()], message_id, owner_keyboard()
                 )
             else:
-                self.api.send_message(chat_id, {"zh": "認領失敗或 Owner 已存在。", "en": "Claim failed or an owner already exists.", "ja": "登録に失敗したか、所有者が既に存在します。", "zh-cn": ("认领失败或 Owner 已存在。")}[ui_language()], message_id)
+                self.api.send_message(chat_id, {"zh": "認領失敗或所有者已存在。", "en": "Claim failed or an owner already exists.", "ja": "登録に失敗したか、所有者が既に存在します。", "zh-cn": ("认领失败或所有者已存在。")}[ui_language()], message_id)
             return
 
         if command in {
@@ -3085,7 +3073,6 @@ class Bot:
                     language,
                     is_admin,
                     self.acl.is_allowed(user_id),
-                    is_owner,
                 )
                 self.api.send_message(
                     chat_id,
@@ -3108,7 +3095,6 @@ class Bot:
                 "/cookies",
                 "/cookiehelp",
                 "/clearcookies",
-                "/cancel",
             } and not is_owner:
                 self.api.send_message(
                     chat_id,
@@ -3117,8 +3103,7 @@ class Bot:
                     owner_keyboard(),
                 )
                 return
-            if command != "/finduser":
-                self.pending_user_searches.discard(user_id)
+            self.clear_pending_input(user_id)
             self.handle_owner_command(
                 chat_id, message_id, user_id, command, argument
             )
@@ -3354,7 +3339,7 @@ class Bot:
             username = telegram_username(record)
             name_text = (
                 f'<a href="https://t.me/{username}">{name}</a>'
-                if username else f"<code>{name}</code>"
+                if username else name
             )
             usage = int(record.get("usage_count", 0) or 0)
             lines.append(
@@ -3583,8 +3568,7 @@ class Bot:
             except ValueError:
                 self.api.answer_callback(callback_id, public_text(language, "unsupported_language"), alert=True)
                 return
-            self.pending_user_searches.discard(user_id)
-            self.pending_default_quotas.pop(user_id, None)
+            self.clear_pending_input(user_id)
             is_allowed = self.acl.is_allowed(user_id)
             text_key = "start_owner" if is_admin else "start_allowed"
             text = (
@@ -3593,7 +3577,7 @@ class Bot:
                 else access_request_text(user_id, selected)
             )
             with language_scope(selected):
-                keyboard = start_keyboard(selected, is_admin, is_allowed, is_owner)
+                keyboard = start_keyboard(selected, is_admin, is_allowed)
             self.api.edit_message(
                 chat_id,
                 message_id,
@@ -3607,16 +3591,15 @@ class Bot:
 
         if data.startswith("public:"):
             destination = data.split(":", 1)[1]
+            if is_admin and not self.is_private_management_chat(user_id, chat_id):
+                self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
+                return
+            self.clear_pending_input(user_id)
             back_keyboard = {"inline_keyboard": [[{
                 "text": public_text(language, "back"),
                 "callback_data": "public:main",
             }]]}
             if destination == "language":
-                if is_admin and not self.is_private_management_chat(user_id, chat_id):
-                    self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
-                    return
-                self.pending_user_searches.discard(user_id)
-                self.pending_default_quotas.pop(user_id, None)
                 text = public_text(language, "choose_language")
                 keyboard = {
                     "inline_keyboard": [language_row(language)]
@@ -3651,7 +3634,6 @@ class Bot:
                         language,
                         is_admin,
                         is_allowed,
-                        is_owner,
                     ),
                 )
             else:
@@ -3689,8 +3671,7 @@ class Bot:
 
         if data.startswith("nav:"):
             destination = data.split(":", 1)[1]
-            self.pending_user_searches.discard(user_id)
-            self.pending_default_quotas.pop(user_id, None)
+            self.clear_pending_input(user_id)
             if destination == "main":
                 text, keyboard = admin_text("menu"), owner_keyboard()
             elif destination == "users":
@@ -3786,7 +3767,7 @@ class Bot:
             return
 
         if data == "noop:0":
-            self.api.answer_callback(callback_id, admin_text("current_page"))
+            self.api.answer_callback(callback_id, "")
             return
 
         try:
@@ -3827,7 +3808,7 @@ class Bot:
             self.api.edit_message(
                 chat_id, message_id, text, keyboard, parse_mode="HTML"
             )
-            self.api.answer_callback(callback_id, admin_text("page_changed"))
+            self.api.answer_callback(callback_id, "")
             return
         if action in {"createuser", "cancelcreate"}:
             if action == "cancelcreate":
@@ -3915,7 +3896,7 @@ class Bot:
                 self.system_status_text(user_id),
                 status_keyboard(is_owner),
             )
-            self.api.answer_callback(callback_id, admin_text("status_refreshed"))
+            self.api.answer_callback(callback_id, "")
             return
         if action == "debugtoggle":
             if not is_owner:
@@ -4016,7 +3997,7 @@ class Bot:
             else:
                 text, keyboard, _ = self.pending_page(records, target)
                 self.api.edit_message(chat_id, message_id, text, keyboard)
-            self.api.answer_callback(callback_id, admin_text("page_changed"))
+            self.api.answer_callback(callback_id, "")
             return
 
         if action == "approvepage":
@@ -4024,6 +4005,14 @@ class Bot:
                 self.api.answer_callback(callback_id, admin_text("menu_invalid_page"), alert=True)
                 return
             records = self.acl.pending()
+            if not extra or extra[0] != pending_page_fingerprint(records, target):
+                if records:
+                    text, keyboard, _ = self.pending_page(records, target)
+                else:
+                    text, keyboard = admin_text("no_requests"), user_menu_keyboard()
+                self.api.edit_message(chat_id, message_id, text, keyboard)
+                self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
+                return
             start = target * MANAGEMENT_PAGE_SIZE
             page_records = records[start : start + MANAGEMENT_PAGE_SIZE]
             approved = 0
@@ -4397,7 +4386,7 @@ class Bot:
                 cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
             )
         elif command == "/cancel":
-            self.pending_cookie_uploads.discard(actor_id)
+            self.clear_pending_input(actor_id)
             self.api.send_message(
                 chat_id, admin_text("cancelled"), message_id, owner_keyboard()
             )
@@ -4440,7 +4429,7 @@ class Bot:
                 self.jobs.task_done()
 
     def notify_cookie_failure(self) -> None:
-        with language_scope(self.acl.language(self.acl.owner_id)):
+        with self.cookie_alert_lock, language_scope(self.acl.language(self.acl.owner_id)):
             self._notify_cookie_failure()
 
     def _notify_cookie_failure(self) -> None:
@@ -4458,7 +4447,6 @@ class Bot:
                 }[ui_language()],
                 reply_markup=start_keyboard(
                     self.acl.language(owner_id),
-                    True,
                     True,
                     True,
                 ),
