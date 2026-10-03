@@ -260,6 +260,78 @@ class ConfigurationCLITests(unittest.TestCase):
 
 
 class ACLTests(unittest.TestCase):
+    def test_default_limit_updates_matching_regular_users_persists_and_applies_to_new_users(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            for user_id, quota in ((200, 50), (201, 100), (202, 1500), (300, None), (400, 0), (500, -1)):
+                store.set_quota(user_id, quota)
+            store.observe({"id": 600, "first_name": "Pending"})
+            store.request_access(600)
+            store.consume(200)
+            before = json.loads(json.dumps(store.data))
+            self.assertEqual(store.set_default_daily_limit(100, 100), 1)
+            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 202)], [100, 100, 1500])
+            for user_id in (100, 201, 202, 300, 400, 500, 600):
+                self.assertEqual(store.data["users"][str(user_id)], before["users"][str(user_id)])
+            self.assertEqual(store.data["pending_applications"], before["pending_applications"])
+            for field in ("usage_date", "usage_count"):
+                self.assertEqual(store.data["users"]["200"][field], before["users"]["200"][field])
+            for field in ("external_access_enabled", "ordinary_user_cookies_enabled", "auto_approve_enabled", "pending_jobs", "last_daily_report_date"):
+                self.assertEqual(store.data[field], before[field])
+            self.assertGreater(store.data["users"]["200"]["quota_updated_at"], before["users"]["200"]["quota_updated_at"])
+            with patch.object(bot, "DEFAULT_DAILY_LIMIT", 75):
+                store = bot.ACLStore(path, 100)
+                self.assertEqual(store.default_daily_limit, 100)
+            store.approve(600)
+            store.toggle_auto_approve(100)
+            self.assertEqual(store.request_access(700), "auto_approved")
+            store.ensure_managed_user(800)
+            store.ensure_managed_user(801, None)
+            store.add(900)
+            self.assertEqual([store.quota(user_id) for user_id in (600, 700, 800, 900)], [100] * 4)
+            self.assertTrue(store.is_admin(801))
+            self.assertNotIn("default_daily_limit", store.export_access())
+            store.set_quota(250, 50)
+            self.assertEqual(store.set_default_daily_limit(100, 200), 6)
+            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 600, 700, 800, 900)], [200] * 6)
+            self.assertEqual([store.quota(user_id) for user_id in (202, 250)], [1500, 50])
+            before_repeat = json.loads(json.dumps(store.data))
+            self.assertEqual(store.set_default_daily_limit(100, 200), 0)
+            self.assertEqual(store.data, before_repeat)
+            self.assertEqual(bot.ACLStore(path, 100).default_daily_limit, 200)
+
+    def test_default_limit_rejects_invalid_values_and_non_owner_without_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.set_quota(200, None)
+            before = path.read_bytes()
+            for actor, value in ((200, 100), (300, 100), (100, -1), (100, 0), (100, 100001), (100, True), (100, "100")):
+                with self.subTest(actor=actor, value=value), self.assertRaises(ValueError):
+                    store.set_default_daily_limit(actor, value)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(store.default_daily_limit, bot.DEFAULT_DAILY_LIMIT)
+            self.assertEqual(store.set_default_daily_limit(100, bot.MAX_DAILY_LIMIT), 0)
+            self.assertEqual(bot.ACLStore(path, 100).default_daily_limit, bot.MAX_DAILY_LIMIT)
+
+    def test_default_limit_falls_back_to_environment_and_preserves_usage_when_lowered(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "DEFAULT_DAILY_LIMIT", 75):
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            self.assertNotIn("default_daily_limit", store.data)
+            self.assertEqual(store.default_daily_limit, 75)
+            store.observe({"id": 200, "first_name": "Example", "username": "example"})
+            store.set_language(200, "ja")
+            store.add(200)
+            self.assertEqual(store.quota(200), 75)
+            for _ in range(3):
+                store.consume(200)
+            before = dict(store.data["users"]["200"])
+            store.set_default_daily_limit(100, 1)
+            self.assertEqual(store.consume(200), (False, 3, 1))
+            self.assertEqual(store.data["users"]["200"], {**before, "quota": 1, "quota_updated_at": store.data["users"]["200"]["quota_updated_at"]})
+
     def test_acl_recovers_from_last_valid_backup_and_keeps_corrupt_primary(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "acl.json"
@@ -718,6 +790,50 @@ class CookieTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
+    def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
+        for language in ("zh", "en", "ja"):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.add(200)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                def callback(data, chat_id=100):
+                    service.handle_callback({"id": data, "data": data, "from": {"id": 100},
+                                             "message": {"message_id": 1, "chat": {"id": chat_id}}})
+                def message(text):
+                    service.handle_update({"message": {"message_id": 2, "from": {"id": 100},
+                                                       "chat": {"id": 100}, "text": text}})
+                callback("nav:defaultquota")
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("default_limit_prompt").format(limit=50))
+                for invalid in ("0", "-1", "100001", "1.5", "hello"):
+                    message(invalid)
+                    self.assertEqual(api.send_message.call_args.args[1], bot.admin_text("default_limit_range"))
+                    self.assertEqual(store.quota(200), 50)
+                message("100")
+                self.assertEqual(api.send_message.call_args.args[1], bot.admin_text("default_limit_confirm").format(limit=100))
+                self.assertEqual(store.quota(200), 50)
+                callback("defaultquota:101")
+                self.assertEqual(store.quota(200), 50)
+                callback("defaultquota:100", -100)
+                self.assertEqual(store.quota(200), 50)
+                callback("nav:advanced")
+                callback("defaultquota:100")
+                self.assertEqual(store.quota(200), 50)
+                callback("nav:defaultquota")
+                message("100")
+                callback("defaultquota:100")
+                self.assertEqual(store.default_daily_limit, 100)
+                self.assertEqual(store.quota(200), 100)
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("default_limit_changed").format(limit=100, count=1))
+                self.assertIn("nav:defaultquota", str(api.edit_message.call_args.args[3]))
+                self.assertIn("quota:200:100", str(service.user_search_result(200, 100)[1]))
+                callback("defaultquota:100")
+                api.answer_callback.assert_called_with("defaultquota:100", bot.admin_text("invalid_action"), alert=True)
+                callback("nav:defaultquota")
+                message("/start")
+                self.assertNotIn(100, service.pending_default_quotas)
+                service.stop()
+
     def test_start_keyboard_localizes_access_and_language_selection(self):
         keyboard = bot.start_keyboard("ja", False, False)["inline_keyboard"]
         self.assertEqual(keyboard[0][0]["text"], "利用を申請")
@@ -1188,6 +1304,10 @@ class MenuTests(unittest.TestCase):
             )
             self.assertEqual(
                 advanced[3][0]["text"],
+                "預設額度：50",
+            )
+            self.assertEqual(
+                advanced[4][0]["text"],
                 "🐞 實現方式：關閉",
             )
             cookies = bot.cookie_menu_keyboard(True)["inline_keyboard"]
@@ -1247,7 +1367,7 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(api, store)
             for language, implementation in (("zh", "實現方式"), ("ja", "実装方法"), ("en", "Implementation details")):
                 with patch.object(bot, "OWNER_LANGUAGE", language):
-                    for data in ("nav:advanced", "debugtoggle:0"):
+                    for data in ("nav:advanced", "debugtoggle:0", "nav:defaultquota", "defaultquota:100"):
                         with self.subTest(language=language, data=data):
                             api.reset_mock()
                             service.handle_callback({
@@ -1604,6 +1724,8 @@ class MenuTests(unittest.TestCase):
                     for detail in ("FxTwitter", "gallery-dl", "yt-dlp", "50 MB", "52-bit", bot.BOT_TIMEZONE_NAME):
                         self.assertNotIn(detail, text)
                 self.assertNotEqual(owner_help, admin_help)
+                self.assertIn(bot.admin_text("default_limit").lower(), owner_help.lower())
+                self.assertNotIn(bot.admin_text("default_limit").lower(), admin_help.lower())
                 self.assertNotIn("auto-approval", admin_help)
                 self.assertNotIn("自動通過", admin_help)
                 self.assertNotIn("自動承認", admin_help)
@@ -2960,6 +3082,10 @@ class PublicReleaseLanguageTests(unittest.TestCase):
     def test_version_and_translation_catalog_are_complete(self):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)
         self.assertTrue(all(len(values) == 3 for values in bot.ADMIN_TEXT.values()))
+        for key, values in bot.ADMIN_TEXT.items():
+            placeholders = [set(bot.re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", value)) for value in values]
+            self.assertEqual(placeholders[0], placeholders[1], key)
+            self.assertEqual(placeholders[0], placeholders[2], key)
 
 
 if __name__ == "__main__":

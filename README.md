@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.1.12
+# Telegram X／Twitter 貼文媒體 Bot · v3.2.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -32,7 +32,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；用於每日額度與簡報。 |
 | `DAILY_RESET_HOUR` | `0` | 該時區每日換日的整點，0–23。 |
 | `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向 Owner 發送每日用量與待審摘要。 |
-| `DEFAULT_DAILY_LIMIT` | `50` | 新獲授權的普通用戶預設每日額度，1–100000；不改動既有用戶額度。 |
+| `DEFAULT_DAILY_LIMIT` | `50` | 未在 Bot 設定「預設額度」時，新獲授權普通用戶的每日額度，1–100000；修改此環境值不會批次改動既有額度。 |
 | `OWNER_CONTACT_URL` | 空白 | 可選的使用說明聯絡連結，如 `https://example.com/contact`；空白則不顯示。 |
 | `OWNER_CONTACT_LABEL` | 空白 | 可選的聯絡連結文字；空白時使用對應語言的預設文字。 |
 | `WORKER_COUNT` | `2` | 貼文處理並行數，範圍 1–8。 |
@@ -42,6 +42,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有 Owner 能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受 Owner 開關控制。
 
 高級選項（包括「實現方式」）僅 Owner 可開啟與修改；管理員仍可管理普通用戶及查看系統狀態。
+
+Owner 可在「預設額度」輸入 1–100000 並確認，只修改每日額度等於修改前預設值的已授權普通用戶；其他額度保持不變，新獲授權或新建立的普通用戶使用新值。例如預設 50 改為 100，現有額度 50 改為 100，額度 200 不變。初始化、待審、封鎖和管理員不變，當日用量不重置。此設定保存在 ACL，重啟後仍有效，優先於 `DEFAULT_DAILY_LIMIT`。
 
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
@@ -75,7 +77,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `BOT_TIMEZONE` | `UTC` | `Asia/Tokyo` などの IANA タイムゾーン。日次上限とレポートに適用します。 |
 | `DAILY_RESET_HOUR` | `0` | 日次上限を切り替える現地時刻（0–23 時）。 |
 | `DAILY_REPORT_HOUR` | `22` | その地域の 0–23 時。利用状況と審査待ちを所有者へ通知します。 |
-| `DEFAULT_DAILY_LIMIT` | `50` | 新しく許可した一般ユーザーの1日あたりの初期上限（1–100000）。既存の上限は変更しません。 |
+| `DEFAULT_DAILY_LIMIT` | `50` | Bot で「標準上限」を設定する前の、新規承認ユーザーの日次上限（1–100000）。環境変数の変更だけでは既存の上限を一括変更しません。 |
 | `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先URL（例：`https://example.com/contact`）。空欄なら表示しません。 |
 | `OWNER_CONTACT_LABEL` | 空欄 | 任意の連絡先リンク表示名。空欄なら各言語の初期表示名を使います。 |
 | `WORKER_COUNT` | `2` | 投稿処理の並列数。1–8。 |
@@ -85,6 +87,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
 詳細設定（「実装方法」を含む）の表示・変更は所有者のみ。管理者は一般ユーザーの管理とシステム状態の確認を引き続き行えます。
+
+所有者は「標準上限」に 1～100000 を入力し、確認すると、変更前の標準上限と同じ日次上限の承認済み一般ユーザーのみ更新できます。他の上限は維持し、新しく承認・作成する一般ユーザーには新しい値を使います。例えば標準上限を 50 から 100 にすると、上限 50 のユーザーは 100 に変わり、上限 200 のユーザーは変わりません。初期状態、審査待ち、ブロック中のユーザーと管理者は対象外で、当日の使用量はリセットしません。設定は ACL に保存され、再起動後も維持され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
@@ -118,7 +122,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `BOT_TIMEZONE` | `UTC` | IANA zone such as `Asia/Tokyo`, used for daily limits and reports. |
 | `DAILY_RESET_HOUR` | `0` | Local hour when the daily usage period rolls over, 0–23. |
 | `DAILY_REPORT_HOUR` | `22` | Hour 0–23 in that zone for the owner's usage/pending report. |
-| `DEFAULT_DAILY_LIMIT` | `50` | Initial daily quota for newly approved regular users, 1–100000; existing quotas stay unchanged. |
+| `DEFAULT_DAILY_LIMIT` | `50` | Daily quota for newly approved regular users before a default is set in the bot, 1–100000; editing this environment value does not bulk-update existing quotas. |
 | `OWNER_CONTACT_URL` | empty | Optional help-page contact link, e.g. `https://example.com/contact`; omitted when empty. |
 | `OWNER_CONTACT_LABEL` | empty | Optional contact-link text; defaults to a translated label. |
 | `WORKER_COUNT` | `2` | Concurrent post jobs, from 1 to 8. |
@@ -128,6 +132,8 @@ You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WOR
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
 Only the owner can open or change Advanced settings, including Implementation details. Administrators can still manage regular users and view system status.
+
+Under Default limit, the owner can enter 1–100000 and confirm to update only approved regular users whose daily quota matches the previous default. Other quotas stay unchanged; newly approved or created regular users use the new value. For example, changing the default from 50 to 100 updates users with a quota of 50 to 100, while a quota of 200 stays unchanged. Initialized, pending, blocked, and administrator accounts are excluded; today's usage is not reset. The setting is saved in the ACL, survives restarts, and takes precedence over `DEFAULT_DAILY_LIMIT`.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 

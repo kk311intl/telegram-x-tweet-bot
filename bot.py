@@ -29,7 +29,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.1.12"
+APP_VERSION = "3.2.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -339,7 +339,24 @@ ADMIN_TEXT = {
     "cancel": ("取消", "Cancel", "キャンセル"),
     "owner_account": ("所有者帳號", "Owner account", "所有者アカウント"),
     "admin_read_only": ("管理員帳號（唯讀）", "Administrator (read-only)", "管理者（閲覧のみ）"),
-    "default_quota": ("預設許可 (50)", "Default (50)", "標準 (50)"),
+    "default_quota": ("預設許可 ({limit})", "Default ({limit})", "標準 ({limit})"),
+    "default_limit": ("預設額度", "Default limit", "標準上限"),
+    "default_limit_prompt": (
+        "目前預設額度：{limit}。\n請輸入新的每日額度（1–100000）。",
+        "Current default limit: {limit}.\nEnter a new daily limit (1–100000).",
+        "現在の標準上限：{limit}。\n新しい1日の上限（1～100000）を入力してください。",
+    ),
+    "default_limit_confirm": (
+        "確認將預設額度改為 {limit}？\n只更新沿用原預設額度的正常普通用戶；其他額度與權限不變。新用戶使用新值，今日用量不變。",
+        "Set the default limit to {limit}?\nOnly approved regular users matching the previous default are updated; other quotas and access stay unchanged. New users use the new value; today's usage stays unchanged.",
+        "標準上限を {limit} に変更しますか？\n変更前の標準上限と同じ上限の承認済み一般ユーザーのみ更新します。他の上限・権限と本日の使用量は変えず、新規ユーザーには新しい値を使います。",
+    ),
+    "default_limit_changed": (
+        "預設額度已設為 {limit}，已更新 {count} 位普通用戶。",
+        "Default limit set to {limit}; updated {count} regular users.",
+        "標準上限を {limit} に設定し、一般ユーザー {count} 人を更新しました。",
+    ),
+    "default_limit_range": ("預設額度必須是 1 至 100000 的整數。", "The default limit must be an integer from 1 to 100000.", "標準上限は 1～100000 の整数にしてください。"),
     "admin_unlimited": ("不限・管理員", "Unlimited · Administrator", "無制限・管理者"),
     "no_requests": ("目前沒有待審批申請。", "No pending requests.", "審査待ちの申請はありません。"),
     "find_user": ("請輸入要修改權限的 Telegram User ID。", "Enter the Telegram User ID to manage.", "権限を変更する Telegram User ID を入力してください。"),
@@ -479,6 +496,11 @@ class ACLStore:
             "auto_approve_enabled": bool(raw.get("auto_approve_enabled", False)),
             "pending_jobs": raw.get("pending_jobs", {}),
         }
+        if "default_daily_limit" in raw:
+            limit = raw["default_daily_limit"]
+            if type(limit) is not int or not 1 <= limit <= MAX_DAILY_LIMIT:
+                raise ValueError("invalid default daily limit")
+            data["default_daily_limit"] = limit
         legacy_allowed = {int(value) for value in raw.get("allowed_user_ids", [])}
         legacy_banned = {int(value) for value in raw.get("banned_user_ids", [])}
         known_ids = (
@@ -671,6 +693,30 @@ class ACLStore:
     def auto_approve_enabled(self) -> bool:
         return bool(self.data.get("auto_approve_enabled", False))
 
+    @property
+    def default_daily_limit(self) -> int:
+        return self.data.get("default_daily_limit", DEFAULT_DAILY_LIMIT)
+
+    def set_default_daily_limit(self, actor_id: int, limit: int) -> int:
+        self._require_owner(actor_id)
+        if type(limit) is not int or not 1 <= limit <= MAX_DAILY_LIMIT:
+            raise ValueError("default daily limit out of range")
+        with self.lock:
+            previous_limit = self.default_daily_limit
+            self.data["default_daily_limit"] = limit
+            changed = 0
+            timestamp = self._quota_timestamp()
+            for key, record in self.data["users"].items():
+                quota = self.quota(int(key))
+                if (quota != previous_limit or quota == limit
+                        or key in self.data["pending_applications"]):
+                    continue
+                record["quota"] = limit
+                record["quota_updated_at"] = timestamp
+                changed += 1
+            self._save()
+            return changed
+
     def debug_mode(self, user_id: int) -> bool:
         record = self.data["users"].get(str(user_id)) or {}
         return user_id == self.owner_id and bool(record.get("debug_mode", False))
@@ -816,7 +862,7 @@ class ACLStore:
             return changed
 
     def add(self, user_id: int) -> None:
-        self.set_quota(user_id, DEFAULT_DAILY_LIMIT)
+        self.set_quota(user_id, self.default_daily_limit)
 
     def remove(self, user_id: int) -> None:
         self.set_quota(user_id, 0)
@@ -826,7 +872,7 @@ class ACLStore:
             return str(user_id) in self.data["users"]
 
     def ensure_managed_user(
-        self, user_id: int, initial_quota: int | None = DEFAULT_DAILY_LIMIT
+        self, user_id: int, initial_quota: Any = ...
     ) -> bool:
         if user_id <= 0:
             raise ValueError("user id must be positive")
@@ -834,6 +880,8 @@ class ACLStore:
             key = str(user_id)
             if key in self.data["users"]:
                 return False
+            if initial_quota is Ellipsis:
+                initial_quota = self.default_daily_limit
             self.data["users"][key] = {
                 "user_id": user_id,
                 "quota": initial_quota,
@@ -855,7 +903,7 @@ class ACLStore:
             key = str(user_id)
             if self.auto_approve_enabled:
                 record = self.data["users"].setdefault(key, {"user_id": user_id})
-                record["quota"] = DEFAULT_DAILY_LIMIT
+                record["quota"] = self.default_daily_limit
                 record["quota_updated_at"] = self._quota_timestamp()
                 self.data["pending_applications"].pop(key, None)
                 self._save()
@@ -877,7 +925,7 @@ class ACLStore:
             existed = key in self.data["pending_applications"]
             self.data["pending_applications"].pop(key, None)
             record = self.data["users"].setdefault(key, {"user_id": user_id})
-            record["quota"] = DEFAULT_DAILY_LIMIT
+            record["quota"] = self.default_daily_limit
             record["quota_updated_at"] = self._quota_timestamp()
             self._save()
             return existed
@@ -1201,6 +1249,7 @@ def searched_user_keyboard(
     owner_id: int,
     can_modify: bool = True,
     allow_admin: bool = False,
+    default_daily_limit: int = DEFAULT_DAILY_LIMIT,
 ) -> dict[str, Any]:
     user_id = int(record["user_id"])
     if user_id == owner_id:
@@ -1209,7 +1258,7 @@ def searched_user_keyboard(
             [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
         ]}
     if can_modify:
-        return quota_choices_keyboard(user_id, allow_admin=allow_admin)
+        return quota_choices_keyboard(user_id, allow_admin=allow_admin, default_daily_limit=default_daily_limit)
     return {"inline_keyboard": [
         [{"text": admin_text("admin_read_only"), "callback_data": "noop:0"}],
         [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
@@ -1236,6 +1285,14 @@ def confirm_quota_change_keyboard(user_id: int, quota: int) -> dict[str, Any]:
     ]}
 
 
+def default_limit_keyboard(limit: int | None = None) -> dict[str, Any]:
+    rows = []
+    if limit is not None:
+        rows.append([{"text": admin_text("confirm_change"), "callback_data": f"defaultquota:{limit}"}])
+    rows.append([{"text": admin_text("cancel"), "callback_data": "nav:advanced"}])
+    return {"inline_keyboard": rows}
+
+
 def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
     rows = [[{"text": f'🔄 {admin_text("refresh")}', "callback_data": "statusrefresh:0"}]]
     if is_owner:
@@ -1252,6 +1309,7 @@ def advanced_status_keyboard(
     external_access_enabled: bool = True,
     auto_approve_enabled: bool = False,
     can_configure: bool = True,
+    default_daily_limit: int = DEFAULT_DAILY_LIMIT,
 ) -> dict[str, Any]:
     debug_state = admin_text("on" if debug_mode else "off")
     external_state = admin_text("open" if external_access_enabled else "paused")
@@ -1268,6 +1326,10 @@ def advanced_status_keyboard(
         [{
             "text": f'✅ {admin_text("auto_approve")}{"：" if OWNER_LANGUAGE != "en" else ": "}{auto_approve_state}',
             "callback_data": "autoapprovetoggle:0",
+        }],
+        [{
+            "text": f'{admin_text("default_limit")}{"：" if OWNER_LANGUAGE != "en" else ": "}{default_daily_limit}',
+            "callback_data": "nav:defaultquota",
         }],
     ] if can_configure else []
     if can_configure:
@@ -1298,11 +1360,11 @@ def format_duration(seconds: float) -> str:
 
 
 def quota_choices_keyboard(
-    user_id: int, allow_admin: bool = True
+    user_id: int, allow_admin: bool = True, default_daily_limit: int = DEFAULT_DAILY_LIMIT
 ) -> dict[str, Any]:
     rows = [
             [
-                {"text": admin_text("default_quota"), "callback_data": f"quota:{user_id}:50"},
+                {"text": admin_text("default_quota").format(limit=default_daily_limit), "callback_data": f"quota:{user_id}:{default_daily_limit}"},
                 {"text": f'{admin_text("blocked")} (-1)', "callback_data": f"quota:{user_id}:blocked"},
                 {"text": f'{admin_text("initialized")} (0)', "callback_data": f"quota:{user_id}:0"},
             ],
@@ -1356,7 +1418,7 @@ def cookie_help_text() -> str:
 def owner_help_text(is_owner: bool = True) -> str:
     if OWNER_LANGUAGE == "en":
         role = (
-            "The owner can manage administrators; Cookies, access, and auto-approval are in Advanced settings."
+            "The owner can manage administrators; Cookies, access, auto-approval, and the default limit are in Advanced settings."
             if is_owner else
             "Administrators can manage regular users, but not the owner, themselves, other administrators, or owner-only settings."
         )
@@ -1365,7 +1427,7 @@ def owner_help_text(is_owner: bool = True) -> str:
         ) + f"\n\nSend one X/Twitter post URL for text and media. In another chat, use {BOT_MENTION} followed by the URL for inline sharing.\n\nSend a User ID to find a user, or a User ID and quota to change access; confirm the change when prompted. Quotas: -1 blocks, 0 initializes, a positive number is the daily limit; only the owner can grant unlimited administrator access.\n\n{role}\nManagement works only in a private chat with the bot."
     if OWNER_LANGUAGE == "ja":
         role = (
-            "所有者は管理者を管理できます。Cookies、利用許可、自動承認は詳細設定にあります。"
+            "所有者は管理者を管理できます。Cookies、利用許可、自動承認、標準上限は詳細設定にあります。"
             if is_owner else
             "管理者が変更できるのは一般ユーザーのみです。所有者、自分、他の管理者、所有者専用設定は変更できません。"
         )
@@ -1373,7 +1435,7 @@ def owner_help_text(is_owner: bool = True) -> str:
             "所有者向けガイド" if is_owner else "管理者向けガイド"
         ) + f"\n\nX/Twitter の単一投稿URLで本文とメディアを取得できます。他のチャットでは {BOT_MENTION} とURLでインライン共有できます。\n\nUser ID でユーザーを検索し、「User ID 上限値」で権限を変更できます。確認画面で確定してください。-1 はブロック、0 は初期化、正の数は1日の上限、無制限の管理者権限は所有者のみが付与できます。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。"
     role = (
-        "Owner 可管理管理員；Cookies、使用開關與自動通過位於高級選項。"
+        "Owner 可管理管理員；Cookies、使用開關、自動通過與預設額度位於高級選項。"
         if is_owner else
         "管理員只能管理普通用戶，不能修改 Owner、自己、其他管理員或 Owner 專用設定。"
     )
@@ -2620,6 +2682,7 @@ class Bot:
         ] = {}
         self.pending_cookie_uploads: set[int] = set()
         self.pending_user_searches: set[int] = set()
+        self.pending_default_quotas: dict[int, int | None] = {}
         self.inline_usage_lock = threading.Lock()
         self.inline_usage: dict[tuple[int, str], float] = {}
         self.started_at = time.time()
@@ -2752,6 +2815,28 @@ class Bot:
         command = command.split("@", 1)[0].lower()
         argument = argument.strip()
 
+        if is_owner and admin_mode and user_id in self.pending_default_quotas:
+            if command.startswith("/"):
+                self.pending_default_quotas.pop(user_id, None)
+            else:
+                if not is_private_chat:
+                    self.api.send_message(chat_id, admin_text("private_only"), message_id)
+                    return
+                if not re.fullmatch(r"[0-9]{1,6}", text) or not 1 <= int(text) <= MAX_DAILY_LIMIT:
+                    self.api.send_message(
+                        chat_id, admin_text("default_limit_range"), message_id, default_limit_keyboard()
+                    )
+                    return
+                limit = int(text)
+                self.pending_default_quotas[user_id] = limit
+                self.api.send_message(
+                    chat_id,
+                    admin_text("default_limit_confirm").format(limit=limit),
+                    message_id,
+                    default_limit_keyboard(limit),
+                )
+                return
+
         if (
             admin_mode
             and user_id in self.pending_user_searches
@@ -2778,9 +2863,9 @@ class Bot:
             if is_owner and not self.acl.has_user(target):
                 self.api.send_message(
                     chat_id,
-                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {DEFAULT_DAILY_LIMIT} 建立此使用者？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {DEFAULT_DAILY_LIMIT}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {DEFAULT_DAILY_LIMIT} で作成しますか？"}[OWNER_LANGUAGE],
+                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {self.acl.default_daily_limit} 建立此使用者？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {self.acl.default_daily_limit}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {self.acl.default_daily_limit} で作成しますか？"}[OWNER_LANGUAGE],
                     message_id,
-                    confirm_new_user_keyboard(target, DEFAULT_DAILY_LIMIT),
+                    confirm_new_user_keyboard(target, self.acl.default_daily_limit),
                 )
                 return
             self.send_user_search_result(chat_id, message_id, target, user_id)
@@ -2803,7 +2888,7 @@ class Bot:
                     )
                     return
                 target = int(numeric_parts[0])
-                quota = DEFAULT_DAILY_LIMIT
+                quota = self.acl.default_daily_limit
                 if len(numeric_parts) == 2:
                     try:
                         quota = int(numeric_parts[1])
@@ -3246,6 +3331,7 @@ class Bot:
                 self.acl.owner_id,
                 can_modify,
                 allow_admin=actor_id == self.acl.owner_id,
+                default_daily_limit=self.acl.default_daily_limit,
             ),
         )
 
@@ -3503,6 +3589,7 @@ class Bot:
                 keyboard = owner_keyboard(True)
             else:
                 self.pending_user_searches.discard(user_id)
+                self.pending_default_quotas.pop(user_id, None)
                 text = public_text(language, "start_allowed")
                 keyboard = start_keyboard(
                     language, True, True, is_owner, False
@@ -3530,6 +3617,7 @@ class Bot:
         if data.startswith("nav:"):
             destination = data.split(":", 1)[1]
             self.pending_user_searches.discard(user_id)
+            self.pending_default_quotas.pop(user_id, None)
             if destination == "main":
                 text, keyboard = admin_text("menu"), owner_keyboard(True)
             elif destination == "users":
@@ -3558,7 +3646,16 @@ class Bot:
                     self.acl.external_access_enabled,
                     self.acl.auto_approve_enabled,
                     is_owner,
+                    self.acl.default_daily_limit,
                 )
+            elif destination == "defaultquota":
+                if not is_owner:
+                    self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                    return
+                self.pending_cookie_uploads.discard(user_id)
+                self.pending_default_quotas[user_id] = None
+                text = admin_text("default_limit_prompt").format(limit=self.acl.default_daily_limit)
+                keyboard = default_limit_keyboard()
             elif destination == "help":
                 text, keyboard = owner_help_text(is_owner), owner_keyboard(True)
             elif destination == "userlist":
@@ -3624,6 +3721,29 @@ class Bot:
             target = int(target_text)
         except (ValueError, TypeError):
             self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
+            return
+
+        if action == "defaultquota":
+            if not is_owner:
+                self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                return
+            if not 1 <= target <= MAX_DAILY_LIMIT:
+                self.api.answer_callback(callback_id, admin_text("default_limit_range"), alert=True)
+                return
+            if self.pending_default_quotas.get(user_id) != target:
+                self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
+                return
+            changed = self.acl.set_default_daily_limit(user_id, target)
+            self.pending_default_quotas.pop(user_id, None)
+            self.api.edit_message(
+                chat_id, message_id,
+                admin_text("default_limit_changed").format(limit=target, count=changed),
+                advanced_status_keyboard(
+                    self.acl.debug_mode(user_id), self.acl.external_access_enabled,
+                    self.acl.auto_approve_enabled, is_owner, self.acl.default_daily_limit,
+                ),
+            )
+            self.api.answer_callback(callback_id, admin_text("permission_changed"))
             return
 
         if action == "userspage":
@@ -3740,6 +3860,7 @@ class Bot:
                     self.acl.external_access_enabled,
                     self.acl.auto_approve_enabled,
                     is_owner,
+                    self.acl.default_daily_limit,
                 ),
             )
             self.api.answer_callback(
@@ -3762,6 +3883,7 @@ class Bot:
                     enabled,
                     self.acl.auto_approve_enabled,
                     is_owner,
+                    self.acl.default_daily_limit,
                 ),
             )
             self.api.answer_callback(
@@ -3784,6 +3906,7 @@ class Bot:
                     self.acl.external_access_enabled,
                     enabled,
                     is_owner,
+                    self.acl.default_daily_limit,
                 ),
             )
             self.api.answer_callback(
@@ -3842,7 +3965,7 @@ class Bot:
                         public_text(
                             self.acl.language(applicant_id),
                             "approved",
-                            limit=DEFAULT_DAILY_LIMIT,
+                            limit=self.acl.default_daily_limit,
                         ),
                     )
                 except (requests.RequestException, RuntimeError):
@@ -3878,7 +4001,7 @@ class Bot:
                     public_text(
                         self.acl.language(target),
                         "approved",
-                        limit=DEFAULT_DAILY_LIMIT,
+                        limit=self.acl.default_daily_limit,
                     ),
                 )
             except (requests.RequestException, RuntimeError):
@@ -3922,7 +4045,7 @@ class Bot:
                 chat_id,
                 message_id,
                 {"zh": f"修改 User ID {target} 的用戶權限：", "en": f"Change access for User ID {target}:", "ja": f"User ID {target} の権限を変更："}[OWNER_LANGUAGE],
-                quota_choices_keyboard(target, allow_admin=is_owner),
+                quota_choices_keyboard(target, allow_admin=is_owner, default_daily_limit=self.acl.default_daily_limit),
             )
         elif action in {"quota", "limit", "ban", "unban"}:
             error = self.target_management_error(user_id, target)
