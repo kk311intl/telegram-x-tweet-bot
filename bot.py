@@ -30,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.3.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -181,13 +181,9 @@ PUBLIC_TEXT = {
         "start_allowed": "请发送有效的 X/Twitter 单篇推文链接。",
         "help_allowed": (
             "使用说明\n\n"
-            "1. 发送 x.com 或 twitter.com 的单篇推文链接。\n"
-            "2. Bot 会回传推文文字与媒体；图片另附未压缩文件。\n"
-            "3. 引用推文只处理提交链接本身，不会切换到被引用内容。\n"
-            f"4. 在其他聊天输入 {BOT_MENTION} 加上推文链接，可直接选择并发送媒体；"
-            "内联模式不会发送图片原始文件。\n"
-            "5. 视频超过 50 MB 时不会处理。\n\n"
-            "使用 /id 可查看自己的 Telegram User ID。"
+            "发送单篇 X/Twitter 推文链接，即可获取文字、图片和视频。\n"
+            f"在其他聊天输入 {BOT_MENTION} 加上推文链接，可选择并分享媒体。\n"
+            "视频上限 50 MB。"
         ),
         "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使用说明",
@@ -197,22 +193,22 @@ PUBLIC_TEXT = {
         "access": "此账号尚未获取使用权限。",
         "apply": "申请使用权限",
         "apply_created": "申请已提交。",
-        "apply_pending": "你的申请仍在等待审批。",
-        "apply_allowed": "你已经获取使用权限。",
-        "apply_auto_approved": "申请已自动通过，现在可以开始使用。",
-        "service_paused": "目前已暂停普通用户使用，请稍后再试。",
+        "apply_pending": "申请待审批。",
+        "apply_allowed": "已获取使用权限。",
+        "apply_auto_approved": "申请已通过，可以开始使用。",
+        "service_paused": "目前暂停使用，请稍后再试。",
         "invalid_url": "请发送有效的 X/Twitter 单篇推文链接。",
-        "queue_full": "目前处理队列已满，请稍后再试。",
+        "queue_full": "目前较忙，请稍后再试。",
         "quota": "今日使用已达到预设上限，请稍后再试或联系管理员。",
-        "approved": "你的 Bot 使用申请已通过，现在可以开始使用。",
+        "approved": "申请已通过，可以开始使用。",
         "failed": "处理失败，请稍后重试。",
-        "post_unavailable": "目前无法获取这条推文的文字或媒体，请确认推文仍可公开浏览，或稍后再试。",
-        "url_only": "此账号只接受 X/Twitter 单篇推文链接。",
+        "post_unavailable": "无法获取这条推文，请确认推文可公开浏览或稍后再试。",
+        "url_only": "请发送有效的 X/Twitter 单篇推文链接。",
         "inline_apply": "开启机器人申请使用权限",
-        "video_oversized": "有 {count} 个视频超过 50 MB，已跳过且未处理。",
-        "images_skipped": "部分图片超过上传或单篇总量限制，已跳过：{names}",
-        "preview_failed": "媒体预览未能发送，请稍后重新提交这条推文。",
-        "originals_failed": "预览已完成，但部分原始文件发送失败，请稍后重试。",
+        "video_oversized": "{count} 个视频超过 50 MB，已跳过。",
+        "images_skipped": "部分图片超过大小限制，已跳过。",
+        "preview_failed": "媒体预览发送失败，请稍后重试。",
+        "originals_failed": "部分原始文件发送失败，请稍后重试。",
         "language_set": "语言已切换为简体中文。",
         "unsupported_language": "不支持此语言。",
     },
@@ -220,13 +216,9 @@ PUBLIC_TEXT = {
         "start_allowed": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "help_allowed": (
             "使用說明\n\n"
-            "1. 傳送 x.com 或 twitter.com 的單篇貼文網址。\n"
-            "2. Bot 會回傳貼文文字與媒體；圖片另附未壓縮檔案。\n"
-            "3. 引用貼文只處理提交網址本身，不會切換到被引用內容。\n"
-            f"4. 在其他聊天輸入 {BOT_MENTION} 加上貼文網址，可直接選擇並發送媒體；"
-            "內聯模式不會發送圖片原始檔案。\n"
-            "5. 影片超過 50 MB 時不會處理。\n\n"
-            "使用 /id 可查看自己的 Telegram User ID。"
+            "傳送單篇 X/Twitter 貼文網址，即可取得文字、圖片和影片。\n"
+            f"在其他聊天輸入 {BOT_MENTION} 加上貼文網址，可選擇並分享媒體。\n"
+            "影片上限 50 MB。"
         ),
         "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使用說明",
@@ -236,22 +228,22 @@ PUBLIC_TEXT = {
         "access": "此帳號尚未取得使用權限。",
         "apply": "申請使用權限",
         "apply_created": "申請已送出。",
-        "apply_pending": "你的申請仍在等待審批。",
-        "apply_allowed": "你已經取得使用權限。",
-        "apply_auto_approved": "申請已自動通過，現在可以開始使用。",
-        "service_paused": "目前已暫停普通用戶使用，請稍後再試。",
+        "apply_pending": "申請待審批。",
+        "apply_allowed": "已取得使用權限。",
+        "apply_auto_approved": "申請已通過，可以開始使用。",
+        "service_paused": "目前暫停使用，請稍後再試。",
         "invalid_url": "請傳送有效的 X/Twitter 單篇貼文網址。",
-        "queue_full": "目前處理佇列已滿，請稍後再試。",
+        "queue_full": "目前較忙，請稍後再試。",
         "quota": "今日使用已達到預設上限，請稍後再試或聯繫管理員。",
-        "approved": "你的 Bot 使用申請已通過，現在可以開始使用。",
+        "approved": "申請已通過，可以開始使用。",
         "failed": "處理失敗，請稍後重試。",
-        "post_unavailable": "目前無法取得這則貼文的文字或媒體，請確認貼文仍可公開瀏覽，或稍後再試。",
-        "url_only": "此帳號只接受 X/Twitter 單篇貼文連結。",
+        "post_unavailable": "無法取得這則貼文，請確認貼文可公開瀏覽或稍後再試。",
+        "url_only": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "inline_apply": "開啟機器人申請使用權限",
-        "video_oversized": "有 {count} 個影片超過 50 MB，已略過且未處理。",
-        "images_skipped": "部分圖片超過上傳或單篇總量限制，已略過：{names}",
-        "preview_failed": "媒體預覽未能傳送，請稍後重新提交這則貼文。",
-        "originals_failed": "預覽已完成，但部分原始檔案傳送失敗，請稍後重試。",
+        "video_oversized": "{count} 個影片超過 50 MB，已略過。",
+        "images_skipped": "部分圖片超過大小限制，已略過。",
+        "preview_failed": "媒體預覽傳送失敗，請稍後重試。",
+        "originals_failed": "部分原始檔案傳送失敗，請稍後重試。",
         "language_set": "語言已切換為繁體中文。",
         "unsupported_language": "不支援此語言。",
     },
@@ -259,13 +251,9 @@ PUBLIC_TEXT = {
         "start_allowed": "Send a valid single-post X/Twitter URL.",
         "help_allowed": (
             "How to use\n\n"
-            "1. Send a single-post URL from x.com or twitter.com.\n"
-            "2. The Bot returns the post text and media; images also include uncompressed files.\n"
-            "3. For quoted posts, only the submitted post is processed; quoted content is not followed.\n"
-            f"4. In another chat, type {BOT_MENTION} followed by the post URL "
-            "to select and send media. Inline mode does not send original image files.\n"
-            "5. Videos larger than 50 MB are not processed.\n\n"
-            "Use /id to view your Telegram User ID."
+            "Send a single X/Twitter post URL to get its text, images and videos.\n"
+            f"In another chat, type {BOT_MENTION} followed by the post URL to select and share media.\n"
+            "Video limit: 50 MB."
         ),
         "language_menu": "🌐 Language",
         "help_menu": "ℹ️ How to use",
@@ -277,20 +265,20 @@ PUBLIC_TEXT = {
         "apply_created": "Your request was submitted.",
         "apply_pending": "Your request is still pending.",
         "apply_allowed": "You already have access.",
-        "apply_auto_approved": "Your request was approved automatically. You can start using the Bot now.",
-        "service_paused": "Access for regular users is temporarily paused. Try again later.",
+        "apply_auto_approved": "Access approved. You can start using the bot.",
+        "service_paused": "Service temporarily paused. Try again later.",
         "invalid_url": "Send a valid single-post X/Twitter URL.",
-        "queue_full": "The processing queue is full. Try again later.",
+        "queue_full": "The bot is busy. Try again later.",
         "quota": "You have reached the preset usage limit for today. Try again later or contact an administrator.",
-        "approved": "Your Bot access request was approved. You can start using it now.",
+        "approved": "Access approved. You can start using the bot.",
         "failed": "Processing failed. Try again later.",
-        "post_unavailable": "This post's text and media are unavailable. Check that it is still public, or try again later.",
-        "url_only": "This account only accepts single-post X/Twitter URLs.",
+        "post_unavailable": "Couldn't get this post. Check that it is public or try again later.",
+        "url_only": "Send a valid single-post X/Twitter URL.",
         "inline_apply": "Open the Bot to request access",
         "video_oversized": "{count} video(s) exceeded 50 MB and were skipped.",
-        "images_skipped": "Some images exceeded the upload or per-post size limit and were skipped: {names}",
-        "preview_failed": "The media preview could not be delivered. Please submit this post again later.",
-        "originals_failed": "The preview was sent, but some original files could not be delivered. Try again later.",
+        "images_skipped": "Some images were too large and were skipped.",
+        "preview_failed": "Couldn't send the media preview. Try again later.",
+        "originals_failed": "Couldn't send some original files. Try again later.",
         "language_set": "Language changed to English.",
         "unsupported_language": "Unsupported language.",
     },
@@ -298,13 +286,9 @@ PUBLIC_TEXT = {
         "start_allowed": "有効な X/Twitter の単一投稿URLを送信してください。",
         "help_allowed": (
             "使い方\n\n"
-            "1. x.com または twitter.com の単一投稿URLを送信します。\n"
-            "2. Bot が本文とメディアを返します。画像は未圧縮ファイルも送信します。\n"
-            "3. 引用投稿では、引用先ではなく送信した投稿自体を処理します。\n"
-            f"4. 他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると、"
-            "メディアを選択して送信できます。インラインモードでは画像の元ファイルを送信しません。\n"
-            "5. 50 MB を超える動画は処理しません。\n\n"
-            "/id で自分の Telegram User ID を確認できます。"
+            "X/Twitter の単一投稿URLを送ると、本文・画像・動画を取得できます。\n"
+            f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると、メディアを選んで共有できます。\n"
+            "動画は 50 MB まで。"
         ),
         "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使い方",
@@ -316,20 +300,20 @@ PUBLIC_TEXT = {
         "apply_created": "申請を送信しました。",
         "apply_pending": "申請は審査待ちです。",
         "apply_allowed": "すでに利用が許可されています。",
-        "apply_auto_approved": "申請は自動的に承認されました。すぐにBotを利用できます。",
-        "service_paused": "一般ユーザーの利用を一時停止しています。しばらくしてから再試行してください。",
+        "apply_auto_approved": "申請が承認されました。利用を開始できます。",
+        "service_paused": "利用を一時停止しています。しばらくしてから再試行してください。",
         "invalid_url": "有効な X/Twitter の単一投稿URLを送信してください。",
-        "queue_full": "処理キューが満杯です。しばらくしてから再試行してください。",
+        "queue_full": "ただいま混み合っています。しばらくしてから再試行してください。",
         "quota": "本日の利用回数が設定された上限に達しました。しばらくしてから再試行するか、管理者にお問い合わせください。",
-        "approved": "Bot の利用申請が承認されました。すぐに利用できます。",
+        "approved": "申請が承認されました。利用を開始できます。",
         "failed": "処理に失敗しました。しばらくしてから再試行してください。",
-        "post_unavailable": "この投稿の本文とメディアを取得できません。投稿が公開されているか確認するか、しばらくしてから再試行してください。",
-        "url_only": "このアカウントでは X/Twitter の単一投稿URLのみ受け付けます。",
+        "post_unavailable": "投稿を取得できません。公開されているか確認するか、しばらくしてから再試行してください。",
+        "url_only": "有効な X/Twitter の単一投稿URLを送信してください。",
         "inline_apply": "Botを開いて利用を申請",
-        "video_oversized": "{count} 件の動画が 50 MB を超えたため、処理せずスキップしました。",
-        "images_skipped": "一部の画像がアップロードまたは投稿単位の容量上限を超えたため、スキップしました：{names}",
-        "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから、この投稿をもう一度送信してください。",
-        "originals_failed": "プレビューは送信できましたが、一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
+        "video_oversized": "{count} 件の動画が 50 MB を超えたため、スキップしました。",
+        "images_skipped": "一部の画像はサイズが大きすぎるため、スキップしました。",
+        "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから再試行してください。",
+        "originals_failed": "一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
         "language_set": "表示言語を日本語に変更しました。",
         "unsupported_language": "この言語は対応していません。",
     },
@@ -364,6 +348,34 @@ ADMIN_TEXT = {
     "cookie_help": ("Cookies 說明", "Cookies guide", "Cookies の説明", "Cookies 说明"),
     "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
     "status": ("系統狀態", "System status", "システム状態", "系统状态"),
+    "status_runtime": (
+        "服務：{service}\n運行時間：{uptime}\n處理佇列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
+        "Service: {service}\nUptime: {uptime}\nQueue: {queue_size}/{queue_limit} ({queue_percent}%)\n\n",
+        "サービス：{service}\n稼働時間：{uptime}\n待機列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
+        "服务：{service}\n运行时间：{uptime}\n处理队列：{queue_size}/{queue_limit}（{queue_percent}%）\n\n",
+    ),
+    "status_users": (
+        "用戶\n總記錄：{total}｜普通：{ordinary}｜管理員：{administrators}｜初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n",
+        "Users\nRecords: {total} | Regular: {ordinary} | Administrators: {administrators} | Initialized: {initialized} | Pending: {pending} | Blocked: {banned}\nActive today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n",
+        "ユーザー\n記録：{total}｜一般：{ordinary}｜管理者：{administrators}｜初期化：{initialized}｜審査待ち：{pending}｜ブロック：{banned}\n本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n",
+        "用户\n总记录：{total}｜普通：{ordinary}｜管理员：{administrators}｜初始化：{initialized}｜待审批：{pending}｜封禁：{banned}\n今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n",
+    ),
+    "status_schedule": (
+        "統計重置：每日 {reset_hour:02d}:00 {timezone}\n每日簡報：{report_hour:02d}:00 {timezone}\n\n",
+        "Usage reset: {reset_hour:02d}:00 {timezone}\nDaily report: {report_hour:02d}:00 {timezone}\n\n",
+        "利用回数のリセット：{reset_hour:02d}:00 {timezone}\n日次レポート：{report_hour:02d}:00 {timezone}\n\n",
+        "统计重置：每日 {reset_hour:02d}:00 {timezone}\n每日简报：{report_hour:02d}:00 {timezone}\n\n",
+    ),
+    "status_cookies": (
+        "X Cookies：{configured}\nCookies 開關：{enabled}\n",
+        "X Cookies: {configured}\nCookies for regular users: {enabled}\n",
+        "X Cookies：{configured}\n一般ユーザーの Cookies：{enabled}\n",
+        "X Cookies：{configured}\nCookies 开关：{enabled}\n",
+    ),
+    "running": ("正常", "Running", "稼働中", "正常"),
+    "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
+    "configured": ("已設定", "Configured", "設定済み", "已设置"),
+    "not_configured": ("未設定", "Not configured", "未設定", "未设置"),
     "help": ("使用說明", "Help", "使い方", "使用说明"),
     "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
     "implementation": ("實現方式", "Implementation details", "実装方法", "实现方式"),
@@ -537,6 +549,10 @@ class ACLStore:
         pending = raw.get("pending_applications") or {}
         if not isinstance(users, dict) or not isinstance(pending, dict):
             raise ValueError("ACL users and pending applications must be objects")
+        for setting in ("external_access_enabled", "ordinary_user_cookies_enabled",
+                        "auto_approve_enabled", "debug_mode"):
+            if setting in raw and type(raw[setting]) is not bool:
+                raise ValueError(f"invalid ACL boolean: {setting}")
         data: dict[str, Any] = {
             "owner_id": int(raw.get("owner_id", 0) or 0),
             "users": users,
@@ -576,6 +592,8 @@ class ACLStore:
             record = users.setdefault(str(user_id), {"user_id": user_id})
             if not isinstance(record, dict):
                 raise ValueError("ACL user record must be an object")
+            if "debug_mode" in record and type(record["debug_mode"]) is not bool:
+                raise ValueError("invalid ACL user debug mode")
             record.pop("management_mode", None)
             record["user_id"] = user_id
             if user_id == data["owner_id"]:
@@ -984,12 +1002,15 @@ class ACLStore:
             self._save()
             return "created"
 
-    def approve(self, user_id: int) -> bool:
+    def approve(self, user_id: int, requested_at: float | None = None) -> bool:
         with self.lock:
             if self.is_banned(user_id):
                 return False
             key = str(user_id)
             if key not in self.data["pending_applications"] or self.is_admin(user_id):
+                return False
+            if (requested_at is not None and requested_at !=
+                    self.data["pending_applications"][key].get("requested_at")):
                 return False
             self.data["pending_applications"].pop(key, None)
             record = self.data["users"].setdefault(key, {"user_id": user_id})
@@ -998,8 +1019,12 @@ class ACLStore:
             self._save()
             return True
 
-    def deny(self, user_id: int) -> bool:
+    def deny(self, user_id: int, requested_at: float | None = None) -> bool:
         with self.lock:
+            application = self.data["pending_applications"].get(str(user_id))
+            if (requested_at is not None and (not application or
+                    requested_at != application.get("requested_at"))):
+                return False
             removed = self.data["pending_applications"].pop(str(user_id), None)
             self._save()
             return removed is not None
@@ -1282,9 +1307,10 @@ def pending_keyboard(
     for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
         user_id = int(record["user_id"])
         label = user_label(record)[:24]
+        requested_at = record["requested_at"]
         rows.append([
-            {"text": f'{admin_text("approve")} {label}', "callback_data": f"approve:{user_id}:{page}"},
-            {"text": admin_text("deny"), "callback_data": f"deny:{user_id}:{page}"},
+            {"text": f'{admin_text("approve")} {label}', "callback_data": f"approve:{user_id}:{page}:{requested_at}"},
+            {"text": admin_text("deny"), "callback_data": f"deny:{user_id}:{page}:{requested_at}"},
         ])
     rows.append([{
         "text": admin_text("approve_page"),
@@ -1745,6 +1771,10 @@ class TelegramAPI:
                 {"command": "start", "description": "啟動並顯示操作選單"},
                 {"command": "id", "description": "顯示我的 User ID"},
             ],
+            "zh": [
+                {"command": "start", "description": "启动并显示操作菜单"},
+                {"command": "id", "description": "显示我的 User ID"},
+            ],
             "en": [
                 {"command": "start", "description": "Start and show the options"},
                 {"command": "id", "description": "Show my User ID"},
@@ -1771,29 +1801,23 @@ class TelegramAPI:
         profiles = {
             "": (
                 "傳送 X/Twitter 貼文連結，取得文字、圖片與影片。",
-                "傳送單篇 X/Twitter 貼文連結，機器人會回傳作者連結、貼文文字、圖片與影片。"
-                "媒體可提供預覽；圖片另附未壓縮檔案。取得授權後，也可在其他聊天"
-                f"透過 {BOT_MENTION} 加網址使用內聯媒體。",
+                "傳送單篇 X/Twitter 貼文網址，取得文字、圖片和影片。"
+                f"取得使用權限後，也可在其他聊天輸入 {BOT_MENTION} 加上網址分享媒體。",
             ),
             "zh": (
                 "发送 X/Twitter 推文链接，获取文字、图片与视频。",
-                "发送单篇 X/Twitter 推文链接，机器人会返回作者链接、推文文字、图片与视频。"
-                "媒体提供预览，图片另附未压缩文件。获得授权后，也可以在其他聊天"
-                f"通过 {BOT_MENTION} 加链接使用内联媒体。",
+                "发送单篇 X/Twitter 推文链接，获取文字、图片和视频。"
+                f"获取使用权限后，也可在其他聊天输入 {BOT_MENTION} 加上链接分享媒体。",
             ),
             "en": (
                 "Send an X/Twitter post URL to retrieve its text, images and videos.",
-                "Send a single X/Twitter post URL to receive the author profile link, text, images and videos. "
-                "Media previews are included, and original image files are sent without "
-                f"compression. Once authorized, use {BOT_MENTION} plus a URL inline "
-                "in other chats.",
+                "Send a single X/Twitter post URL to get its text, images and videos. "
+                f"Once approved, type {BOT_MENTION} followed by the post URL in another chat to share media.",
             ),
             "ja": (
                 "X/Twitterの投稿URLから本文・画像・動画を取得します。",
-                "X/Twitterの単一投稿URLを送信すると、投稿者リンク・本文・画像・動画を取得できます。"
-                "メディアのプレビューに加え、画像は未圧縮のファイルも送信されます。"
-                f"承認後は他のチャットで {BOT_MENTION} とURLを入力して"
-                "インラインメディアを利用できます。",
+                "X/Twitterの単一投稿URLを送ると、本文・画像・動画を取得できます。"
+                f"承認後は他のチャットで {BOT_MENTION} に続けて投稿URLを入力し、メディアを共有できます。",
             ),
         }
         for language_code, (short_description, description) in profiles.items():
@@ -1862,9 +1886,6 @@ class TelegramAPI:
         if button:
             data["button"] = json.dumps(button, ensure_ascii=False)
         self.call("answerInlineQuery", data, timeout=(10, 30))
-
-    def delete_message(self, chat_id: int, message_id: int) -> None:
-        self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
     def send_preview(
         self,
@@ -2196,6 +2217,18 @@ def fxtwitter_text_author(tweet: dict[str, Any]) -> tuple[str, str, str]:
     return str(tweet.get("text") or "").strip(), author_name, author_url
 
 
+def sorted_mp4_formats(item: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted(
+        (entry for entry in item.get("formats") or []
+         if isinstance(entry, dict) and entry.get("container") == "mp4" and entry.get("url")),
+        key=lambda entry: (
+            int(entry.get("width") or 0) * int(entry.get("height") or 0),
+            int(entry.get("bitrate") or 0),
+        ),
+        reverse=True,
+    )
+
+
 def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2207,21 +2240,8 @@ def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         candidate = dict(item)
         if candidate.get("type") in {"video", "gif"}:
-            formats = [
-                entry for entry in candidate.get("formats") or []
-                if isinstance(entry, dict)
-                and entry.get("container") == "mp4"
-                and entry.get("url")
-            ]
+            formats = sorted_mp4_formats(candidate)
             if formats:
-                formats.sort(
-                    key=lambda entry: (
-                        int(entry.get("width") or 0)
-                        * int(entry.get("height") or 0),
-                        int(entry.get("bitrate") or 0),
-                    ),
-                    reverse=True,
-                )
                 candidate["url"] = formats[0]["url"]
         media_url = str(candidate.get("url") or "")
         if media_url and media_url not in seen:
@@ -2449,20 +2469,7 @@ def download_fxtwitter_media(
         item_limit = MAX_VIDEO_BYTES if media_type in {"video", "gif"} else MAX_MEDIA_BYTES
         candidates = [item]
         if media_type in {"video", "gif"}:
-            formats = [
-                entry for entry in item.get("formats") or []
-                if isinstance(entry, dict)
-                and entry.get("container") == "mp4"
-                and entry.get("url")
-            ]
-            formats.sort(
-                key=lambda entry: (
-                    int(entry.get("width") or 0) * int(entry.get("height") or 0),
-                    int(entry.get("bitrate") or 0),
-                ),
-                reverse=True,
-            )
-            candidates = formats or candidates
+            candidates = sorted_mp4_formats(item) or candidates
 
         item_downloaded = False
         item_oversized = False
@@ -3350,6 +3357,8 @@ class Bot:
     def pending_page(
         self, records: list[dict[str, Any]], page: int
     ) -> tuple[str, dict[str, Any], int]:
+        if not records:
+            return admin_text("no_requests"), user_menu_keyboard(), 0
         pages = max(1, (len(records) + MANAGEMENT_PAGE_SIZE - 1) // MANAGEMENT_PAGE_SIZE)
         page = max(0, min(page, pages - 1))
         start = page * MANAGEMENT_PAGE_SIZE
@@ -3362,6 +3371,18 @@ class Bot:
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             lines.append(f"• {user_label(record)}｜ID {record['user_id']}")
         return "\n".join(lines), pending_keyboard(records, page), page
+
+    def edit_pending_page(
+        self, chat_id: int, message_id: int, records: list[dict[str, Any]], page: int,
+        empty_keyboard: dict[str, Any] | None = None,
+    ) -> None:
+        if records:
+            text, keyboard, _ = self.pending_page(records, page)
+            self.api.edit_message(chat_id, message_id, text, keyboard)
+        elif empty_keyboard is not None:
+            self.api.edit_message(chat_id, message_id, admin_text("no_requests"), empty_keyboard)
+        else:
+            self.api.edit_message(chat_id, message_id, admin_text("no_requests"))
 
     def user_search_result(
         self, target: int, actor_id: int | None = None
@@ -3470,71 +3491,30 @@ class Bot:
         )
         queue_size = self.jobs.qsize()
         queue_percent = round(queue_size * 100 / MAX_QUEUE) if MAX_QUEUE else 0
-        cookies_set = COOKIES_PATH.exists()
-        if ui_language() == "en":
-            state = lambda enabled: "On" if enabled else "Off"
-            return (
-                f"System status\n\nService: {'Running' if any(worker.is_alive() for worker in self.workers) else 'Worker stopped'}\n"
-                f"Uptime: {format_duration(time.time() - self.started_at)}\n"
-                f"Queue: {queue_size}/{MAX_QUEUE} ({queue_percent}%)\n\n"
-                f"Users\nRecords: {len(records)} | Regular: {ordinary} | Administrators: {administrators} | Initialized: {initialized} | Pending: {pending} | Blocked: {banned}\n"
-                f"Active today: {active_today} | Usage today: {interactions} | At quota: {exhausted}\n"
-                f"Usage reset: {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\nDaily report: {DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
-                f"X Cookies: {'Configured' if cookies_set else 'Not configured'}\n"
-                f"Cookies for regular users: {state(self.acl.ordinary_user_cookies_enabled)}\n"
-                f"User access: {'Open' if self.acl.external_access_enabled else 'Paused'}\n"
-                f"Auto-approve: {state(self.acl.auto_approve_enabled)}\n"
-                + (f"\nImplementation details: {state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
-            )
-        if ui_language() == "ja":
-            state = lambda enabled: "オン" if enabled else "オフ"
-            return (
-                f"システム状態\n\nサービス：{'稼働中' if any(worker.is_alive() for worker in self.workers) else 'ワーカー停止'}\n"
-                f"稼働時間：{format_duration(time.time() - self.started_at)}\n"
-                f"待機列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
-                f"ユーザー\n記録：{len(records)}｜一般：{ordinary}｜管理者：{administrators}｜初期化：{initialized}｜審査待ち：{pending}｜ブロック：{banned}\n"
-                f"本日の利用者：{active_today}｜本日の使用量：{interactions}｜上限到達：{exhausted}\n"
-                f"利用回数のリセット：{DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n日次レポート：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
-                f"X Cookies：{'設定済み' if cookies_set else '未設定'}\n"
-                f"一般ユーザーの Cookies：{state(self.acl.ordinary_user_cookies_enabled)}\n"
-                f"ユーザー利用：{'許可' if self.acl.external_access_enabled else '停止'}\n"
-                f"自動承認：{state(self.acl.auto_approve_enabled)}\n"
-                + (f"\n実装方法：{state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
-            )
-        return {
-            "zh": ("系統狀態\n\n"
-                f"服務：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作執行緒未運行'}\n"
-                f"運行時間：{format_duration(time.time() - self.started_at)}\n"
-                f"處理佇列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
-                "用戶\n"
-                f"總記錄：{len(records)}｜普通：{ordinary}｜管理員：{administrators}｜"
-                f"初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n"
-                f"今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n"
-                f"統計重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
-                f"每日簡報：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
-                f"X Cookies：{'已設定' if COOKIES_PATH.exists() else '未設定'}\n"
-                f"Cookies 開關："
-                f"{'開啟' if self.acl.ordinary_user_cookies_enabled else '關閉'}\n"
-                f"使用開關：{'開放' if self.acl.external_access_enabled else '暫停'}\n"
-                f"自動通過：{'開啟' if self.acl.auto_approve_enabled else '關閉'}\n"
-                + (f"\n實現方式：{'開啟' if self.acl.debug_mode(viewer_id) else '關閉'}" if viewer_id == self.acl.owner_id else "")),
-            "zh-cn": ("系统状态\n\n"
-                f"服务：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作线程未运行'}\n"
-                f"运行时间：{format_duration(time.time() - self.started_at)}\n"
-                f"处理队列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
-                "用户\n"
-                f"总记录：{len(records)}｜普通：{ordinary}｜管理员：{administrators}｜"
-                f"初始化：{initialized}｜待审批：{pending}｜封禁：{banned}\n"
-                f"今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n"
-                f"统计重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
-                f"每日简报：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
-                f"X Cookies：{'已设置' if COOKIES_PATH.exists() else '未设置'}\n"
-                f"Cookies 开关："
-                f"{'开启' if self.acl.ordinary_user_cookies_enabled else '关闭'}\n"
-                f"使用开关：{'开放' if self.acl.external_access_enabled else '暂停'}\n"
-                f"自动通过：{'开启' if self.acl.auto_approve_enabled else '关闭'}\n"
-                + (f"\n实现方式：{'开启' if self.acl.debug_mode(viewer_id) else '关闭'}" if viewer_id == self.acl.owner_id else "")),
-        }[ui_language()]
+        separator = ": " if ui_language() == "en" else "："
+        text = admin_text("status") + "\n\n"
+        text += admin_text("status_runtime").format(
+            service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
+            uptime=format_duration(time.time() - self.started_at),
+            queue_size=queue_size, queue_limit=MAX_QUEUE, queue_percent=queue_percent,
+        )
+        text += admin_text("status_users").format(
+            total=len(records), ordinary=ordinary, administrators=administrators,
+            initialized=initialized, pending=pending, banned=banned,
+            active_today=active_today, interactions=interactions, exhausted=exhausted,
+        )
+        text += admin_text("status_schedule").format(
+            reset_hour=DAILY_RESET_HOUR, report_hour=DAILY_REPORT_HOUR, timezone=BOT_TIMEZONE_NAME,
+        )
+        text += admin_text("status_cookies").format(
+            configured=admin_text("configured" if COOKIES_PATH.exists() else "not_configured"),
+            enabled=admin_text("on" if self.acl.ordinary_user_cookies_enabled else "off"),
+        )
+        text += admin_text("access_switch") + separator + admin_text("open" if self.acl.external_access_enabled else "paused") + "\n"
+        text += admin_text("auto_approve") + separator + admin_text("on" if self.acl.auto_approve_enabled else "off") + "\n"
+        if viewer_id == self.acl.owner_id:
+            text += "\n" + admin_text("implementation") + separator + admin_text("on" if self.acl.debug_mode(viewer_id) else "off")
+        return text
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         user_id = int((callback.get("from") or {}).get("id", 0) or 0)
@@ -3715,11 +3695,7 @@ class Bot:
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
-                records = self.acl.pending()
-                if records:
-                    text, keyboard, _ = self.pending_page(records, 0)
-                else:
-                    text, keyboard = admin_text("no_requests"), user_menu_keyboard()
+                text, keyboard, _ = self.pending_page(self.acl.pending(), 0)
             elif destination == "finduser":
                 self.pending_user_searches.add(user_id)
                 text, keyboard = admin_text("find_user"), user_menu_keyboard()
@@ -3799,6 +3775,28 @@ class Bot:
             )
             self.api.answer_callback(callback_id, admin_text("permission_changed"))
             return
+
+        self.clear_pending_input(user_id)
+
+        requested_at = None
+        if action in {"approve", "deny"}:
+            error = self.target_management_error(user_id, target)
+            if error:
+                self.api.answer_callback(callback_id, error, alert=True)
+                return
+            application = self.acl.data["pending_applications"].get(str(target))
+            if action == "approve" and not application:
+                self.api.answer_callback(callback_id, admin_text("approve_missing"), alert=True)
+                return
+            try:
+                requested_at = float(extra[1])
+            except (IndexError, ValueError, TypeError):
+                requested_at = None
+            if (requested_at is None or not application or
+                    requested_at != application.get("requested_at")):
+                self.edit_pending_page(chat_id, message_id, self.acl.pending(), 0, user_menu_keyboard())
+                self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
+                return
 
         if action == "userspage":
             if target < 0:
@@ -3898,59 +3896,18 @@ class Bot:
             )
             self.api.answer_callback(callback_id, "")
             return
-        if action == "debugtoggle":
+        if action in {"debugtoggle", "externaltoggle", "autoapprovetoggle"}:
+            toggle, error_key, label = {
+                "debugtoggle": (self.acl.toggle_debug_mode, "advanced_owner_only", "implementation"),
+                "externaltoggle": (self.acl.toggle_external_access, "access_owner_only", "access_switch"),
+                "autoapprovetoggle": (self.acl.toggle_auto_approve, "auto_owner_only", "auto_approve"),
+            }[action]
             if not is_owner:
                 self.api.answer_callback(
-                    callback_id, admin_text("advanced_owner_only"), alert=True
+                    callback_id, admin_text(error_key), alert=True
                 )
                 return
-            enabled = self.acl.toggle_debug_mode(user_id)
-            self.api.edit_message(
-                chat_id,
-                message_id,
-                self.system_status_text(user_id),
-                advanced_status_keyboard(
-                    enabled,
-                    self.acl.external_access_enabled,
-                    self.acl.auto_approve_enabled,
-                    is_owner,
-                    self.acl.default_daily_limit,
-                ),
-            )
-            self.api.answer_callback(
-                callback_id, f"實現方式已{'開啟' if enabled else '關閉'}。" if ui_language() == "zh" else f'{admin_text("implementation")}: {admin_text("on" if enabled else "off")}'
-            )
-            return
-        if action == "externaltoggle":
-            if not is_owner:
-                self.api.answer_callback(
-                    callback_id, admin_text("access_owner_only"), alert=True
-                )
-                return
-            enabled = self.acl.toggle_external_access(user_id)
-            self.api.edit_message(
-                chat_id,
-                message_id,
-                self.system_status_text(user_id),
-                advanced_status_keyboard(
-                    self.acl.debug_mode(user_id),
-                    enabled,
-                    self.acl.auto_approve_enabled,
-                    is_owner,
-                    self.acl.default_daily_limit,
-                ),
-            )
-            self.api.answer_callback(
-                callback_id, f"使用開關已{'開放' if enabled else '暫停'}。" if ui_language() == "zh" else f'{admin_text("access_switch")}: {admin_text("open" if enabled else "paused")}'
-            )
-            return
-        if action == "autoapprovetoggle":
-            if not is_owner:
-                self.api.answer_callback(
-                    callback_id, admin_text("auto_owner_only"), alert=True
-                )
-                return
-            enabled = self.acl.toggle_auto_approve(user_id)
+            enabled = toggle(user_id)
             self.api.edit_message(
                 chat_id,
                 message_id,
@@ -3958,14 +3915,15 @@ class Bot:
                 advanced_status_keyboard(
                     self.acl.debug_mode(user_id),
                     self.acl.external_access_enabled,
-                    enabled,
+                    self.acl.auto_approve_enabled,
                     is_owner,
                     self.acl.default_daily_limit,
                 ),
             )
-            self.api.answer_callback(
-                callback_id, f"自動通過已{'開啟' if enabled else '關閉'}。" if ui_language() == "zh" else f'{admin_text("auto_approve")}: {admin_text("on" if enabled else "off")}'
-            )
+            state_key = ("open" if enabled else "paused") if action == "externaltoggle" else ("on" if enabled else "off")
+            state = admin_text(state_key)
+            notice = f"{admin_text(label)}已{state}。" if ui_language() == "zh" else f"{admin_text(label)}: {state}"
+            self.api.answer_callback(callback_id, notice)
             return
         if action == "ordinarycookiestoggle":
             if not is_owner:
@@ -3991,12 +3949,7 @@ class Bot:
             if target < 0:
                 self.api.answer_callback(callback_id, admin_text("menu_invalid_page"), alert=True)
                 return
-            records = self.acl.pending()
-            if not records:
-                self.api.edit_message(chat_id, message_id, admin_text("no_requests"))
-            else:
-                text, keyboard, _ = self.pending_page(records, target)
-                self.api.edit_message(chat_id, message_id, text, keyboard)
+            self.edit_pending_page(chat_id, message_id, self.acl.pending(), target)
             self.api.answer_callback(callback_id, "")
             return
 
@@ -4006,11 +3959,7 @@ class Bot:
                 return
             records = self.acl.pending()
             if not extra or extra[0] != pending_page_fingerprint(records, target):
-                if records:
-                    text, keyboard, _ = self.pending_page(records, target)
-                else:
-                    text, keyboard = admin_text("no_requests"), user_menu_keyboard()
-                self.api.edit_message(chat_id, message_id, text, keyboard)
+                self.edit_pending_page(chat_id, message_id, records, target, user_menu_keyboard())
                 self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
                 return
             start = target * MANAGEMENT_PAGE_SIZE
@@ -4034,26 +3983,12 @@ class Bot:
                     LOG.exception(
                         "Could not notify approved user %s", applicant_id
                     )
-            remaining = self.acl.pending()
-            if remaining:
-                text, keyboard, _ = self.pending_page(remaining, target)
-                self.api.edit_message(chat_id, message_id, text, keyboard)
-            else:
-                self.api.edit_message(
-                    chat_id,
-                    message_id,
-                    admin_text("no_requests"),
-                    user_menu_keyboard(),
-                )
+            self.edit_pending_page(chat_id, message_id, self.acl.pending(), target, user_menu_keyboard())
             self.api.answer_callback(callback_id, {"zh": f"已通過 {approved} 筆申請。", "en": f"Approved {approved} requests.", "ja": f"{approved} 件の申請を承認しました。", "zh-cn": (f"已通过 {approved} 笔申请。")}[ui_language()])
             return
 
         if action == "approve":
-            error = self.target_management_error(user_id, target)
-            if error:
-                self.api.answer_callback(callback_id, error, alert=True)
-                return
-            if not self.acl.approve(target):
+            if not self.acl.approve(target, requested_at=requested_at):
                 self.api.answer_callback(callback_id, admin_text("approve_missing"), alert=True)
                 return
             self.api.answer_callback(callback_id, {"zh": f"已通過 {target}。", "en": f"Approved {target}.", "ja": f"{target} を承認しました。", "zh-cn": (f"已通过 {target}。")}[ui_language()])
@@ -4073,30 +4008,18 @@ class Bot:
                     page = max(0, int(extra[0]))
                 except (ValueError, TypeError):
                     page = 0
-                records = self.acl.pending()
-                if records:
-                    text, keyboard, _ = self.pending_page(records, page)
-                    self.api.edit_message(chat_id, message_id, text, keyboard)
-                else:
-                    self.api.edit_message(chat_id, message_id, admin_text("no_requests"))
+                self.edit_pending_page(chat_id, message_id, self.acl.pending(), page)
         elif action == "deny":
-            error = self.target_management_error(user_id, target)
-            if error:
-                self.api.answer_callback(callback_id, error, alert=True)
+            if not self.acl.deny(target, requested_at=requested_at):
+                self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
                 return
-            self.acl.deny(target)
             self.api.answer_callback(callback_id, {"zh": f"已拒絕 {target}。", "en": f"Rejected {target}.", "ja": f"{target} を拒否しました。", "zh-cn": (f"已拒绝 {target}。")}[ui_language()])
             if message_id and extra:
                 try:
                     page = max(0, int(extra[0]))
                 except (ValueError, TypeError):
                     page = 0
-                records = self.acl.pending()
-                if records:
-                    text, keyboard, _ = self.pending_page(records, page)
-                    self.api.edit_message(chat_id, message_id, text, keyboard)
-                else:
-                    self.api.edit_message(chat_id, message_id, admin_text("no_requests"))
+                self.edit_pending_page(chat_id, message_id, self.acl.pending(), page)
         elif action in {"quotamenu", "limitmenu"}:
             error = self.target_management_error(user_id, target)
             if error:
@@ -4405,26 +4328,36 @@ class Bot:
             except queue.Empty:
                 continue
             try:
-                self.process_url(chat_id, message_id, user_id, url)
-                self.acl.finish_job(chat_id, message_id)
-            except Exception:
-                LOG.exception("Tweet processing failed")
+                needs_notice = False
                 try:
-                    if not self.can_process(user_id):
-                        self.acl.finish_job(chat_id, message_id)
-                        continue
-                    self.api.send_message(
-                        chat_id,
-                        public_text(self.acl.language(user_id), "failed"),
-                        message_id,
-                    )
-                    self.acl.finish_job(chat_id, message_id)
-                except TelegramAPIError as error:
-                    if error.status_code in {400, 403}:
-                        self.acl.finish_job(chat_id, message_id)
-                    LOG.exception("Could not send failure response")
+                    self.process_url(chat_id, message_id, user_id, url)
                 except Exception:
-                    LOG.exception("Could not send failure response")
+                    LOG.exception("Tweet processing failed")
+                    needs_notice = True
+                # Retry the failure notice, not partially delivered media. Keep
+                # the durable job on shutdown so the next start can recover it.
+                while True:
+                    try:
+                        if needs_notice and self.can_process(user_id):
+                            if self.stop_event.is_set():
+                                break
+                            self.api.send_message(
+                                chat_id,
+                                public_text(self.acl.language(user_id), "failed"),
+                                message_id,
+                            )
+                            needs_notice = False
+                        self.acl.finish_job(chat_id, message_id)
+                        break
+                    except TelegramAPIError as error:
+                        if error.status_code in {400, 403}:
+                            needs_notice = False
+                            continue
+                        LOG.exception("Could not send failure response; retrying")
+                    except Exception:
+                        LOG.exception("Could not finish failed job; retrying")
+                    if self.stop_event.wait(5):
+                        break
             finally:
                 self.jobs.task_done()
 
@@ -4535,12 +4468,11 @@ class Bot:
                 else path
                 for path in files
             ]
-            sent_messages: list[dict[str, Any]] = []
             if not self.can_process(user_id):
                 return
             if previews:
                 try:
-                    sent_messages = self.api.send_previews(
+                    self.api.send_previews(
                         chat_id, previews, caption, parse_mode="HTML"
                     )
                 except (OSError, requests.RequestException, RuntimeError):
@@ -4600,7 +4532,6 @@ class Bot:
                     public_text(
                         self.acl.language(user_id),
                         "images_skipped",
-                        names=", ".join(rejected_other),
                     ),
                 )
 

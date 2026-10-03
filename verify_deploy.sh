@@ -4,15 +4,25 @@ set -u
 APP_DIR=/opt/x-tweet-telegram-bot
 SERVICE=x-tweet-telegram-bot.service
 TEST_URL=${TEST_URL:-}
-BOT_TIMEZONE=$(sed -n 's/^BOT_TIMEZONE=//p' /etc/x-tweet-telegram-bot.env | tail -n 1)
+BOT_TIMEZONE=$(sed -n 's/^[[:space:]]*BOT_TIMEZONE[[:space:]]*=[[:space:]]*//p' /etc/x-tweet-telegram-bot.env | tail -n 1)
 BOT_TIMEZONE=${BOT_TIMEZONE:-UTC}
+DAILY_RESET_HOUR=$(sed -n 's/^[[:space:]]*DAILY_RESET_HOUR[[:space:]]*=[[:space:]]*//p' /etc/x-tweet-telegram-bot.env | tail -n 1)
+DAILY_RESET_HOUR=${DAILY_RESET_HOUR:-0}
+for setting in BOT_TIMEZONE DAILY_RESET_HOUR; do
+  value=${!setting}
+  value=${value%"${value##*[![:space:]]}"}
+  printf -v "$setting" '%s' "$value"
+  if [[ $value == \"*\" || $value == \'*\' ]]; then
+    printf -v "$setting" '%s' "${value:1:-1}"
+  fi
+done
 
 if [[ -n $TEST_URL ]]; then
 echo "TEXT_TEST"
 runuser -u x-tweet-bot -- env PYTHONPATH="$APP_DIR" \
   "$APP_DIR/venv/bin/python" - "$TEST_URL" <<'PY'
 import sys
-from bot import (fetch_fxtwitter, fetch_tweet_text, fxtwitter_text_author,
+from bot import (author_text_html, fetch_fxtwitter, fetch_tweet_text, fxtwitter_text_author,
                  media_caption, normalize_status_url)
 
 url = normalize_status_url(sys.argv[1])
@@ -30,7 +40,7 @@ if not text:
 if not author_url.startswith("https://x.com/"):
     raise SystemExit("The post has no trusted author profile URL")
 caption = media_caption(author, author_url, text, url)
-expected_link = f'<a href="{author_url}">{author}</a>:'
+expected_link = author_text_html(author, author_url, "", 1024 - len("\n\n" + url))
 if not caption.startswith(expected_link):
     raise SystemExit("author profile URL is not linked from the author name")
 PY
@@ -83,7 +93,7 @@ fi
 echo "media_exit=$media_rc"
 
 echo "STATE_JSON"
-runuser -u x-tweet-bot -- env PYTHONPATH="$APP_DIR" STATE_DIR=/var/lib/x-tweet-telegram-bot BOT_TIMEZONE="$BOT_TIMEZONE" \
+runuser -u x-tweet-bot -- env PYTHONPATH="$APP_DIR" STATE_DIR=/var/lib/x-tweet-telegram-bot BOT_TIMEZONE="$BOT_TIMEZONE" DAILY_RESET_HOUR="$DAILY_RESET_HOUR" \
   "$APP_DIR/venv/bin/python" - <<'PY'
 import json
 import os

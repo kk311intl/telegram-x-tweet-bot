@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -40,9 +40,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
 
-高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或返回選單會取消輸入。批次審批名單若已變更，須重新確認。
+高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
 
-Telegram 的簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文描述；這不影響 Bot 內的四語選擇。
+Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
 
 「預設額度」接受 1–100000，確認後只更新沿用舊預設的正常普通用戶，新用戶採用新值。自訂額度、初始化、待審、封鎖和管理員不變，當日用量不重置。設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。
 
@@ -88,9 +88,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
-詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` またはメニューへの移動で入力を中止します。一括承認の一覧が変わった場合は再確認が必要です。
+詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
-Telegram の紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、紹介文の簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
+Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
 「標準上限」は 1～100000 を指定し、確認すると旧標準値を使う承認済み一般ユーザーだけを更新します。新規ユーザーには新しい値を使います。独自の上限、初期状態、審査待ち、ブロック中のユーザー、管理者と当日の使用量は変更しません。設定は ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
@@ -136,9 +136,9 @@ You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WOR
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
-Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or returning to a menu cancels input. If a batch approval list changes, review it again before approving.
+Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
-Telegram's short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these descriptions cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
+Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 
 Default limit accepts 1–100000. Confirmation updates only approved regular users matching the old default; new users use the new value. Custom quotas, initialized, pending, blocked and administrator accounts, and today's usage stay unchanged. The value is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`.
 

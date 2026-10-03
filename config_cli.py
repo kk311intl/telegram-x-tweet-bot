@@ -18,7 +18,7 @@ COOKIE_PATH = Path("/var/lib/x-tweet-telegram-bot/cookies.txt")
 COOKIE_ALERT_PATH = Path("/var/lib/x-tweet-telegram-bot/cookie-alert.json")
 APP_DIR = Path("/opt/x-tweet-telegram-bot")
 sys.path.insert(0, str(APP_DIR))
-from bot import atomic_write_text, validate_cookie_file, MAX_COOKIE_BYTES
+from bot import ACLStore, atomic_write_text, validate_cookie_file, MAX_COOKIE_BYTES
 
 
 def load_env() -> dict[str, str]:
@@ -66,9 +66,6 @@ def telegram_bot_username(token: str) -> str:
 
 
 def acl_store(values: dict[str, str]):
-    sys.path.insert(0, str(APP_DIR))
-    from bot import ACLStore
-
     return ACLStore(STATE_PATH, int(values.get("OWNER_USER_ID", "0") or 0))
 
 
@@ -146,8 +143,6 @@ def main() -> int:
         print(values["BOOTSTRAP_CODE"])
         restart()
     elif command == "export-access":
-        sys.path.insert(0, str(APP_DIR))
-        from bot import ACLStore
         limit, _source = default_limit_status(values, {})
         print(json.dumps(ACLStore.read_access_snapshot(STATE_PATH, limit), ensure_ascii=False))
     elif command == "import-access":

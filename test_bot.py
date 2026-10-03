@@ -15,6 +15,192 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_consolidated_advanced_toggles_preserve_roles_and_localized_notices(self):
+        actions = (
+            ("debugtoggle", "implementation", "advanced_owner_only", lambda store: store.debug_mode(100)),
+            ("externaltoggle", "access_switch", "access_owner_only", lambda store: store.external_access_enabled),
+            ("autoapprovetoggle", "auto_approve", "auto_owner_only", lambda store: store.auto_approve_enabled),
+        )
+        for language in bot.PUBLIC_TEXT:
+            with tempfile.TemporaryDirectory() as directory:
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                store.add(200)
+                store.set_quota(200, None)
+                store.add(300)
+                for actor in (100, 200, 300):
+                    store.set_language(actor, language)
+                service = bot.Bot(MagicMock(), store)
+                for action, label, error, current in actions:
+                    for actor in (200, 300, 100, 100):
+                        with self.subTest(language=language, action=action, actor=actor):
+                            before = current(store)
+                            service.api.reset_mock()
+                            service.handle_callback({
+                                "id": "toggle", "data": action + ":0", "from": {"id": actor},
+                                "message": {"message_id": 1, "chat": {"id": actor}},
+                            })
+                            with bot.language_scope(language):
+                                if actor != 100:
+                                    self.assertEqual(current(store), before)
+                                    service.api.edit_message.assert_not_called()
+                                    service.api.answer_callback.assert_called_with(
+                                        "toggle", bot.admin_text(error if actor == 200 else "admin_only"), alert=True,
+                                    )
+                                else:
+                                    self.assertEqual(current(store), not before)
+                                    states = ("open", "paused") if action == "externaltoggle" else ("on", "off")
+                                    state = bot.admin_text(states[0] if current(store) else states[1])
+                                    notice = f"{bot.admin_text(label)}已{state}。" if language == "zh" else f"{bot.admin_text(label)}: {state}"
+                                    service.api.answer_callback.assert_called_with("toggle", notice)
+                                    self.assertEqual(service.api.edit_message.call_args.args[3], bot.advanced_status_keyboard(
+                                        store.debug_mode(100), store.external_access_enabled,
+                                        store.auto_approve_enabled, True, store.default_daily_limit,
+                                    ))
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_single_approval_and_denial_bind_to_the_current_application(self):
+        for action in ("approve", "deny"):
+            for change in ("renewed", "legacy", "current"):
+                for language in bot.PUBLIC_TEXT:
+                    with self.subTest(action=action, change=change, language=language), tempfile.TemporaryDirectory() as directory:
+                        store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                        store.set_language(100, language)
+                        store.observe({"id": 200})
+                        store.request_access(200, now=1.0)
+                        row = bot.pending_keyboard(store.pending())["inline_keyboard"][0]
+                        data = row[0 if action == "approve" else 1]["callback_data"]
+                        self.assertLessEqual(len(data.encode()), 64)
+                        if change == "renewed":
+                            store.deny(200)
+                            store.request_access(200, now=2.0)
+                        elif change == "legacy":
+                            data = f"{action}:200:0"
+                        before = store.pending()
+                        service = bot.Bot(MagicMock(), store)
+                        service.handle_callback({"id": "check", "data": data, "from": {"id": 100},
+                                                 "message": {"message_id": 1, "chat": {"id": 100}}})
+                        if change == "current":
+                            self.assertFalse(store.pending())
+                            self.assertEqual(store.is_allowed(200), action == "approve")
+                        else:
+                            self.assertEqual(store.pending(), before)
+                            self.assertEqual(store.quota(200), 0)
+                            with bot.language_scope(language):
+                                service.api.answer_callback.assert_called_with("check", bot.admin_text("requests_changed"), alert=True)
+                        service.stop()
+                        service.inline_executor.shutdown(wait=True)
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            store.request_access(200, now=2.0)
+            with patch.object(store, "_save") as save:
+                self.assertFalse(store.approve(200, requested_at=1.0))
+                self.assertFalse(store.deny(200, requested_at=1.0))
+                save.assert_not_called()
+            record = {"user_id": bot.MAX_TELEGRAM_USER_ID, "requested_at": 1790999999.1234567}
+            for button in bot.pending_keyboard([record])["inline_keyboard"][0]:
+                self.assertLessEqual(len(button["callback_data"].encode()), 64)
+
+    def test_invalid_acl_booleans_are_rejected_and_valid_backup_is_used(self):
+        for setting in ("external_access_enabled", "ordinary_user_cookies_enabled", "auto_approve_enabled", "debug_mode"):
+            for value in ("false", 0, 1, None, [], {}):
+                with self.subTest(setting=setting, value=value):
+                    store = bot.ACLStore.__new__(bot.ACLStore)
+                    with self.assertRaises(ValueError):
+                        store._apply_state({"users": {}, "pending_applications": {}, setting: value}, 1)
+                    with self.assertRaises(ValueError):
+                        store._apply_state({"users": {"100": {"debug_mode": value}}, "pending_applications": {}}, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.toggle_external_access(100)
+            store._save()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["external_access_enabled"] = "false"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertLogs(bot.LOG, level="ERROR"):
+                recovered = bot.ACLStore(path, 100)
+            self.assertFalse(recovered.external_access_enabled)
+            self.assertTrue(list(Path(directory).glob("acl.json.corrupt-*")))
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            recovered.backup_path.write_text(json.dumps(payload), encoding="utf-8")
+            before = path.read_bytes()
+            with self.assertLogs(bot.LOG, level="ERROR"), self.assertRaises(RuntimeError):
+                bot.ACLStore(path, 100)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(recovered.backup_path.read_bytes(), before)
+
+    def test_failed_job_retries_notice_without_reprocessing_or_recharging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            store.add(200)
+            job = (200, 42, 200, "https://x.com/test/status/123")
+            store.consume(200, job=job)
+            api = MagicMock()
+            api.send_message.side_effect = [bot.TelegramAPIError("sendMessage", 503), None]
+            service = bot.Bot(api, store)
+            service.process_url = MagicMock(side_effect=RuntimeError("temporary failure"))
+            with patch.object(service.stop_event, "wait", return_value=False) as delay:
+                service.workers[0].start()
+                deadline = bot.time.monotonic() + 3
+                while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                    bot.time.sleep(0.01)
+                service.stop()
+                service.workers[0].join(timeout=2)
+                self.assertEqual(service.jobs.unfinished_tasks, 0)
+                delay.assert_called_with(5)
+            self.assertEqual(api.send_message.call_count, 2)
+            service.process_url.assert_called_once_with(*job)
+            self.assertFalse(store.data["pending_jobs"])
+            self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+            service.inline_executor.shutdown(wait=True)
+
+    def test_failed_job_shutdown_interrupts_retry_and_preserves_pending_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            job = (100, 42, 100, "https://x.com/test/status/123")
+            store.consume(100, job=job)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            service.process_url = MagicMock(side_effect=RuntimeError("temporary failure"))
+            def fail(*args, **kwargs):
+                service.stop()
+                raise bot.TelegramAPIError("sendMessage", 503)
+            api.send_message.side_effect = fail
+            service.workers[0].start()
+            service.workers[0].join(timeout=2)
+            self.assertFalse(service.workers[0].is_alive())
+            self.assertEqual(len(store.data["pending_jobs"]), 1)
+            self.assertEqual(api.send_message.call_count, 1)
+            service.inline_executor.shutdown(wait=True)
+
+    def test_job_finalization_failure_never_resends_successful_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            job = (100, 42, 100, "https://x.com/test/status/123")
+            store.consume(100, job=job)
+            service = bot.Bot(MagicMock(), store)
+            service.process_url = MagicMock()
+            finish = store.finish_job
+            calls = []
+            def interrupted(*args):
+                calls.append(args)
+                if len(calls) == 1:
+                    raise OSError("temporary storage failure")
+                finish(*args)
+            with patch.object(store, "finish_job", side_effect=interrupted), patch.object(service.stop_event, "wait", return_value=False):
+                service.workers[0].start()
+                deadline = bot.time.monotonic() + 3
+                while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                    bot.time.sleep(0.01)
+                service.stop()
+                service.workers[0].join(timeout=2)
+            self.assertEqual(service.jobs.unfinished_tasks, 0)
+            service.process_url.assert_called_once_with(*job)
+            service.api.send_message.assert_not_called()
+            self.assertFalse(store.data["pending_jobs"])
+            service.inline_executor.shutdown(wait=True)
+
     def test_navigation_is_silent_and_menu_labels_align_in_all_languages(self):
         for language in ("zh-cn", "zh", "en", "ja"):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as directory:
@@ -84,7 +270,8 @@ class ReliabilityTests(unittest.TestCase):
                 service.stop()
 
     def test_leaving_input_clears_all_modes_without_changing_access(self):
-        transitions = ("/start", "/cancel", "nav:main", "nav:users", "public:language", "lang:en")
+        transitions = ("/start", "/cancel", "nav:main", "nav:users", "public:language", "lang:en",
+                       "statusrefresh:0", "userspage:0", "requestspage:0", "quotamenu:300")
         for actor in (100, 200):
             for transition in transitions:
                 with self.subTest(actor=actor, transition=transition), tempfile.TemporaryDirectory() as directory:
@@ -280,6 +467,35 @@ class URLTests(unittest.TestCase):
 
 
 class ConfigurationCLITests(unittest.TestCase):
+    def test_deployment_text_check_accepts_escaped_and_truncated_author_names(self):
+        script = (Path(__file__).parent / "verify_deploy.sh").read_text(encoding="utf-8")
+        text_check = script.split('echo "TEXT_TEST"\n', 1)[1].split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        for name in ("A & <B>", 'Author "Name"', "A" * 2000):
+            with self.subTest(name=name[:20]), patch.object(bot, "fetch_fxtwitter", return_value={
+                "text": "Test post", "author": {"name": name, "screen_name": "example"}
+            }), patch.object(sys, "argv", ["verify", "https://x.com/example/status/123"]), patch("builtins.print"):
+                exec(compile(text_check, "verify_deploy.sh:TEXT_TEST", "exec"), {})
+
+    def test_deployment_timezone_and_reset_read_quoted_values(self):
+        bash = shutil.which("bash")
+        if os.name == "nt" and Path("C:/Program Files/Git/bin/bash.exe").exists():
+            bash = "C:/Program Files/Git/bin/bash.exe"
+        if not bash:
+            self.skipTest("Requires bash")
+        script = (Path(__file__).parent / "verify_deploy.sh").read_text(encoding="utf-8")
+        header = script.split('if [[ -n $TEST_URL ]]; then', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.env"
+            for quote in ('"', "'", ""):
+                with self.subTest(quote=quote):
+                    path.write_text(f"  BOT_TIMEZONE = {quote}Asia/Tokyo{quote}  \n  DAILY_RESET_HOUR = {quote}6{quote}  \n", encoding="utf-8")
+                    shell = header.replace("/etc/x-tweet-telegram-bot.env", path.as_posix())
+                    shell += '\nprintf "%s\\n" "$BOT_TIMEZONE" "$DAILY_RESET_HOUR"\n'
+                    result = subprocess.run([bash, "-s"], input=shell.encode(), capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    self.assertEqual(result.stdout.decode().splitlines(), ["Asia/Tokyo", "6"])
+        self.assertIn('DAILY_RESET_HOUR="$DAILY_RESET_HOUR"', script)
+
     @unittest.skipIf(os.name == "nt", "Requires POSIX permissions and bash")
     def test_deployment_runtime_permissions_do_not_inherit_private_umask(self):
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
@@ -354,14 +570,14 @@ test "$(umask)" = 0077
             for state, expected in (({"users": {}, "default_daily_limit": 100}, "default_daily_limit=100 source=acl"), ({"users": {}}, "default_daily_limit=75 source=env")):
                 path.write_text(json.dumps(state), encoding="utf-8")
                 before = path.read_bytes()
-                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli.subprocess, "run"), patch("builtins.print") as output:
+                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli, "COOKIE_PATH", Path(temporary) / "cookies.txt"), patch.object(config_cli.subprocess, "run"), patch("builtins.print") as output:
                     self.assertEqual(config_cli.main(), 0)
                     output.assert_any_call(expected)
                 self.assertEqual(path.read_bytes(), before)
             for invalid in (0, 100001, True, "100", None):
                 path.write_text(json.dumps({"default_daily_limit": invalid}), encoding="utf-8")
                 before = path.read_bytes()
-                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={}), patch.object(config_cli, "STATE_PATH", path), patch("builtins.print") as output:
+                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli, "COOKIE_PATH", Path(temporary) / "cookies.txt"), patch("builtins.print") as output:
                     self.assertEqual(config_cli.main(), 1)
                     output.assert_any_call("state=invalid")
                 self.assertEqual(path.read_bytes(), before)
@@ -1142,10 +1358,13 @@ class MenuTests(unittest.TestCase):
             "請傳送有效的 X/Twitter 單篇貼文網址。",
         )
         self.assertIn("使い方", bot.public_text("ja", "help_allowed"))
-        self.assertIn("/id", bot.public_text("ja", "help_allowed"))
-        self.assertIn("不會切換到被引用內容", bot.public_text("zh", "help_allowed"))
-        self.assertIn("quoted content is not followed", bot.public_text("en", "help_allowed"))
-        self.assertIn("引用先ではなく", bot.public_text("ja", "help_allowed"))
+        for language in bot.PUBLIC_TEXT:
+            guide = bot.public_text(language, "help_allowed")
+            self.assertEqual(len(guide.splitlines()), 5)
+            self.assertIn(bot.BOT_MENTION, guide)
+            self.assertIn("50 MB", guide)
+            for detail in ("/id", "引用", "quoted", "未壓縮", "未压缩", "uncompressed", "インライン"):
+                self.assertNotIn(detail, guide)
         expected_menus = {
             "zh-cn": ["🌐 Language", "ℹ️ 使用说明"],
             "zh": ["🌐 Language", "ℹ️ 使用說明"],
@@ -1295,7 +1514,7 @@ class MenuTests(unittest.TestCase):
 
     def test_user_and_request_lists_paginate_by_twenty(self):
         records = [
-            {"user_id": 1000 + index, "first_name": f"User {index}"}
+            {"user_id": 1000 + index, "first_name": f"User {index}", "requested_at": float(index + 1)}
             for index in range(45)
         ]
         pending = bot.pending_keyboard(records, 1)["inline_keyboard"]
@@ -1469,7 +1688,7 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(api, store)
             service.handle_callback({
                 "id": "callback-deny",
-                "data": "deny:200:0",
+                "data": bot.pending_keyboard(store.pending())["inline_keyboard"][0][1]["callback_data"],
                 "from": {"id": 100, "first_name": "Owner"},
                 "message": {"message_id": 77, "chat": {"id": 100}},
             })
@@ -2242,17 +2461,21 @@ class TelegramConfigurationTests(unittest.TestCase):
             json.loads(command_call[1]["scope"]),
             {"type": "all_private_chats"},
         )
-        command_calls = api.call.call_args_list[:3]
+        command_calls = api.call.call_args_list[:4]
         self.assertEqual(
             [call.args[1].get("language_code", "") for call in command_calls],
-            ["", "en", "ja"],
+            ["", "zh", "en", "ja"],
         )
         self.assertEqual(
             json.loads(command_calls[1].args[1]["commands"])[0]["description"],
-            "Start and show the options",
+            "启动并显示操作菜单",
         )
         self.assertEqual(
             json.loads(command_calls[2].args[1]["commands"])[0]["description"],
+            "Start and show the options",
+        )
+        self.assertEqual(
+            json.loads(command_calls[3].args[1]["commands"])[0]["description"],
             "起動してメニューを表示",
         )
 
@@ -2677,7 +2900,7 @@ class MediaTests(unittest.TestCase):
 
             fallback = api.send_message.call_args.args[1]
             self.assertIn("media preview", fallback.lower())
-            self.assertIn("submit this post again", fallback.lower())
+            self.assertIn("try again later", fallback.lower())
             api.send_documents.assert_called_once_with(100, [])
 
     def test_owner_keeps_cookie_access_when_regular_cookie_access_is_off(self):
@@ -3223,6 +3446,29 @@ class PerformanceSafetyTests(unittest.TestCase):
 
 
 class PublicReleaseLanguageTests(unittest.TestCase):
+    def test_regular_user_copy_is_short_and_does_not_expose_implementation_details(self):
+        private_terms = ("FxTwitter", "gallery-dl", "yt-dlp", "Cookies", "Netscape", "STATE_DIR",
+                         "佇列", "队列", "キュー", "queue", "自動", "自动", "automatically")
+        for language, messages in bot.PUBLIC_TEXT.items():
+            with self.subTest(language=language):
+                self.assertEqual(messages["apply_auto_approved"], messages["approved"])
+                self.assertNotIn("{names}", messages["images_skipped"])
+                self.assertLessEqual(len(messages["help_allowed"]), 260)
+                for key, text in messages.items():
+                    if key == "start_owner":
+                        continue
+                    for term in private_terms:
+                        self.assertNotIn(term.lower(), text.lower(), (language, key, term))
+        api = bot.TelegramAPI("12345678:test-token-value-for-unit-tests")
+        api.call = MagicMock()
+        api.configure_profile()
+        for call in api.call.call_args_list:
+            data = call.args[1]
+            text = data.get("description") or data["short_description"]
+            self.assertLessEqual(len(text), 220)
+            for term in private_terms + ("uncompressed", "未壓縮", "未压缩", "インライン"):
+                self.assertNotIn(term.lower(), text.lower())
+
     def test_every_role_can_select_four_languages_and_preferences_survive_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "acl.json"
@@ -3431,7 +3677,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)
         self.assertTrue(all(len(values) == 4 for values in bot.ADMIN_TEXT.values()))
         for key, values in bot.ADMIN_TEXT.items():
-            placeholders = [set(bot.re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", value)) for value in values]
+            placeholders = [set(bot.re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[^{}]+)?\}", value)) for value in values]
             self.assertEqual(placeholders[0], placeholders[1], key)
             self.assertEqual(placeholders[0], placeholders[2], key)
             self.assertEqual(placeholders[0], placeholders[3], key)
