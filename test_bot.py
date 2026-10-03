@@ -15,6 +15,182 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_telegram_malformed_responses_fail_safely_without_leaking_payloads(self):
+        cases = [
+            (502, None), (502, []), (200, "YOUR_API_TOKEN"),
+            (429, {"ok": False, "parameters": ["invalid"]}),
+            (429, {"ok": False, "parameters": {"retry_after": float("inf")}}),
+            (200, {"ok": False, "error_code": [400]}),
+            (200, {"ok": False, "error_code": "bad"}),
+        ]
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        for status, payload in cases:
+            with self.subTest(status=status, payload=payload):
+                response = MagicMock(status_code=status)
+                response.json.return_value = payload
+                session = MagicMock(post=MagicMock(return_value=response))
+                with patch.object(api, "session", return_value=session), patch.object(bot.time, "sleep") as sleep:
+                    with self.assertRaises(RuntimeError) as error:
+                        api.call("getUpdates")
+                    self.assertNotIn("YOUR_API_TOKEN", str(error.exception))
+                    sleep.assert_not_called()
+                    session.post.assert_called_once()
+        response = MagicMock(status_code=200)
+        response.json.side_effect = ValueError("YOUR_API_TOKEN")
+        with patch.object(api, "session", return_value=MagicMock(post=MagicMock(return_value=response))):
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON") as error:
+                api.call("getUpdates")
+            self.assertTrue(error.exception.__suppress_context__)
+            self.assertNotIn("YOUR_API_TOKEN", str(error.exception))
+
+    def test_telegram_validates_entire_update_batch_before_acknowledgement(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        invalid = [None, {}, 1, [None], [{}], [{"update_id": "1"}],
+                   [{"update_id": True}], [{"update_id": -1}],
+                   [{"update_id": 1}, {"update_id": []}]]
+        response = MagicMock(status_code=200)
+        with patch.object(api, "session", return_value=MagicMock(post=MagicMock(return_value=response))):
+            for result in invalid:
+                with self.subTest(result=result), self.assertRaisesRegex(RuntimeError, "invalid updates"):
+                    response.json.return_value = {"ok": True, "result": result}
+                    api.call("getUpdates")
+            for result in ([], [{"update_id": 0}], [{"update_id": 123}]):
+                response.json.return_value = {"ok": True, "result": result}
+                self.assertEqual(api.call("getUpdates"), result)
+
+    def test_polling_retries_malformed_json_without_acknowledging_or_exiting(self):
+        for payload in (None, [], {"ok": True, "result": [None]}):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                api = bot.TelegramAPI("YOUR_API_TOKEN")
+                response = MagicMock(status_code=200)
+                response.json.return_value = payload
+                api.local.session = MagicMock(post=MagicMock(return_value=response))
+                service = bot.Bot(api, store)
+                service.workers = []
+                with patch.object(api, "configure_commands"), patch.object(api, "configure_profile"), \
+                     patch.object(bot, "cleanup_stale_media"), patch.object(bot, "load_update_offset", return_value=0), \
+                     patch.object(bot, "save_update_offset") as save, \
+                     patch.object(bot.time, "sleep", side_effect=lambda _: service.stop()) as sleep, \
+                     self.assertLogs(bot.LOG, level="ERROR"):
+                    service.start()
+                    sleep.assert_called_once_with(5)
+                    save.assert_not_called()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_malformed_media_collections_preserve_inline_text_fallback(self):
+        for media in ({"all": 1}, {"all": {}}, {"all": [None, {"type": ["photo"]}]},
+                      {"all": [{"type": "photo", "url": ["invalid"]}]}):
+            with self.subTest(media=media), patch.object(bot, "fetch_fxtwitter", return_value={
+                "id": "123", "text": "example", "media": media,
+            }):
+                results = bot.build_inline_results("https://x.com/example/status/123")
+                self.assertEqual(results[0]["type"], "article")
+                self.assertIn("example", results[0]["input_message_content"]["message_text"])
+
+    def test_invalid_optional_media_metadata_does_not_abort_inline_or_formats(self):
+        item = {"type": "video", "url": "https://video.twimg.com/example.mp4",
+                "thumbnail_url": "https://pbs.twimg.com/example.jpg",
+                "width": "bad", "height": [], "duration": float("inf"),
+                "formats": [{"container": "mp4", "url": "https://video.twimg.com/example.mp4",
+                             "width": "bad", "height": {}, "bitrate": float("nan")} ]}
+        tweet = {"id": "123", "text": "example", "media": {"all": [item]}}
+        self.assertEqual(len(bot.sorted_mp4_formats(item)), 1)
+        for formats in (1, {}, "invalid"):
+            self.assertEqual(bot.sorted_mp4_formats({"formats": formats}), [])
+        with patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+             patch.object(bot, "remote_media_size", return_value=1):
+            result = bot.build_inline_results("https://x.com/example/status/123")[0]
+            self.assertEqual(result["type"], "video")
+            for key in ("video_width", "video_height", "video_duration"):
+                self.assertNotIn(key, result)
+        self.assertEqual(item["width"], "bad")
+        self.assertIsNone(bot.trusted_twimg_url("https://[invalid"))
+        self.assertIsNone(bot.trusted_twimg_url(["https://pbs.twimg.com/example.jpg"]))
+
+    def test_malformed_nested_media_still_reaches_normal_downloader(self):
+        cases = [{"all": 1}, {"all": [{"type": ["video"]}]}, {"all": [{
+            "type": "video", "url": "https://video.twimg.com/example.mp4",
+            "formats": [{"container": "mp4", "url": "https://video.twimg.com/example.mp4", "width": "bad"}],
+        }]}]
+        for media in cases:
+            with self.subTest(media=media), tempfile.TemporaryDirectory() as directory:
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                store.add(200)
+                service = bot.Bot(MagicMock(), store)
+                with patch.object(bot, "fetch_fxtwitter", return_value={"id": "123", "text": "example", "media": media}), \
+                     patch.object(bot, "TMP_DIR", Path(directory)), \
+                     patch.object(bot, "media_disk_available", return_value=True), \
+                     patch.object(bot, "download_fxtwitter_media", return_value=([], "", 0)), \
+                     patch.object(bot, "download_media", return_value=([], "", "", False)) as download:
+                    service.process_url(200, 1, 200, "https://x.com/example/status/123")
+                    download.assert_called_once()
+                    self.assertIn("example", service.api.send_message.call_args.args[1])
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_video_skip_notices_follow_final_recovery_and_actual_rejection_reason(self):
+        cases = [
+            # Source videos, fallback videos, fallback photos, expected notice.
+            (1, [5], [], None),
+            (2, [5], [], "media_skipped"),
+            (1, [], [5], "video_oversized"),
+            (1, [11], [], "video_oversized"),
+        ]
+        for language in bot.PUBLIC_TEXT:
+            for sources, video_sizes, photo_sizes, notice in cases:
+                with self.subTest(language=language, sources=sources, notice=notice), tempfile.TemporaryDirectory() as directory:
+                    store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                    store.add(200)
+                    store.set_language(200, language)
+                    service = bot.Bot(MagicMock(), store)
+                    files = []
+                    for suffix, sizes in (("mp4", video_sizes), ("jpg", photo_sizes)):
+                        for index, size in enumerate(sizes):
+                            path = Path(directory) / f"{index}.{suffix}"
+                            path.write_bytes(b"x" * size)
+                            files.append(path)
+                    tweet = {"id": "123", "text": "example", "media": {"all": [
+                        {"type": "video", "url": f"https://video.twimg.com/{index}.mp4"}
+                        for index in range(sources)
+                    ]}}
+                    with patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                         patch.object(bot, "TMP_DIR", Path(directory)), \
+                         patch.object(bot, "media_disk_available", return_value=True), \
+                         patch.object(bot, "prepare_image", side_effect=lambda path: path), \
+                         patch.object(bot, "download_fxtwitter_media", return_value=([], "", sources)), \
+                         patch.object(bot, "download_media", return_value=(files, "", "fallback", False)), \
+                         patch.object(bot, "MAX_VIDEO_BYTES", 10):
+                        service.process_url(200, 1, 200, "https://x.com/example/status/123")
+                    messages = [call.args[1] for call in service.api.send_message.call_args_list]
+                    self.assertEqual(messages[-1] if notice else messages, bot.public_text(language, notice, count=1) if notice else [])
+                    if notice == "media_skipped":
+                        self.assertFalse(any("50 MB" in message for message in messages))
+                    service.stop()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_total_media_limit_does_not_claim_telegram_single_video_limit(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as directory:
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                store.add(200)
+                store.set_language(200, language)
+                service = bot.Bot(MagicMock(), store)
+                files = [Path(directory) / f"{index}.mp4" for index in range(2)]
+                for path in files:
+                    path.write_bytes(b"x" * 8)
+                with patch.object(bot, "fetch_fxtwitter", return_value={"id": "123", "text": "example"}), \
+                     patch.object(bot, "TMP_DIR", Path(directory)), \
+                     patch.object(bot, "media_disk_available", return_value=True), \
+                     patch.object(bot, "download_media", return_value=(files, "", "fallback", False)), \
+                     patch.object(bot, "MAX_VIDEO_BYTES", 10), patch.object(bot, "MAX_TOTAL_BYTES", 12):
+                    service.process_url(200, 1, 200, "https://x.com/example/status/123")
+                service.api.send_previews.assert_called_once()
+                self.assertEqual(service.api.send_previews.call_args.args[1], files[:1])
+                service.api.send_message.assert_called_once_with(200, bot.public_text(language, "media_skipped"))
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
     def test_deeply_invalid_acl_cannot_replace_a_good_backup(self):
         cases = [
             {"pending_jobs": []}, {"owner_id": True},
@@ -3420,7 +3596,7 @@ class MediaTests(unittest.TestCase):
             video.write_bytes(b"x" * 11)
             accepted, rejected = bot.trim_files([video])
             self.assertEqual(accepted, [])
-            self.assertEqual(rejected, ["large.mp4"])
+            self.assertEqual(rejected, [("large.mp4", "video_oversized")])
 
     def test_document_is_sent_as_uncompressed_file(self):
         with tempfile.TemporaryDirectory() as temporary:

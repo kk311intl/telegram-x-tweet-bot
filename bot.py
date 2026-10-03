@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.8"
+APP_VERSION = "3.3.9"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -273,6 +273,7 @@ PUBLIC_TEXT = {
         "inline_apply": "开启机器人申请使用权限",
         "video_oversized": "{count} 个视频超过 Telegram 的 50 MB 上限，已跳过。",
         "images_skipped": "部分图片超过大小限制，已跳过。",
+        "media_skipped": "部分媒体无法发送，已跳过。",
         "preview_failed": "媒体预览发送失败，请稍后重试。",
         "originals_failed": "部分原始文件发送失败，请稍后重试。",
         "language_set": "语言已切换为简体中文。",
@@ -307,6 +308,7 @@ PUBLIC_TEXT = {
         "inline_apply": "開啟機器人申請使用權限",
         "video_oversized": "{count} 個影片超過 Telegram 的 50 MB 上限，已略過。",
         "images_skipped": "部分圖片超過大小限制，已略過。",
+        "media_skipped": "部分媒體無法傳送，已略過。",
         "preview_failed": "媒體預覽傳送失敗，請稍後重試。",
         "originals_failed": "部分原始檔案傳送失敗，請稍後重試。",
         "language_set": "語言已切換為繁體中文。",
@@ -341,6 +343,7 @@ PUBLIC_TEXT = {
         "inline_apply": "Open the Bot to request access",
         "video_oversized": "{count} video(s) exceeded Telegram's 50 MB limit and were skipped.",
         "images_skipped": "Some images were too large and were skipped.",
+        "media_skipped": "Some media could not be sent and were skipped.",
         "preview_failed": "Couldn't send the media preview. Try again later.",
         "originals_failed": "Couldn't send some original files. Try again later.",
         "language_set": "Language changed to English.",
@@ -375,6 +378,7 @@ PUBLIC_TEXT = {
         "inline_apply": "Botを開いて利用を申請",
         "video_oversized": "{count} 件の動画が Telegram の 50 MB 上限を超えたため、スキップしました。",
         "images_skipped": "一部の画像はサイズが大きすぎるため、スキップしました。",
+        "media_skipped": "一部のメディアを送信できなかったため、スキップしました。",
         "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから再試行してください。",
         "originals_failed": "一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
         "language_set": "表示言語を日本語に変更しました。",
@@ -1747,17 +1751,22 @@ class TelegramAPI:
                 ) from None
             try:
                 payload = response.json()
-            except ValueError as error:
+            except ValueError:
                 if response.status_code >= 400:
                     raise TelegramAPIError(method, response.status_code) from None
                 raise RuntimeError(
                     f"Telegram {method} returned invalid JSON"
-                ) from error
+                ) from None
+            if not isinstance(payload, dict):
+                if response.status_code >= 400:
+                    raise TelegramAPIError(method, response.status_code)
+                raise RuntimeError(f"Telegram {method} returned an invalid response")
             if response.status_code == 429 and attempt == 0 and not files:
-                retry_after = (payload.get("parameters") or {}).get("retry_after", 0)
+                parameters = payload.get("parameters")
+                retry_after = parameters.get("retry_after", 0) if isinstance(parameters, dict) else 0
                 try:
                     retry_after = int(retry_after)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     retry_after = 0
                 if 0 < retry_after <= TELEGRAM_RETRY_AFTER_MAX_SECONDS:
                     LOG.warning(
@@ -1773,13 +1782,22 @@ class TelegramAPI:
                     response.status_code,
                     str(payload.get("description") or ""),
                 )
-            if not payload.get("ok"):
+            if payload.get("ok") is not True:
+                error_code = payload.get("error_code")
                 raise TelegramAPIError(
                     method,
-                    int(payload.get("error_code", response.status_code) or 0),
+                    error_code if type(error_code) is int else response.status_code,
                     str(payload.get("description") or ""),
                 )
-            return payload.get("result")
+            result = payload.get("result")
+            if method == "getUpdates" and (
+                not isinstance(result, list)
+                or any(not isinstance(update, dict)
+                       or type(update.get("update_id")) is not int
+                       or update["update_id"] < 0 for update in result)
+            ):
+                raise RuntimeError("Telegram getUpdates returned invalid updates")
+            return result
         raise RuntimeError(f"Telegram {method} retry limit reached")
 
     def send_message(
@@ -2303,13 +2321,24 @@ def fxtwitter_text_author(tweet: dict[str, Any]) -> tuple[str, str, str]:
     return str(tweet.get("text") or "").strip(), author_name, author_url
 
 
+def media_number(value: Any) -> int:
+    try:
+        return max(0, int(value)) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def sorted_mp4_formats(item: dict[str, Any]) -> list[dict[str, Any]]:
+    formats = item.get("formats")
+    if not isinstance(formats, list):
+        return []
     return sorted(
-        (entry for entry in item.get("formats") or []
-         if isinstance(entry, dict) and entry.get("container") == "mp4" and entry.get("url")),
+        (entry for entry in formats
+         if isinstance(entry, dict) and entry.get("container") == "mp4"
+         and isinstance(entry.get("url"), str) and entry["url"]),
         key=lambda entry: (
-            int(entry.get("width") or 0) * int(entry.get("height") or 0),
-            int(entry.get("bitrate") or 0),
+            media_number(entry.get("width")) * media_number(entry.get("height")),
+            media_number(entry.get("bitrate")),
         ),
         reverse=True,
     )
@@ -2321,16 +2350,25 @@ def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     media = tweet.get("media")
     if not isinstance(media, dict):
         return results
-    for item in media.get("all") or []:
+    items = media.get("all")
+    if not isinstance(items, list):
+        return results
+    for item in items:
         if not isinstance(item, dict):
             continue
         candidate = dict(item)
-        if candidate.get("type") in {"video", "gif"}:
+        media_type = candidate.get("type")
+        if not isinstance(media_type, str) or media_type.lower() not in {"photo", "video", "gif"}:
+            continue
+        candidate["type"] = media_type.lower()
+        for field in ("width", "height", "duration"):
+            candidate[field] = media_number(candidate.get(field))
+        if candidate["type"] in {"video", "gif"}:
             formats = sorted_mp4_formats(candidate)
             if formats:
                 candidate["url"] = formats[0]["url"]
-        media_url = str(candidate.get("url") or "")
-        if media_url and media_url not in seen:
+        media_url = candidate.get("url")
+        if isinstance(media_url, str) and media_url and media_url not in seen:
             seen.add(media_url)
             results.append(candidate)
     return results
@@ -2339,8 +2377,13 @@ def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
 def trusted_twimg_url(value: Any) -> str | None:
     if isinstance(value, dict):
         value = value.get("url")
-    candidate = str(value or "").strip()
-    parsed = urlparse(candidate)
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or not (
         host == "twimg.com" or host.endswith(".twimg.com")
@@ -2801,16 +2844,19 @@ def download_media(
     return files, log_tail, method, cookie_invalid
 
 
-def trim_files(files: list[Path]) -> tuple[list[Path], list[str]]:
+def trim_files(files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
     accepted: list[Path] = []
-    rejected: list[str] = []
+    rejected: list[tuple[str, str]] = []
     total = 0
     for path in files[:10]:
         size = path.stat().st_size
         is_video = path.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}
         item_limit = MAX_VIDEO_BYTES if is_video else MAX_MEDIA_BYTES
-        if size > item_limit or total + size > MAX_TOTAL_BYTES:
-            rejected.append(path.name)
+        if size > item_limit:
+            rejected.append((path.name, "video_oversized" if is_video else "images_skipped"))
+            continue
+        if total + size > MAX_TOTAL_BYTES:
+            rejected.append((path.name, "media_skipped"))
             continue
         accepted.append(path)
         total += size
@@ -4513,6 +4559,7 @@ class Bot:
             method = ""
             cookie_invalid = False
             fallback_oversized_videos = 0
+            fallback_skipped_media = False
             if root_tweet and fxtwitter_media(root_tweet):
                 files, extractor_log, fallback_oversized_videos = (
                     download_fxtwitter_media(root_tweet, directory)
@@ -4528,6 +4575,19 @@ class Bot:
                         or self.acl.ordinary_user_cookies_enabled
                     ),
                 )
+                recovered_videos = sum(
+                    path.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}
+                    for path in files
+                )
+                if recovered_videos and fallback_oversized_videos:
+                    # The extractor may recover smaller variants. For a partial
+                    # recovery we cannot identify which originals remain missing.
+                    source_videos = sum(
+                        item["type"] in {"video", "gif"}
+                        for item in fxtwitter_media(root_tweet or {})
+                    )
+                    fallback_skipped_media = recovered_videos < source_videos
+                    fallback_oversized_videos = 0
             if cookie_invalid:
                 self.notify_cookie_failure()
             fallback_tweet = root_tweet
@@ -4608,11 +4668,7 @@ class Bot:
                 )
             if not self.can_process(user_id):
                 return
-            rejected_videos = [
-                name for name in rejected
-                if Path(name).suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}
-            ]
-            oversized_video_count = len(rejected_videos) + fallback_oversized_videos
+            oversized_video_count = sum(reason == "video_oversized" for _, reason in rejected) + fallback_oversized_videos
             if oversized_video_count:
                 self.api.send_message(
                     chat_id,
@@ -4622,15 +4678,11 @@ class Bot:
                         count=oversized_video_count,
                     ),
                 )
-            rejected_other = [name for name in rejected if name not in rejected_videos]
-            if rejected_other:
-                self.api.send_message(
-                    chat_id,
-                    public_text(
-                        self.acl.language(user_id),
-                        "images_skipped",
-                    ),
-                )
+            for reason in ("images_skipped", "media_skipped"):
+                if any(item_reason == reason for _, item_reason in rejected) or (
+                    reason == "media_skipped" and fallback_skipped_media
+                ):
+                    self.api.send_message(chat_id, public_text(self.acl.language(user_id), reason))
 
 
 def main() -> int:
