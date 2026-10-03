@@ -1161,12 +1161,27 @@ class ACLTests(unittest.TestCase):
             with patch.object(bot.time, "time", return_value=report_time):
                 service.maybe_send_daily_report()
             text = api.send_message.call_args.args[1]
-            self.assertIn(f"每日使用簡報（{bot.bot_date(report_time)}，{bot.BOT_TIMEZONE_NAME}）", text)
+            self.assertIn(f"每日使用簡報（{bot.bot_date(report_time)}）", text)
+            self.assertNotIn(bot.BOT_TIMEZONE_NAME, text)
             self.assertIn("活躍用戶：1", text)
             self.assertIn("用量：1", text)
             self.assertIn("待審批：0", text)
             self.assertIsNone(api.send_message.call_args.kwargs["reply_markup"])
             service.stop()
+
+    def test_daily_report_title_has_date_without_timezone_in_all_languages(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary:
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                service.maybe_send_daily_report(force=True)
+                title = api.send_message.call_args.args[1].splitlines()[0]
+                self.assertIn(bot.bot_date(), title)
+                self.assertNotIn(bot.BOT_TIMEZONE_NAME, title)
+                self.assertNotIn("Asia/Tokyo", title)
+                service.stop()
 
     def test_owner_usage_is_counted_without_a_limit(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1356,6 +1371,9 @@ class MenuTests(unittest.TestCase):
                 api = MagicMock()
                 service = bot.Bot(api, store)
                 status = service.system_status_text(100)
+                self.assertNotIn(bot.BOT_TIMEZONE_NAME, status)
+                self.assertNotIn("00:00", status)
+                self.assertNotIn("22:00", status)
                 counts = bot.admin_text("status_users").format(
                     total=2, ordinary=1, administrators=0, initialized=0, pending=0,
                     banned=0, active_today=0, interactions=0, exhausted=0,

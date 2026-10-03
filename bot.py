@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.5"
+APP_VERSION = "3.3.6"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -422,12 +422,6 @@ ADMIN_TEXT = {
         "Users\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\nActive today: {active_today}\nUsage today: {interactions}\nAt quota: {exhausted}\n",
         "ユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n本日の利用者：{active_today}\n本日の使用量：{interactions}\n上限到達：{exhausted}\n",
         "用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n今日活跃：{active_today}\n今日用量：{interactions}\n已达额度：{exhausted}\n",
-    ),
-    "status_schedule": (
-        "統計重置：每日 {reset_hour:02d}:00 {timezone}\n每日簡報：{report_hour:02d}:00 {timezone}\n\n",
-        "Usage reset: {reset_hour:02d}:00 {timezone}\nDaily report: {report_hour:02d}:00 {timezone}\n\n",
-        "利用回数のリセット：{reset_hour:02d}:00 {timezone}\n日次レポート：{report_hour:02d}:00 {timezone}\n\n",
-        "统计重置：每日 {reset_hour:02d}:00 {timezone}\n每日简报：{report_hour:02d}:00 {timezone}\n\n",
     ),
     "running": ("正常", "Running", "稼働中", "正常"),
     "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
@@ -3374,10 +3368,10 @@ class Bot:
         report_date = bot_date(now)
         active, total = self.acl.usage_summary(report_date)
         text = {
-            "zh": f"每日使用簡報（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活躍用戶：{active}\n用量：{total}\n待審批：{len(records)}",
-            "en": f"Daily usage report ({report_date}, {BOT_TIMEZONE_NAME})\n\nActive users: {active}\nUsage: {total}\nPending approvals: {len(records)}",
-            "ja": f"日次利用レポート（{report_date}、{BOT_TIMEZONE_NAME}）\n\n利用ユーザー：{active}\n使用量：{total}\n審査待ち：{len(records)}",
-            "zh-cn": (f"每日使用简报（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活跃用户：{active}\n用量：{total}\n待审批：{len(records)}"),
+            "zh": f"每日使用簡報（{report_date}）\n\n活躍用戶：{active}\n用量：{total}\n待審批：{len(records)}",
+            "en": f"Daily usage report ({report_date})\n\nActive users: {active}\nUsage: {total}\nPending approvals: {len(records)}",
+            "ja": f"日次利用レポート（{report_date}）\n\n利用ユーザー：{active}\n使用量：{total}\n審査待ち：{len(records)}",
+            "zh-cn": (f"每日使用简报（{report_date}）\n\n活跃用户：{active}\n用量：{total}\n待审批：{len(records)}"),
         }[ui_language()]
         keyboard = pending_keyboard(records, 0) if records else None
         self.api.send_message(
@@ -3587,9 +3581,6 @@ class Bot:
             total=len(records), ordinary=ordinary, administrators=administrators,
             initialized=initialized, pending=pending, banned=banned,
             active_today=active_today, interactions=interactions, exhausted=exhausted,
-        )
-        text += admin_text("status_schedule").format(
-            reset_hour=DAILY_RESET_HOUR, report_hour=DAILY_REPORT_HOUR, timezone=BOT_TIMEZONE_NAME,
         )
         return text.rstrip()
 
