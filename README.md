@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.7
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.8
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -51,7 +51,7 @@ Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁�
 
 「預設額度」接受 1–100000，確認後只更新沿用舊預設的正常普通用戶，新用戶採用新值。自訂額度、初始化、待審、封鎖和管理員不變，當日用量不重置。設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。
 
-`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。
+`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。
 
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
@@ -104,7 +104,7 @@ Telegram のコマンドメニューと紹介文は端末言語に対応しま�
 
 「標準上限」は 1～100000 を指定し、確認すると旧標準値を使う承認済み一般ユーザーだけを更新します。新規ユーザーには新しい値を使います。独自の上限、初期状態、審査待ち、ブロック中のユーザー、管理者と当日の使用量は変更しません。設定は ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
-`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。
+`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。
 
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
@@ -157,7 +157,7 @@ Telegram's command menu and short/full descriptions follow the client's language
 
 Default limit accepts 1–100000. Confirmation updates only approved regular users matching the old default; new users use the new value. Custom quotas, initialized, pending, blocked and administrator accounts, and today's usage stay unchanged. The value is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`.
 
-`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries.
+`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 

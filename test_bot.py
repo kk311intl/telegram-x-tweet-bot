@@ -15,6 +15,104 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_deeply_invalid_acl_cannot_replace_a_good_backup(self):
+        cases = [
+            {"pending_jobs": []}, {"owner_id": True},
+            {"users": {"200": {"quota": "50"}}},
+            {"users": {"200": {"quota": True}}},
+            {"users": {"200": {"usage_count": "1"}}},
+            {"users": {"200": {"user_id": 201}}},
+            {"users": {"0200": {"quota": 50}}},
+            {"users": {"200": {"first_name": []}}},
+            {"users": {"200": {"quota_updated_at": -1}}},
+            {"pending_applications": {"200": []}},
+            {"pending_applications": {"200": {"requested_at": float("nan")}}},
+            {"pending_applications": {"200": {"requested_at": True}}},
+        ]
+        for changes in cases:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "acl.json"
+                store = bot.ACLStore(path, 100)
+                store.add(200)
+                good = path.read_bytes()
+                store.backup_path.write_bytes(good)
+                bad = {**json.loads(good), **changes}
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.assertLogs(bot.LOG, level="ERROR"):
+                    store._save()
+                self.assertEqual(store.backup_path.read_bytes(), good)
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.assertLogs(bot.LOG, level="ERROR"):
+                    recovered = bot.ACLStore(path, 100)
+                self.assertEqual(recovered.quota(200), bot.DEFAULT_DAILY_LIMIT)
+                self.assertEqual(recovered.backup_path.read_bytes(), good)
+
+    def test_access_snapshot_requires_explicit_strict_fields_without_partial_changes(self):
+        valid = {"user_id": 200, "quota": 50, "updated_at": 1}
+        cases = [{key: value for key, value in valid.items() if key != missing}
+                 for missing in valid]
+        cases += [{**valid, field: value} for field, values in (
+            ("user_id", (True, "200", 200.5)), ("quota", (True, "50", 50.5)),
+            ("updated_at", (True, "1", 1.5)),
+        ) for value in values]
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            before = store.path.read_bytes()
+            for item in cases:
+                with self.subTest(item=item), self.assertRaises(ValueError):
+                    store.import_access({"version": 1, "default_daily_limit": 100,
+                                         "users": [valid, item]})
+                self.assertEqual(store.path.read_bytes(), before)
+                self.assertFalse(store.has_user(200))
+            for version in (True, 1.0, "1"):
+                with self.assertRaises(ValueError):
+                    store.import_access({"version": version, "users": [valid]})
+            with self.assertRaises(ValueError):
+                store.import_access({"version": 1, "users": [valid, valid]})
+            self.assertEqual(store.import_access({"version": 1, "users": [{**valid, "quota": None}]}), 1)
+            self.assertTrue(store.is_admin(200))
+
+    def test_cookie_download_always_closes_and_masks_stream_errors(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        api.call = MagicMock(return_value={"file_path": "example.txt"})
+        for chunks, status, expected in (([b"ok"], 200, None), ([b"oversized"], 200, ValueError),
+                                         ([], 403, RuntimeError),
+                                         (bot.requests.ConnectionError(api.file_base + "/example.txt"), 200, RuntimeError)):
+            with self.subTest(status=status, chunks=chunks):
+                response = MagicMock(status_code=status)
+                response.__enter__.return_value = response
+                if isinstance(chunks, Exception):
+                    response.iter_content.side_effect = chunks
+                else:
+                    response.iter_content.return_value = iter(chunks)
+                with patch.object(api, "session", return_value=MagicMock(get=MagicMock(return_value=response))):
+                    if expected:
+                        with self.assertRaises(expected) as error:
+                            api.download_file("example", 2)
+                        self.assertNotIn("YOUR_API_TOKEN", str(error.exception))
+                    else:
+                        self.assertEqual(api.download_file("example", 2), b"ok")
+                response.__exit__.assert_called_once()
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            service = bot.Bot(api, store)
+            service.pending_cookie_uploads.add(100)
+            api.send_message = MagicMock()
+            with patch.object(api, "session", return_value=MagicMock(get=MagicMock(return_value=response))), self.assertLogs(bot.LOG, level="WARNING") as logs:
+                service.handle_document(100, 1, 100, {"file_id": "example", "file_size": 2})
+            self.assertNotIn("YOUR_API_TOKEN", " ".join(logs.output))
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_unexpected_external_json_uses_existing_fallback(self):
+        for payload in (None, [], "unexpected", 1):
+            with self.subTest(payload=payload):
+                response = MagicMock()
+                response.json.return_value = payload
+                with patch.object(bot, "http_session", return_value=MagicMock(get=MagicMock(return_value=response))):
+                    self.assertIsNone(bot.fetch_fxtwitter("https://x.com/example/status/123"))
+                    self.assertEqual(bot.fetch_tweet_text("https://x.com/example/status/123"), ("", "", ""))
+
     def test_consolidated_advanced_toggles_preserve_roles_and_localized_notices(self):
         actions = (
             ("debugtoggle", "implementation", "advanced_owner_only", lambda store: store.debug_mode(100)),
@@ -467,6 +565,43 @@ class URLTests(unittest.TestCase):
 
 
 class ConfigurationCLITests(unittest.TestCase):
+    @unittest.skipUnless(os.name != "nt" and getattr(os, "geteuid", lambda: -1)() == 0
+                         and Path("/run/systemd/system").exists(), "requires Linux root and systemd")
+    def test_environment_parser_and_writer_match_systemd(self):
+        text = "A=Owner's contact\nB='line  \nnext'\nC=\"one\\q\\$\\`\"\nD=one\\\n  two\nE=one\\  \nF=\"tail  \"\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.env"
+            path.write_text(text, encoding="utf-8")
+            with patch.object(config_cli, "ENV_PATH", path):
+                expected = config_cli.load_env()
+                for saved in (False, True):
+                    if saved:
+                        config_cli.save_env(expected)
+                    result = subprocess.run([
+                        "systemd-run", "--quiet", "--wait", "--pipe", "--collect",
+                        f"--property=EnvironmentFile={path}", sys.executable, "-c",
+                        "import json,os; print(json.dumps({k:os.environ[k] for k in 'ABCDEF'}))",
+                    ], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_environment_file_literal_quotes_continuations_and_multiline_values(self):
+        text = "OWNER_CONTACT_LABEL=Owner's contact\nLITERAL=one\"two\nJOIN=one\\\n  two\nSINGLE='line  \nnext\\value'\nDOUBLE=\"line\\\nnext\\q\\$\\`\"\nTRAIL=one  \nQUOTED=\"one  \" \n"
+        expected = {"OWNER_CONTACT_LABEL": "Owner's contact", "LITERAL": 'one"two',
+                    "JOIN": "one  two", "SINGLE": "line  \nnext\\value",
+                    "DOUBLE": "linenext\\q$`", "TRAIL": "one", "QUOTED": "one  "}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.env"
+            path.write_text(text, encoding="utf-8")
+            with patch.object(config_cli, "ENV_PATH", path):
+                self.assertEqual(config_cli.load_env(), expected)
+                config_cli.save_env(expected)
+                self.assertEqual(config_cli.load_env(), expected)
+                for broken in ("X='unfinished", "X=unfinished\\"):
+                    path.write_text(broken, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        config_cli.load_env()
+
     def test_env_quotes_spaces_and_special_values_round_trip(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.env"

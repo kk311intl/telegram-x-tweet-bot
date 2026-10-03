@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.7"
+APP_VERSION = "3.3.8"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -598,12 +598,41 @@ class ACLStore:
         pending = raw.get("pending_applications", {})
         if not isinstance(users, dict) or not isinstance(pending, dict):
             raise ValueError("ACL users and pending applications must be objects")
+        owner_id = raw.get("owner_id", 0)
+        if type(owner_id) is not int or (owner_id != 0 and not is_telegram_user_id(owner_id)):
+            raise ValueError("invalid ACL owner ID")
+        for key, record in users.items():
+            if (not isinstance(key, str) or not key.isascii() or not key.isdigit()
+                    or str(int(key)) != key or not is_telegram_user_id(int(key))
+                    or not isinstance(record, dict)):
+                raise ValueError("invalid ACL user record")
+            if "user_id" in record and (type(record["user_id"]) is not int or record["user_id"] != int(key)):
+                raise ValueError("mismatched ACL user ID")
+            quota = record.get("quota", 0)
+            if quota is not None and (type(quota) is not int or not -1 <= quota <= MAX_DAILY_LIMIT):
+                raise ValueError("invalid ACL quota")
+            for field in ("quota_updated_at", "usage_count", "last_seen"):
+                if field in record and (type(record[field]) is not int or record[field] < 0):
+                    raise ValueError(f"invalid ACL user field: {field}")
+            for field in ("usage_date", "profile_checked_date", "username", "first_name", "last_name", "language"):
+                if field in record and not isinstance(record[field], str):
+                    raise ValueError(f"invalid ACL user field: {field}")
+        for key, application in pending.items():
+            if (not isinstance(key, str) or not key.isascii() or not key.isdigit()
+                    or str(int(key)) != key or not is_telegram_user_id(int(key))
+                    or not isinstance(application, dict)):
+                raise ValueError("invalid ACL pending request")
+            requested_at = application.get("requested_at")
+            if (type(requested_at) not in (int, float)
+                    or (type(requested_at) is float and not math.isfinite(requested_at))
+                    or requested_at <= 0):
+                raise ValueError("invalid ACL request timestamp")
         for setting in ("external_access_enabled", "ordinary_user_cookies_enabled",
                         "auto_approve_enabled", "debug_mode"):
             if setting in raw and type(raw[setting]) is not bool:
                 raise ValueError(f"invalid ACL boolean: {setting}")
         data: dict[str, Any] = {
-            "owner_id": int(raw.get("owner_id", 0) or 0),
+            "owner_id": owner_id,
             "users": users,
             "pending_applications": pending,
             "last_daily_report_date": str(raw.get("last_daily_report_date") or ""),
@@ -721,11 +750,8 @@ class ACLStore:
             try:
                 current = self.path.read_text(encoding="utf-8")
                 previous = json.loads(current)
-                if not isinstance(previous, dict):
-                    raise ValueError("ACL state must be an object")
-                if any(not isinstance(previous.get(key, {}), dict)
-                       for key in ("users", "pending_applications")):
-                    raise ValueError("ACL users and pending applications must be objects")
+                validator = ACLStore.__new__(ACLStore)
+                validator._apply_state(previous, self.path.stat().st_mtime_ns)
                 atomic_write_text(self.backup_path, current)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 LOG.exception("Refusing to replace the ACL backup with invalid state")
@@ -766,7 +792,8 @@ class ACLStore:
         }
 
     def import_access(self, snapshot: dict[str, Any]) -> int:
-        if not isinstance(snapshot, dict) or snapshot.get("version") != 1:
+        if (not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int
+                or snapshot["version"] != 1):
             raise ValueError("unsupported access snapshot")
         users = snapshot.get("users")
         if not isinstance(users, list):
@@ -782,20 +809,20 @@ class ACLStore:
         elif "default_daily_limit_updated_at" in snapshot:
             raise ValueError("default daily limit timestamp without a limit")
         validated = []
+        seen = set()
         for item in users:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or not {"user_id", "quota", "updated_at"} <= item.keys():
                 raise ValueError("invalid access snapshot record")
-            user_id = int(item.get("user_id", 0) or 0)
-            if not is_telegram_user_id(user_id):
-                raise ValueError("invalid Telegram user ID")
-            quota = item.get("quota")
-            if quota is not None:
-                quota = int(quota)
-                if quota < -1 or quota > MAX_DAILY_LIMIT:
-                    raise ValueError("quota out of range")
-            updated_at = int(item.get("updated_at", 0) or 0)
-            if updated_at <= 0:
+            user_id = item["user_id"]
+            if type(user_id) is not int or not is_telegram_user_id(user_id) or user_id in seen:
+                raise ValueError("invalid or duplicate Telegram user ID")
+            quota = item["quota"]
+            if quota is not None and (type(quota) is not int or not -1 <= quota <= MAX_DAILY_LIMIT):
+                raise ValueError("quota out of range")
+            updated_at = item["updated_at"]
+            if type(updated_at) is not int or updated_at <= 0:
                 raise ValueError("invalid quota update timestamp")
+            seen.add(user_id)
             validated.append((user_id, quota, updated_at))
 
         changed = 0
@@ -1888,21 +1915,21 @@ class TelegramAPI:
         if not file_path:
             raise RuntimeError("Telegram did not return a file path")
         try:
-            response = self.session().get(
+            with self.session().get(
                 f"{self.file_base}/{file_path}", stream=True, timeout=(10, 60)
-            )
+            ) as response:
+                if response.status_code >= 400:
+                    raise RuntimeError(f"Telegram file download returned HTTP {response.status_code}")
+                content = bytearray()
+                for chunk in response.iter_content(64 * 1024):
+                    content.extend(chunk)
+                    if len(content) > maximum_bytes:
+                        raise ValueError("file is too large")
+                return bytes(content)
         except requests.RequestException as error:
             raise RuntimeError(
                 f"Telegram file download failed: {type(error).__name__}"
             ) from None
-        if response.status_code >= 400:
-            raise RuntimeError(f"Telegram file download returned HTTP {response.status_code}")
-        content = bytearray()
-        for chunk in response.iter_content(64 * 1024):
-            content.extend(chunk)
-            if len(content) > maximum_bytes:
-                raise ValueError("file is too large")
-        return bytes(content)
 
     def send_action(self, chat_id: int, action: str) -> None:
         try:
@@ -2196,6 +2223,8 @@ def fetch_tweet_text(url: str) -> tuple[str, str, str]:
         )
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            return "", "", ""
         parser = TextExtractor()
         parser.feed(payload.get("html", ""))
         text = " ".join(parser.parts).replace(" \n ", "\n")
@@ -2228,6 +2257,8 @@ def fetch_fxtwitter(url: str) -> dict[str, Any] | None:
         )
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            return None
         tweet = payload.get("tweet") or payload.get("status")
         return tweet if isinstance(tweet, dict) else None
     except requests.HTTPError as error:

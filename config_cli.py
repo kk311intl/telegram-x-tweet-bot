@@ -5,7 +5,6 @@ import getpass
 import json
 import os
 import secrets
-import shlex
 import shutil
 import subprocess
 import sys
@@ -25,20 +24,66 @@ from bot import ACLStore, atomic_write_text, validate_cookie_file, MAX_COOKIE_BY
 def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
+        lines = iter(ENV_PATH.read_text(encoding="utf-8").split("\n"))
+        for line in lines:
+            line = line.lstrip(" \t\r")
             if line and not line.startswith(("#", ";")) and "=" in line:
                 key, value = line.split("=", 1)
-                parser = shlex.shlex(value.strip(), posix=True)
-                parser.whitespace = ""
-                parser.commenters = ""
-                values[key.strip()] = "".join(parser)
+                values[key.strip()] = parse_env_value(value.lstrip(" \t\r"), lines)
     return values
 
 
+def parse_env_value(value: str, lines) -> str:
+    # EnvironmentFile is not shell syntax: interior unquoted quotes are literal.
+    quote = value[:1] if value.startswith(("'", '"')) else ""
+    if quote:
+        value = value[1:]
+    result: list[str] = []
+    whitespace = ""
+    while True:
+        index = 0
+        while index < len(value):
+            char = value[index]
+            index += 1
+            if quote and char == quote:
+                quote = ""
+                continue
+            if char == "\\" and quote != "'":
+                if index == len(value):
+                    value = next(lines, None)
+                    if value is None:
+                        raise ValueError("Incomplete environment value")
+                    break
+                following = value[index]
+                index += 1
+                if quote == '"' and following not in '"\\`$':
+                    char += following
+                else:
+                    char = following
+            elif not quote and char in " \t\r":
+                whitespace += char
+                continue
+            result.append(whitespace + char)
+            whitespace = ""
+        else:
+            if not quote:
+                return "".join(result)
+            value = next(lines, None)
+            if value is None:
+                raise ValueError("Incomplete quoted environment value")
+            result.append("\n")
+
+
 def save_env(values: dict[str, str]) -> None:
+    # JSON escapes such as \n are not decoded by systemd; use its quoted syntax.
+    assignments = []
+    for key, value in sorted(values.items()):
+        if "\0" in value:
+            raise ValueError("Invalid environment value")
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+        assignments.append(f'{key}="{escaped}"')
     atomic_write_text(ENV_PATH,
-        "\n".join(f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in sorted(values.items())) + "\n",
+        "\n".join(assignments) + "\n",
     )
 
 
