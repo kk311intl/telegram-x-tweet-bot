@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,15 +26,19 @@ def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     if ENV_PATH.exists():
         for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            if line and not line.startswith("#") and "=" in line:
+            line = line.strip()
+            if line and not line.startswith(("#", ";")) and "=" in line:
                 key, value = line.split("=", 1)
-                values[key] = value
+                parser = shlex.shlex(value.strip(), posix=True)
+                parser.whitespace = ""
+                parser.commenters = ""
+                values[key.strip()] = "".join(parser)
     return values
 
 
 def save_env(values: dict[str, str]) -> None:
     atomic_write_text(ENV_PATH,
-        "\n".join(f"{key}={value}" for key, value in sorted(values.items())) + "\n",
+        "\n".join(f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in sorted(values.items())) + "\n",
     )
 
 
@@ -198,9 +203,9 @@ def main() -> int:
                 + ("bootstrap configured" if values.get("OWNER_USER_ID") else "not configured")
             )
             print("state=not initialized")
-        subprocess.run(
+        return subprocess.run(
             ["systemctl", "is-active", "x-tweet-telegram-bot.service"], check=False
-        )
+        ).returncode
     else:
         raise SystemExit(
             "Commands: status, set-token, set-owner, set-cookies, clear-cookies, "

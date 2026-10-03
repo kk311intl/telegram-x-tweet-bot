@@ -27,10 +27,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from PIL import Image, ImageOps
+from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.4"
+APP_VERSION = "3.3.5"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -179,8 +180,13 @@ def media_disk_available() -> bool:
             filesystem = filesystem.parent
         if shutil.disk_usage(filesystem).free < MIN_FREE_DISK_BYTES:
             return False
-        total = sum(path.stat().st_size for path in TMP_DIR.rglob("*")
-                    if path.is_file() and not path.is_symlink())
+        total = 0
+        for path in TMP_DIR.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except FileNotFoundError:
+                pass  # A concurrent job removed or renamed its temporary file.
         return total < TEMP_SOFT_LIMIT_BYTES
     except OSError:
         LOG.warning("Could not check media disk space")
@@ -594,8 +600,8 @@ class ACLStore:
     def _apply_state(self, raw: dict[str, Any], migration_timestamp: int) -> None:
         if not isinstance(raw, dict):
             raise ValueError("ACL state must be an object")
-        users = raw.get("users") or {}
-        pending = raw.get("pending_applications") or {}
+        users = raw.get("users", {})
+        pending = raw.get("pending_applications", {})
         if not isinstance(users, dict) or not isinstance(pending, dict):
             raise ValueError("ACL users and pending applications must be objects")
         for setting in ("external_access_enabled", "ordinary_user_cookies_enabled",
@@ -720,8 +726,12 @@ class ACLStore:
         if self.path.exists():
             try:
                 current = self.path.read_text(encoding="utf-8")
-                if not isinstance(json.loads(current), dict):
+                previous = json.loads(current)
+                if not isinstance(previous, dict):
                     raise ValueError("ACL state must be an object")
+                if any(not isinstance(previous.get(key, {}), dict)
+                       for key in ("users", "pending_applications")):
+                    raise ValueError("ACL users and pending applications must be objects")
                 atomic_write_text(self.backup_path, current)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 LOG.exception("Refusing to replace the ACL backup with invalid state")
@@ -2083,6 +2093,8 @@ def run_command(
                         for path in directory.rglob("*") if path.is_file()
                     )
                 except FileNotFoundError:
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout) from None
                     continue  # A downloader renamed a partial file while we counted.
                 if total > MAX_TOTAL_BYTES or shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
                     raise ValueError("Extractor exceeded the media directory limit")
@@ -2513,6 +2525,7 @@ def download_fxtwitter_media(
     downloaded: list[Path] = []
     total = 0
     oversized_videos = 0
+    deadline = time.monotonic() + 240
     for index, item in enumerate(fxtwitter_media(tweet), start=1):
         media_type = str(item.get("type") or "")
         item_limit = MAX_VIDEO_BYTES if media_type in {"video", "gif"} else MAX_MEDIA_BYTES
@@ -2524,6 +2537,11 @@ def download_fxtwitter_media(
         item_oversized = False
         seen_urls: set[str] = set()
         for candidate in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise requests.Timeout("Media download exceeded its time limit")
+            if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
+                raise OSError("Not enough free space for media download")
             media_url = trusted_twimg_url(candidate.get("url"))
             if not media_url or media_url in seen_urls:
                 continue
@@ -2536,16 +2554,25 @@ def download_fxtwitter_media(
                 suffix = ".mp4"
             target = directory / f"fxtwitter_{index}{suffix or '.bin'}"
             try:
-                with trusted_twimg_response(media_url, timeout=(10, 120)) as response:
+                with trusted_twimg_response(media_url, timeout=(min(10, remaining), min(30, remaining))) as response:
+                    # read1 returns available data without waiting to fill a chunk,
+                    # so a slow trickle cannot bypass the overall deadline.
+                    read = getattr(response.raw, "read1", None)
+                    if not callable(read) or response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                        raise ValueError("Media response does not support bounded streaming")
                     content_length = response.headers.get("Content-Length", "")
                     if content_length.isdigit() and int(content_length) > item_limit:
                         item_oversized = True
                         continue
                     size = 0
                     with target.open("wb") as handle:
-                        for chunk in response.iter_content(128 * 1024):
+                        for chunk in iter(lambda: read(128 * 1024, decode_content=False), b""):
+                            if time.monotonic() >= deadline:
+                                raise requests.Timeout("Media download exceeded its time limit")
                             if not chunk:
                                 continue
+                            if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES + len(chunk):
+                                raise OSError("Not enough free space for media download")
                             size += len(chunk)
                             if size > item_limit:
                                 item_oversized = True
@@ -2557,7 +2584,7 @@ def download_fxtwitter_media(
                     downloaded.append(target)
                     item_downloaded = True
                     break
-            except (OSError, ValueError, requests.RequestException):
+            except (OSError, ValueError, requests.RequestException, StreamHTTPError):
                 target.unlink(missing_ok=True)
                 LOG.warning("FxTwitter media candidate failed", exc_info=True)
         if not item_downloaded and item_oversized and media_type in {"video", "gif"}:

@@ -467,6 +467,40 @@ class URLTests(unittest.TestCase):
 
 
 class ConfigurationCLITests(unittest.TestCase):
+    def test_env_quotes_spaces_and_special_values_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.env"
+            path.write_text(' # comment\n; comment\n DEFAULT_DAILY_LIMIT = "100" \nOWNER_USER_ID=\'200\'\nOWNER_CONTACT_LABEL=Two  words # literal\n', encoding="utf-8")
+            with patch.object(config_cli, "ENV_PATH", path):
+                values = config_cli.load_env()
+                self.assertEqual(config_cli.default_limit_status(values, {}), (100, "env"))
+                self.assertEqual(values["OWNER_CONTACT_LABEL"], "Two  words # literal")
+                with patch.object(config_cli, "ACLStore") as store:
+                    config_cli.acl_store(values)
+                    store.assert_called_once_with(config_cli.STATE_PATH, 200)
+                values["OWNER_CONTACT_LABEL"] = 'Owner\'s "contact" \\ example'
+                config_cli.save_env(values)
+                self.assertEqual(config_cli.load_env(), values)
+
+    def test_status_returns_failure_for_an_inactive_service(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={}), patch.object(config_cli, "STATE_PATH", Path(temporary) / "acl.json"), patch.object(config_cli, "COOKIE_PATH", Path(temporary) / "cookies.txt"), patch("builtins.print"):
+            for code in (0, 3, 4):
+                with patch.object(config_cli.subprocess, "run", return_value=subprocess.CompletedProcess([], code)):
+                    self.assertEqual(config_cli.main(), code)
+
+    def test_verify_rejects_inactive_service_and_zero_pid(self):
+        bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
+        if not bash:
+            self.skipTest("Requires bash")
+        script = (Path(__file__).parent / "verify_deploy.sh").read_text(encoding="utf-8")
+        check = script.split('echo "PROCESS_NETWORK"\n', 1)[1]
+        for active, pid, expected in ((0, 42, 0), (1, 0, 1), (0, 0, 1), (1, 42, 1)):
+            shell = (f'SERVICE=test; text_rc=0; media_rc=0; state_rc=0\n'
+                     f'systemctl() {{ if [[ $1 == show ]]; then echo {pid}; else return {active}; fi; }}\n'
+                     'ss() { return 0; }\nx-tweet-bot-config() { return 0; }\n' + check)
+            result = subprocess.run([bash, "-s"], input=shell.encode(), capture_output=True)
+            self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_deployment_text_check_accepts_escaped_and_truncated_author_names(self):
         script = (Path(__file__).parent / "verify_deploy.sh").read_text(encoding="utf-8")
         text_check = script.split('echo "TEXT_TEST"\n', 1)[1].split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
@@ -570,7 +604,7 @@ test "$(umask)" = 0077
             for state, expected in (({"users": {}, "default_daily_limit": 100}, "default_daily_limit=100 source=acl"), ({"users": {}}, "default_daily_limit=75 source=env")):
                 path.write_text(json.dumps(state), encoding="utf-8")
                 before = path.read_bytes()
-                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli, "COOKIE_PATH", Path(temporary) / "cookies.txt"), patch.object(config_cli.subprocess, "run"), patch("builtins.print") as output:
+                with patch.object(config_cli.os, "geteuid", return_value=0, create=True), patch.object(config_cli.sys, "argv", ["config", "status"]), patch.object(config_cli, "load_env", return_value={"DEFAULT_DAILY_LIMIT": "75"}), patch.object(config_cli, "STATE_PATH", path), patch.object(config_cli, "COOKIE_PATH", Path(temporary) / "cookies.txt"), patch.object(config_cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), patch("builtins.print") as output:
                     self.assertEqual(config_cli.main(), 0)
                     output.assert_any_call(expected)
                 self.assertEqual(path.read_bytes(), before)
@@ -718,6 +752,41 @@ test "$(umask)" = 0077
 
 
 class ACLTests(unittest.TestCase):
+    def test_invalid_empty_containers_recover_valid_backup_or_refuse_overwrite(self):
+        for key in ("users", "pending_applications"):
+            for invalid in ([], None, False, ""):
+                with self.subTest(key=key, invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "acl.json"
+                    store = bot.ACLStore(path, 100)
+                    store.set_quota(200, 75)
+                    good = path.read_bytes()
+                    store.backup_path.write_bytes(good)
+                    bad = json.loads(good)
+                    bad[key] = invalid
+                    path.write_text(json.dumps(bad), encoding="utf-8")
+                    with self.assertLogs(bot.LOG, level="ERROR"):
+                        recovered = bot.ACLStore(path, 100)
+                    self.assertEqual(recovered.quota(200), 75)
+                    self.assertEqual(store.backup_path.read_bytes(), good)
+                    path.write_text(json.dumps(bad), encoding="utf-8")
+                    store.backup_path.write_bytes(path.read_bytes())
+                    before = path.read_bytes()
+                    with self.assertLogs(bot.LOG, level="ERROR"), self.assertRaises(RuntimeError):
+                        bot.ACLStore(path, 100)
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertEqual(store.backup_path.read_bytes(), before)
+
+    def test_save_does_not_replace_good_backup_with_bad_empty_container(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            good = path.read_bytes()
+            store.backup_path.write_bytes(good)
+            path.write_text('{"users": [], "pending_applications": {}}', encoding="utf-8")
+            with self.assertLogs(bot.LOG, level="ERROR"):
+                store.observe({"id": 200})
+            self.assertEqual(store.backup_path.read_bytes(), good)
+
     def test_default_limit_updates_matching_regular_users_persists_and_applies_to_new_users(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "acl.json"
@@ -2550,6 +2619,64 @@ class TelegramConfigurationTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_extractor_rename_race_cannot_bypass_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot.subprocess, "Popen") as start, patch.object(bot.time, "monotonic", side_effect=[0, 2]), patch.object(Path, "rglob", side_effect=FileNotFoundError), patch.object(bot.os, "killpg", create=True) as kill_group:
+            process = start.return_value
+            process.poll.return_value = None
+            with self.assertRaises(subprocess.TimeoutExpired):
+                bot.run_command(["extractor"], timeout=1, directory=Path(temporary))
+            if os.name == "nt":
+                process.kill.assert_called_once()
+            else:
+                kill_group.assert_called_once()
+
+    def test_direct_media_stream_error_removes_partial_file(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {}
+        response.raw.read1.side_effect = [b"partial", bot.StreamHTTPError("interrupted")]
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "fxtwitter_media", return_value=[{"type": "photo", "url": "https://pbs.twimg.com/media/example.jpg"}]), patch.object(bot, "trusted_twimg_response", return_value=response), patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), self.assertLogs(bot.LOG, level="WARNING"):
+            files, _, _ = bot.download_fxtwitter_media({}, Path(temporary))
+            self.assertEqual(files, [])
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_disk_scan_ignores_files_removed_by_another_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            victim = root / "partial.bin"
+            victim.write_bytes(b"x")
+            original = Path.is_file
+            def disappearing(path):
+                result = original(path)
+                if path == victim and result:
+                    victim.unlink()
+                return result
+            with patch.object(bot, "TMP_DIR", root), patch.object(Path, "is_file", disappearing), patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=bot.MIN_FREE_DISK_BYTES)):
+                self.assertTrue(bot.media_disk_available())
+
+    def test_direct_media_stops_on_deadline_or_low_space_and_cleans_partial(self):
+        for exhausted in ("deadline", "disk"):
+            with self.subTest(exhausted=exhausted), tempfile.TemporaryDirectory() as temporary:
+                clock = MagicMock(return_value=0)
+                disk = MagicMock(return_value=MagicMock(free=10**12))
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.headers = {}
+                def chunks():
+                    yield b"first"
+                    if exhausted == "deadline":
+                        clock.return_value = 241
+                    else:
+                        disk.return_value.free = 0
+                    yield b"second"
+                iterator = chunks()
+                response.raw.read1.side_effect = lambda *args, **kwargs: next(iterator, b"")
+                with patch.object(bot, "fxtwitter_media", return_value=[{"type": "photo", "url": "https://pbs.twimg.com/media/example.jpg"}]), patch.object(bot, "trusted_twimg_response", return_value=response), patch.object(bot.time, "monotonic", clock), patch.object(bot.shutil, "disk_usage", disk), self.assertLogs(bot.LOG, level="WARNING"):
+                    files, _, _ = bot.download_fxtwitter_media({}, Path(temporary))
+                self.assertEqual(files, [])
+                self.assertEqual(list(Path(temporary).iterdir()), [])
+                response.__exit__.assert_called_once()
+
     def test_disk_soft_limits_reject_downloads_and_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "TMP_DIR", Path(temporary)), patch.object(
             bot, "TEMP_SOFT_LIMIT_BYTES", 4096
@@ -2758,7 +2885,7 @@ class MediaTests(unittest.TestCase):
         smaller.status_code = 200
         smaller.url = "https://video.twimg.com/low.mp4"
         smaller.headers = {"Content-Length": "5"}
-        smaller.iter_content.return_value = [b"video"]
+        smaller.raw.read1.side_effect = [b"video", b""]
         session = MagicMock()
         session.get.side_effect = [oversized, smaller]
 

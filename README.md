@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.4
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.5
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -39,7 +39,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | 媒體暫存達到 1 GiB 時暫停接受新下載；不是硬配額。 |
 | `TEMP_RETENTION_HOURS` | `24` | 每小時清理超過此時數且不在使用的媒體暫存；啟動時亦清理。 |
 
-下載器快取隨每次任務的暫存一同清除；不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
+下載器快取隨每次任務的暫存一同清除；直連下載亦檢查剩餘空間與時間，失敗時清除未完成檔案。不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
 
 其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
 
@@ -92,7 +92,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | メディア一時ファイルが 1 GiB に達したら新規ダウンロードを停止します。ハード上限ではありません。 |
 | `TEMP_RETENTION_HOURS` | `24` | この時間を超えた未使用の一時ファイルを起動時と1時間ごとに削除します。 |
 
-ダウンローダーのキャッシュは各処理の一時ファイルとともに削除します。ACL、資格情報、破損時の復旧ファイルは自動削除しません。上記の容量設定は変更でき、有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
+ダウンローダーのキャッシュは各処理の一時ファイルとともに削除します。直リンクの取得中も空き容量と経過時間を確認し、失敗時は未完了ファイルを削除します。ACL、資格情報、破損時の復旧ファイルは自動削除しません。上記の容量設定は変更でき、有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
 
 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信し、切り替え前の時刻に設定した場合は前の利用日を集計します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
 
@@ -145,7 +145,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | Stop accepting downloads when media temporary files reach 1 GiB; not a hard quota. |
 | `TEMP_RETENTION_HOURS` | `24` | Remove unused media temporary files older than this at startup and hourly. |
 
-Downloader caches are removed with each job's temporary files. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. These disk settings are configurable; see `bot.py` for bounds. This repository does not include cross-server backups.
+Downloader caches are removed with each job's temporary files. Direct downloads also check free space and elapsed time, removing partial files on failure. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. These disk settings are configurable; see `bot.py` for bounds. This repository does not include cross-server backups.
 
 You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; if its time precedes the reset, it summarizes the previous usage day. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
 

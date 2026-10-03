@@ -233,8 +233,11 @@ PY
 state_rc=$?
 
 echo "PROCESS_NETWORK"
+service_rc=0
+systemctl is-active --quiet "$SERVICE" || service_rc=1
 pid="$(systemctl show "$SERVICE" -p MainPID --value)"
 echo "pid=$pid"
+[[ $pid =~ ^[1-9][0-9]*$ ]] || service_rc=1
 if ss -lntup | grep -Fq "pid=$pid,"; then
   echo "unexpected_listener=yes"
   ss -lntup | grep -F "pid=$pid,"
@@ -248,6 +251,6 @@ echo "CONFIG_STATUS"
 x-tweet-bot-config status
 config_rc=$?
 
-if (( text_rc != 0 || media_rc != 0 || state_rc != 0 || listener_rc != 0 || config_rc != 0 )); then
+if (( text_rc != 0 || media_rc != 0 || state_rc != 0 || service_rc != 0 || listener_rc != 0 || config_rc != 0 )); then
   exit 1
 fi
