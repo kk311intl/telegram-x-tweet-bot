@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.2.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -8,9 +8,9 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 **給 AI coding agent 的無代碼部署提示詞**
 
-> 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID、管理介面語言與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及三種介面語言（管理語言由部署設定，普通用戶自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
+> 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID 與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及四種介面語言（所有角色均自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
 
-這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。普通用戶可各自選繁體中文、日本語或 English；Owner 與管理員的介面語言由部署時的 `OWNER_LANGUAGE` 固定設定。
+這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括 Owner 與管理員）均可從 Language 選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
 
 需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換，並建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
 
@@ -28,7 +28,6 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 | 設定 | 預設 | 用途 |
 | --- | --- | --- |
-| `OWNER_LANGUAGE` | `zh` | Owner／管理員介面：`zh`、`ja`、`en`。不改變普通用戶的個別語言。 |
 | `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；用於每日額度與簡報。 |
 | `DAILY_RESET_HOUR` | `0` | 該時區每日換日的整點，0–23。 |
 | `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向 Owner 發送每日用量與待審摘要。 |
@@ -41,7 +40,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有 Owner 能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受 Owner 開關控制。
 
-高級選項（包括「實現方式」）僅 Owner 可開啟與修改；管理員仍可管理普通用戶及查看系統狀態。
+高級選項（包括「實現方式」）僅 Owner 可開啟與修改；管理員可管理普通用戶及查看系統狀態，權限按角色生效，不再有管理模式開關。
+
+Telegram 的簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文描述；這不影響 Bot 內的四語選擇。
 
 Owner 可在「預設額度」輸入 1–100000 並確認，只修改每日額度等於修改前預設值的已授權普通用戶；其他額度保持不變，新獲授權或新建立的普通用戶使用新值。例如預設 50 改為 100，現有額度 50 改為 100，額度 200 不變。初始化、待審、封鎖和管理員不變，當日用量不重置。此設定保存在 ACL，重啟後仍有效，優先於 `DEFAULT_DAILY_LIMIT`。
 
@@ -55,9 +56,9 @@ Owner 可在「預設額度」輸入 1–100000 並確認，只修改每日額�
 
 **AI coding agent に渡す、コードを書かずに導入するための指示**
 
-> まずこの repository の README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit、テストを読んでください。そのうえで、Python・systemd・Telegram Bot API を使う X/Twitter 単一投稿メディア Bot を、私の Debian／Ubuntu Linux サーバーへ導入してください。私はプログラミングに詳しくありません。各コマンドの意味と期待結果を説明し、サーバーへのログイン方法、Bot Token、私の Telegram User ID、管理画面の言語、タイムゾーンなど、本当に不足している値だけを尋ねてください。Bot の作成、ログイン承認、Token の安全な入力、SSH 鍵の確認は私自身が行います。Secret をチャット・issue・Git に貼らせないでください。同名サービスや既存データを先に調べ、確認なしに既存環境を上書き・再起動せず、ユーザーデータ、Webhook、資格情報を初期化しないでください。構成を独断で変えず、各段階を実行して結果を確認し、最後にサービス、Bot の `/start`、公開投稿1件、3言語表示を検証してください。管理者の言語は導入設定、一般ユーザーの言語は本人の選択です。未確認の作業を完了済みと報告しないでください。
+> まずこの repository の README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit、テストを読んでください。そのうえで、Python・systemd・Telegram Bot API を使う X/Twitter 単一投稿メディア Bot を、私の Debian／Ubuntu Linux サーバーへ導入してください。私はプログラミングに詳しくありません。各コマンドの意味と期待結果を説明し、サーバーへのログイン方法、Bot Token、私の Telegram User ID、タイムゾーンなど、本当に不足している値だけを尋ねてください。Bot の作成、ログイン承認、Token の安全な入力、SSH 鍵の確認は私自身が行います。Secret をチャット・issue・Git に貼らせないでください。同名サービスや既存データを先に調べ、確認なしに既存環境を上書き・再起動せず、ユーザーデータ、Webhook、資格情報を初期化しないでください。構成を独断で変えず、各段階を実行して結果を確認し、最後にサービス、Bot の `/start`、公開投稿1件、4言語表示を検証してください。所有者・管理者を含む全ユーザーが個別に言語を選びます。未確認の作業を完了済みと報告しないでください。
 
-この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。一般ユーザーは繁體中文・日本語・English を個別に選択でき、所有者と管理者の表示言語は `OWNER_LANGUAGE` で固定します。
+この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。所有者・管理者を含む全ユーザーが Language から简体中文・繁體中文・English・日本語を選べます。初期表示は繁體中文（`zh`）で、端末言語による自動切り替えはありません。選択は ACL に保存され、導入時の言語設定は不要です。
 
 必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+、systemd、Telegram Bot Token です。`deploy.sh` は Python 3.12 を再利用または導入し、独立した候補環境で依存関係を導入・テストしてから切り替えます。専用ユーザーと `/var/lib/x-tweet-telegram-bot` を準備し、`ffmpeg` がなければ導入します。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
 
@@ -75,7 +76,6 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 | 設定 | 初期値 | 用途 |
 | --- | --- | --- |
-| `OWNER_LANGUAGE` | `zh` | 所有者・管理者の表示：`zh`、`ja`、`en`。一般ユーザーの個別設定には影響しません。 |
 | `BOT_TIMEZONE` | `UTC` | `Asia/Tokyo` などの IANA タイムゾーン。日次上限とレポートに適用します。 |
 | `DAILY_RESET_HOUR` | `0` | 日次上限を切り替える現地時刻（0–23 時）。 |
 | `DAILY_REPORT_HOUR` | `22` | その地域の 0–23 時。利用状況と審査待ちを所有者へ通知します。 |
@@ -88,7 +88,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
-詳細設定（「実装方法」を含む）の表示・変更は所有者のみ。管理者は一般ユーザーの管理とシステム状態の確認を引き続き行えます。
+詳細設定（「実装方法」を含む）の表示・変更は所有者のみ。管理者は一般ユーザーの管理とシステム状態を確認できます。権限は役割で決まり、管理モードの切り替えはありません。
+
+Telegram の紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、紹介文の簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
 所有者は「標準上限」に 1～100000 を入力し、確認すると、変更前の標準上限と同じ日次上限の承認済み一般ユーザーのみ更新できます。他の上限は維持し、新しく承認・作成する一般ユーザーには新しい値を使います。例えば標準上限を 50 から 100 にすると、上限 50 のユーザーは 100 に変わり、上限 200 のユーザーは変わりません。初期状態、審査待ち、ブロック中のユーザーと管理者は対象外で、当日の使用量はリセットしません。設定は ACL に保存され、再起動後も維持され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
@@ -102,9 +104,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 **No-code deployment prompt for an AI coding agent**
 
-> Read this repository's README, `deploy.sh`, `bot.py`, `config_cli.py`, systemd unit, and tests first. Then help me deploy this Python/systemd X/Twitter single-post media bot, which uses the Telegram Bot API, on my own Debian or Ubuntu Linux server. I am not a programmer: explain each command and its expected result, and ask only for missing values such as server access, Bot Token, my Telegram User ID, administrator language, and time zone. I must personally create the bot, approve logins, enter the Token securely, and confirm SSH keys. Do not ask me to paste secrets into chat, issues, or Git. Check for existing services and data before acting; do not overwrite or restart an existing installation without confirmation, and do not reset users, Webhooks, or credentials. Follow the current project without redesigning it. Execute and check each step, troubleshoot failures, and finally verify the service, `/start`, one public post, and all three interface languages (administrator language is deployment-wide; regular users choose individually). Mark any step you could not actually verify instead of claiming success.
+> Read this repository's README, `deploy.sh`, `bot.py`, `config_cli.py`, systemd unit, and tests first. Then help me deploy this Python/systemd X/Twitter single-post media bot, which uses the Telegram Bot API, on my own Debian or Ubuntu Linux server. I am not a programmer: explain each command and its expected result, and ask only for missing values such as server access, Bot Token, my Telegram User ID, and time zone. I must personally create the bot, approve logins, enter the Token securely, and confirm SSH keys. Do not ask me to paste secrets into chat, issues, or Git. Check for existing services and data before acting; do not overwrite or restart an existing installation without confirmation, and do not reset users, Webhooks, or credentials. Follow the current project without redesigning it. Execute and check each step, troubleshoot failures, and finally verify the service, `/start`, one public post, and all four interface languages (every role chooses individually). Mark any step you could not actually verify instead of claiming success.
 
-Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Regular users choose 繁體中文, 日本語, or English individually; the owner and administrators use one deployment setting, `OWNER_LANGUAGE`.
+Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Every user, including the owner and administrators, can choose 简体中文, 繁體中文, English, or 日本語 from Language. The default is Traditional Chinese (`zh`), not the client's language. Preferences are saved in the ACL; no deployment language setting is needed.
 
 You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+, systemd, and a Telegram Bot Token. `deploy.sh` reuses or installs Python 3.12, installs and tests packages in a separate candidate environment before switching, and creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. It installs `ffmpeg` if missing. The bot uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
 
@@ -122,7 +124,6 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `OWNER_LANGUAGE` | `zh` | Owner/admin UI: `zh`, `ja`, or `en`. Does not change individual user languages. |
 | `BOT_TIMEZONE` | `UTC` | IANA zone such as `Asia/Tokyo`, used for daily limits and reports. |
 | `DAILY_RESET_HOUR` | `0` | Local hour when the daily usage period rolls over, 0–23. |
 | `DAILY_REPORT_HOUR` | `22` | Hour 0–23 in that zone for the owner's usage/pending report. |
@@ -135,7 +136,9 @@ You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WOR
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
-Only the owner can open or change Advanced settings, including Implementation details. Administrators can still manage regular users and view system status.
+Only the owner can open or change Advanced settings, including Implementation details. Administrators can manage regular users and view system status. Permissions follow roles; there is no management-mode switch.
+
+Telegram's short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these descriptions cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 
 Under Default limit, the owner can enter 1–100000 and confirm to update only approved regular users whose daily quota matches the previous default. Other quotas stay unchanged; newly approved or created regular users use the new value. For example, changing the default from 50 to 100 updates users with a quota of 50 to 100, while a quota of 200 stays unchanged. Initialized, pending, blocked, and administrator accounts are excluded; today's usage is not reset. The setting is saved in the ACL, survives restarts, and takes precedence over `DEFAULT_DAILY_LIMIT`.
 

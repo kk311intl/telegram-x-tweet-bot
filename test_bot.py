@@ -722,18 +722,6 @@ class ACLTests(unittest.TestCase):
             self.assertFalse(store.debug_mode(200))
             self.assertFalse(store.debug_mode(100))
 
-    def test_management_mode_is_per_admin_persistent_and_defaults_on(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "acl.json"
-            store = bot.ACLStore(path, 100)
-            store.set_quota(200, None)
-            self.assertTrue(store.management_mode(100))
-            self.assertTrue(store.management_mode(200))
-            self.assertFalse(store.toggle_management_mode(200))
-            self.assertFalse(bot.ACLStore(path, 100).management_mode(200))
-            self.assertTrue(store.management_mode(100))
-            with self.assertRaises(ValueError):
-                store.toggle_management_mode(300)
 
     def test_external_access_switch_is_persistent_and_defaults_on(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -883,10 +871,11 @@ class CookieTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
-    def test_usage_labels_and_chinese_user_terms_are_consistent_in_three_languages(self):
-        for language, usage_label, old_label in (("zh", "用量", "處理次數"), ("ja", "使用量", "処理回数"), ("en", "Usage", "Processed")):
-            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
+    def test_usage_labels_and_chinese_user_terms_are_consistent_in_four_languages(self):
+        for language, usage_label, old_label in (("zh-cn", "用量", "处理次数"), ("zh", "用量", "處理次數"), ("ja", "使用量", "処理回数"), ("en", "Usage", "Processed")):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
                 store.add(200)
                 store.consume(200)
                 api = MagicMock()
@@ -904,9 +893,11 @@ class MenuTests(unittest.TestCase):
         self.assertTrue(all("使用者" not in values[0] for values in bot.ADMIN_TEXT.values()))
 
     def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
-        for language in ("zh", "en", "ja"):
-            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
+        for language in ("zh-cn", "zh", "en", "ja"):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                self.assertTrue(bot.advanced_status_keyboard(False)["inline_keyboard"][3][0]["text"].startswith("🎯 "))
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
                 store.add(200)
                 api = MagicMock()
                 service = bot.Bot(api, store)
@@ -965,11 +956,12 @@ class MenuTests(unittest.TestCase):
         self.assertIn("quoted content is not followed", bot.public_text("en", "help_allowed"))
         self.assertIn("引用先ではなく", bot.public_text("ja", "help_allowed"))
         expected_menus = {
+            "zh-cn": ["🌐 Language", "ℹ️ 使用说明"],
             "zh": ["🌐 Language", "ℹ️ 使用說明"],
             "en": ["🌐 Language", "ℹ️ How to use"],
             "ja": ["🌐 Language", "ℹ️ 使い方"],
         }
-        for language in ("zh", "en", "ja"):
+        for language in ("zh-cn", "zh", "en", "ja"):
             menu = bot.start_keyboard(language, False, True)["inline_keyboard"][0]
             self.assertEqual(
                 [button["text"] for button in menu], expected_menus[language]
@@ -992,7 +984,7 @@ class MenuTests(unittest.TestCase):
             store.set_quota(200, 50)
             api = MagicMock()
             service = bot.Bot(api, store)
-            for language in ("zh", "en", "ja"):
+            for language in ("zh-cn", "zh", "en", "ja"):
                 store.set_language(200, language)
                 api.reset_mock()
                 service.handle_update({"message": {
@@ -1051,33 +1043,22 @@ class MenuTests(unittest.TestCase):
             language_keyboard = api.edit_message.call_args.args[3]["inline_keyboard"]
             self.assertEqual(
                 [button["callback_data"] for button in language_keyboard[0]],
-                ["lang:zh", "lang:en", "lang:ja"],
+                ["lang:zh-cn", "lang:zh", "lang:en", "lang:ja"],
             )
             self.assertEqual(
                 language_keyboard[-1][0]["callback_data"], "public:main"
             )
 
-    def test_administrator_start_keyboard_has_no_language_buttons(self):
+    def test_administrator_start_keyboard_has_a_language_menu(self):
         keyboard = bot.start_keyboard("zh", True, True)["inline_keyboard"]
         callbacks = {
             button["callback_data"]
             for row in keyboard
             for button in row
         }
-        self.assertFalse(any(value.startswith("lang:") for value in callbacks))
+        self.assertIn("public:language", callbacks)
         self.assertEqual(keyboard, bot.owner_keyboard()["inline_keyboard"])
 
-    def test_disabled_management_mode_shows_public_debug_view_and_restore(self):
-        keyboard = bot.start_keyboard(
-            "en", True, True, False, management_mode=False
-        )["inline_keyboard"]
-        callbacks = [
-            button["callback_data"] for row in keyboard for button in row
-        ]
-        self.assertIn("managementtoggle:0", callbacks)
-        self.assertNotIn("public:language", callbacks)
-        self.assertIn("public:help", callbacks)
-        self.assertNotIn("nav:users", callbacks)
 
     def test_language_callback_persists_and_edits_start_message(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1107,7 +1088,7 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(
             [[button["callback_data"] for button in row] for row in main],
             [
-                ["nav:users", "managementtoggle:0"],
+                ["nav:users", "public:language"],
                 ["nav:status", "nav:help"],
             ],
         )
@@ -1417,7 +1398,7 @@ class MenuTests(unittest.TestCase):
             )
             self.assertEqual(
                 advanced[3][0]["text"],
-                "預設額度：50",
+                "🎯 預設額度：50",
             )
             self.assertEqual(
                 advanced[4][0]["text"],
@@ -1429,7 +1410,7 @@ class MenuTests(unittest.TestCase):
             )
             self.assertIn("Cookies 開關：開啟", status)
             self.assertIn("自動通過：關閉", status)
-            self.assertIn("管理模式：開啟", status)
+            self.assertNotIn("管理模式", status)
 
             admin_advanced = bot.advanced_status_keyboard(
                 False, can_configure=False
@@ -1478,8 +1459,9 @@ class MenuTests(unittest.TestCase):
             store.set_quota(200, None)
             api = MagicMock()
             service = bot.Bot(api, store)
-            for language, implementation in (("zh", "實現方式"), ("ja", "実装方法"), ("en", "Implementation details")):
-                with patch.object(bot, "OWNER_LANGUAGE", language):
+            for language, implementation in (("zh-cn", "实现方式"), ("zh", "實現方式"), ("ja", "実装方法"), ("en", "Implementation details")):
+                store.set_language(200, language)
+                with bot.language_scope(language):
                     for data in ("nav:advanced", "debugtoggle:0", "nav:defaultquota", "defaultquota:100"):
                         with self.subTest(language=language, data=data):
                             api.reset_mock()
@@ -1532,69 +1514,7 @@ class MenuTests(unittest.TestCase):
             api.send_message.assert_not_called()
             self.assertEqual(service.jobs.qsize(), 1)
 
-    def test_disabled_management_mode_uses_regular_user_rules(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
-            store.set_quota(200, None)
-            store.toggle_management_mode(200)
-            store.toggle_external_access(100)
-            api = MagicMock()
-            service = bot.Bot(api, store)
 
-            service.handle_update({
-                "message": {
-                    "message_id": 10,
-                    "from": {"id": 200, "first_name": "Admin"},
-                    "chat": {"id": 200},
-                    "text": "https://x.com/example/status/123",
-                }
-            })
-
-            api.send_message.assert_called_once_with(
-                200, bot.public_text("zh", "service_paused"), 10
-            )
-            self.assertTrue(service.jobs.empty())
-
-    def test_management_mode_toggle_hides_and_restores_admin_interface(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
-            store.set_quota(200, None)
-            api = MagicMock()
-            service = bot.Bot(api, store)
-            callback = {
-                "id": "management-off",
-                "data": "managementtoggle:0",
-                "from": {"id": 200, "first_name": "Admin"},
-                "message": {"message_id": 12, "chat": {"id": 200}},
-            }
-
-            service.handle_callback(callback)
-            self.assertFalse(store.management_mode(200))
-            self.assertEqual(
-                api.edit_message.call_args.args[2],
-                bot.public_text("zh", "start_allowed"),
-            )
-            self.assertIn(
-                "managementtoggle:0", str(api.edit_message.call_args.args[3])
-            )
-
-            api.reset_mock()
-            service.handle_callback({
-                **callback,
-                "id": "old-admin-button",
-                "data": "nav:users",
-            })
-            api.answer_callback.assert_called_once_with(
-                "old-admin-button", "管理模式已關閉，請先重新開啟。", alert=True
-            )
-
-            api.reset_mock()
-            service.handle_callback({
-                **callback,
-                "id": "management-on",
-            })
-            self.assertTrue(store.management_mode(200))
-            self.assertEqual(api.edit_message.call_args.args[2], "管理選單")
 
     def test_external_pause_is_only_reported_for_valid_user_urls(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1825,7 +1745,7 @@ class MenuTests(unittest.TestCase):
             ("ja", ("所有者向けガイド", "管理者向けガイド"), "User ID 上限値"),
             ("en", ("Owner guide", "Administrator guide"), "User ID and quota"),
         ):
-            with self.subTest(language=language), patch.object(bot, "OWNER_LANGUAGE", language):
+            with self.subTest(language=language), bot.language_scope(language):
                 owner_help = bot.owner_help_text(True)
                 admin_help = bot.owner_help_text(False)
                 self.assertTrue(owner_help.startswith(titles[0]))
@@ -2166,6 +2086,11 @@ class TelegramConfigurationTests(unittest.TestCase):
         self.assertEqual(language_codes, {"zh", "en", "ja"})
         self.assertEqual(len(descriptions), 4)
         self.assertTrue(all(bot.BOT_MENTION in value for value in descriptions))
+        localized = {call.args[1].get("language_code", ""): call.args[1]["description"]
+                     for call in api.call.call_args_list if call.args[0] == "setMyDescription"}
+        self.assertIn("发送", localized["zh"])
+        self.assertIn("傳送", localized[""])
+        self.assertNotIn("zh-cn", localized)
 
 
 class MediaTests(unittest.TestCase):
@@ -2495,8 +2420,9 @@ class MediaTests(unittest.TestCase):
                 bot, "fetch_fxtwitter", return_value=tweet
             ), patch.object(
                 bot, "download_fxtwitter_media", return_value=([media], "", 0)
-            ), patch.object(bot, "prepare_image", side_effect=lambda path: path), patch.object(bot, "OWNER_LANGUAGE", "ja"):
+            ), patch.object(bot, "prepare_image", side_effect=lambda path: path), bot.language_scope("ja"):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, "ja")
                 api = MagicMock()
                 api.send_documents.side_effect = RuntimeError("upload failed")
                 service = bot.Bot(api, store)
@@ -2506,7 +2432,7 @@ class MediaTests(unittest.TestCase):
 
     def test_unavailable_post_reports_reason_in_each_user_language(self):
         url = "https://x.com/author/status/123"
-        for language in ("zh", "en", "ja"):
+        for language in ("zh-cn", "zh", "en", "ja"):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(
                 bot, "TMP_DIR", Path(temporary)
             ), patch.object(
@@ -2547,8 +2473,9 @@ class MediaTests(unittest.TestCase):
                 bot, "fetch_fxtwitter", return_value=tweet
             ), patch.object(
                 bot, "download_fxtwitter_media", return_value=([media], "", 0)
-            ), patch.object(bot, "OWNER_LANGUAGE", "en"):
+            ), bot.language_scope("en"):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, "en")
                 api = MagicMock()
                 api.send_previews.side_effect = RuntimeError("connection failed")
                 service = bot.Bot(api, store)
@@ -2561,7 +2488,7 @@ class MediaTests(unittest.TestCase):
             self.assertIn("submit this post again", fallback.lower())
             api.send_documents.assert_called_once_with(100, [])
 
-    def test_owner_keeps_cookie_access_when_management_mode_is_off(self):
+    def test_owner_keeps_cookie_access_when_regular_cookie_access_is_off(self):
         tweet = {
             "id": "123",
             "text": "owner test",
@@ -2579,7 +2506,6 @@ class MediaTests(unittest.TestCase):
         ):
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.toggle_ordinary_user_cookies(100)
-            store.toggle_management_mode(100)
             service = bot.Bot(MagicMock(), store)
 
             service.process_url(100, 10, 100, "https://x.com/owner/status/123")
@@ -2851,35 +2777,6 @@ class InlineQueryTests(unittest.TestCase):
             self.assertEqual(api.answer_inline_query.call_args_list[0].args[1], [])
             builder.assert_called_once()
 
-    def test_management_mode_off_applies_ordinary_inline_switch_and_hides_debug(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            bot, "build_inline_results", return_value=[{"type": "article", "id": "one"}]
-        ) as builder:
-            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
-            store.set_quota(300, None)
-            store.data["users"]["300"]["debug_mode"] = True
-            store.toggle_management_mode(300)
-            store.toggle_external_access(100)
-            api = MagicMock()
-            service = bot.Bot(api, store)
-            service.handle_inline_query({
-                "id": "paused-admin",
-                "from": {"id": 300},
-                "query": "https://x.com/example/status/123",
-            })
-            self.assertEqual(api.answer_inline_query.call_args.args[1], [])
-            builder.assert_not_called()
-
-            store.toggle_external_access(100)
-            service.handle_inline_query({
-                "id": "ordinary-admin",
-                "from": {"id": 300},
-                "query": "https://x.com/example/status/123",
-            })
-            service.wait_for_inline_idle()
-            builder.assert_called_once_with(
-                "https://x.com/example/status/123", debug=False
-            )
 
     def test_inline_video_answers_with_external_media_result(self):
         result = {
@@ -3134,45 +3031,191 @@ class PerformanceSafetyTests(unittest.TestCase):
 
 
 class PublicReleaseLanguageTests(unittest.TestCase):
-    def test_administrator_language_is_fixed_and_users_keep_their_choice(self):
-        for language, status, report in (
-            ("zh", "系統狀態", "每日使用簡報"),
-            ("en", "System status", "Daily usage report"),
-            ("ja", "システム状態", "日次利用レポート"),
-        ):
-            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, patch.object(bot, "OWNER_LANGUAGE", language):
-                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
-                store.set_quota(300, None)
-                store.set_language(200, "ja")
-                self.assertEqual(store.language(100), language)
-                self.assertEqual(store.language(300), language)
-                self.assertEqual(store.language(200), "ja")
-                with self.assertRaises(ValueError):
-                    store.set_language(100, "en")
-                api = MagicMock()
-                service = bot.Bot(api, store)
-                service.handle_update({
-                    "message": {"message_id": 1, "chat": {"id": 100}, "from": {"id": 100}, "text": "/start"}
-                })
-                self.assertIn(bot.admin_text("users"), str(api.send_message.call_args.args[3]))
+    def test_every_role_can_select_four_languages_and_preferences_survive_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.set_quota(300, None)
+            store.set_quota(200, 75)
+            store.consume(200)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for user_id in (100, 300, 200, 400):
+                self.assertEqual(store.language(user_id), "zh")
+                for language in ("zh-cn", "zh", "en", "ja"):
+                    with self.subTest(user_id=user_id, language=language):
+                        callback = {"id": "language", "from": {"id": user_id, "language_code": "zh-hans"},
+                                    "message": {"message_id": 1, "chat": {"id": user_id}}}
+                        service.handle_callback({**callback, "data": "public:language"})
+                        row = api.edit_message.call_args.args[3]["inline_keyboard"][0]
+                        self.assertEqual([item["callback_data"] for item in row], ["lang:zh-cn", "lang:zh", "lang:en", "lang:ja"])
+                        service.handle_callback({**callback, "data": "lang:" + language})
+                        self.assertEqual(store.language(user_id), language)
+                        self.assertEqual(bot.ACLStore(path, 100).language(user_id), language)
+                        self.assertEqual(api.answer_callback.call_args.args[1], bot.public_text(language, "language_set"))
+                        if store.is_admin(user_id):
+                            with bot.language_scope(language):
+                                self.assertEqual(api.edit_message.call_args.args[3], bot.owner_keyboard())
+                            service.handle_callback({**callback, "data": "nav:help"})
+                            with bot.language_scope(language):
+                                self.assertEqual(api.edit_message.call_args.args[2], bot.owner_help_text(user_id == 100))
+                                self.assertEqual(api.edit_message.call_args.args[3], bot.owner_keyboard())
+                store.set_language(user_id, "zh")
+            self.assertEqual([store.quota(user_id) for user_id in (100, 300, 200, 400)], [None, None, 75, 0])
+            self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+            service.stop()
+
+    def test_default_language_ignores_old_deployment_setting_and_telegram_language(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"OWNER_LANGUAGE": "en"}):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, None)
+            store.observe({"id": 300, "language_code": "zh-hans"})
+            self.assertEqual([store.language(user_id) for user_id in (100, 200, 300)], ["zh"] * 3)
+            self.assertFalse(hasattr(bot, "OWNER_LANGUAGE"))
+
+    def test_legacy_mode_flags_no_longer_change_admin_access_or_regular_user_access(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            path.write_text(json.dumps({"owner_id": 100, "external_access_enabled": False,
+                "users": {"100": {"quota": None, "management_mode": False},
+                          "200": {"quota": None, "management_mode": False},
+                          "300": {"quota": 75, "management_mode": True}}}), encoding="utf-8")
+            before = path.read_bytes()
+            bot.ACLStore.read_access_snapshot(path)
+            self.assertEqual(path.read_bytes(), before)
+            store = bot.ACLStore(path, 100)
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(all("management_mode" not in row for row in persisted["users"].values()))
+            self.assertTrue(all("management_mode" not in row for row in store.data["users"].values()))
+            self.assertFalse(hasattr(store, "toggle_management_mode"))
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            self.assertTrue(service.can_process(100))
+            self.assertTrue(service.can_process(200))
+            self.assertFalse(service.can_process(300))
+            service.handle_callback({"id": "retired", "data": "managementtoggle:0", "from": {"id": 200},
+                                     "message": {"message_id": 1, "chat": {"id": 200}}})
+            api.edit_message.assert_not_called()
+            self.assertEqual(api.answer_callback.call_args.args[1], bot.admin_text("invalid_action"))
+            service.handle_callback({"id": "admin", "data": "nav:users", "from": {"id": 200},
+                                     "message": {"message_id": 1, "chat": {"id": 200}}})
+            self.assertEqual(api.edit_message.call_args.args[2], "用戶管理")
+            self.assertEqual(store.quota(300), 75)
+            for language in bot.PUBLIC_TEXT:
+                store.set_language(200, language)
+                self.assertNotIn("managementtoggle", str(bot.owner_keyboard()))
+                for retired in ("管理模式", "管理モード", "Management mode"):
+                    self.assertNotIn(retired, service.system_status_text(200))
+            service.stop()
+
+    def test_admin_language_changes_are_private_and_do_not_grant_permissions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, None)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for user_id in (100, 200):
+                for data in ("lang:zh-cn", "public:language"):
+                    service.handle_callback({"id": "group", "data": data, "from": {"id": user_id},
+                                             "message": {"message_id": 1, "chat": {"id": -1000}}})
+                    self.assertEqual(store.language(user_id), "zh")
+                    self.assertEqual(api.answer_callback.call_args.args[1], bot.admin_text("private_only"))
+            service.handle_callback({"id": "ordinary", "data": "lang:zh-cn", "from": {"id": 300},
+                                     "message": {"message_id": 1, "chat": {"id": 300}}})
+            self.assertEqual(store.language(300), "zh-cn")
+            self.assertEqual(store.quota(300), 0)
+            self.assertFalse(store.is_admin(300))
+            service.handle_callback({"id": "ordinary", "data": "lang:invalid", "from": {"id": 300},
+                                     "message": {"message_id": 1, "chat": {"id": 300}}})
+            self.assertEqual(store.language(300), "zh-cn")
+            self.assertEqual(api.answer_callback.call_args.args[1], bot.public_text("zh-cn", "unsupported_language"))
+            service.stop()
+
+    def test_owner_and_admin_runtime_outputs_follow_their_own_language(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, None)
+            store.set_language(200, "en")
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for language, status, report in (("zh-cn", "系统状态", "每日使用简报"), ("zh", "系統狀態", "每日使用簡報"),
+                                               ("en", "System status", "Daily usage report"), ("ja", "システム状態", "日次利用レポート")):
+                store.set_language(100, language)
+                service.handle_update({"message": {"message_id": 1, "chat": {"id": 100}, "from": {"id": 100}, "text": "/start"}})
                 self.assertEqual(api.send_message.call_args.args[1], bot.public_text(language, "start_owner"))
-                api.reset_mock()
                 service.handle_owner_command(100, 2, 100, "/status", "")
                 self.assertIn(status, api.send_message.call_args.args[1])
-                api.reset_mock()
-                service.handle_owner_command(100, 3, 100, "/users", "")
-                self.assertIn(bot.admin_text("user_list"), api.send_message.call_args.args[1])
-                api.reset_mock()
-                service.handle_callback({
-                    "id": "admin-language", "data": "lang:en", "from": {"id": 100},
-                    "message": {"message_id": 4, "chat": {"id": 100}},
-                })
-                self.assertEqual(store.language(100), language)
-                self.assertEqual(api.answer_callback.call_args.args[1], bot.admin_text("language_locked"))
-                api.reset_mock()
+                service.handle_owner_command(100, 2, 100, "/help", "")
+                with bot.language_scope(language):
+                    self.assertEqual(api.send_message.call_args.args[1], bot.owner_help_text())
+                service.handle_owner_command(200, 2, 200, "/status", "")
+                self.assertIn("System status", api.send_message.call_args.args[1])
                 service.maybe_send_daily_report(force=True)
                 self.assertIn(report, api.send_message.call_args.args[1])
-                service.stop()
+                self.assertEqual(bot.ui_language(), "zh")
+            service.stop()
+
+    def test_concurrent_admin_callbacks_do_not_mix_languages_and_restore_context(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, None)
+            store.set_language(100, "zh-cn")
+            store.set_language(200, "en")
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            barrier = bot.threading.Barrier(2)
+            original = bot.user_menu_keyboard
+            def keyboard():
+                barrier.wait(timeout=3)
+                return original()
+            def callback(user_id):
+                service.handle_callback({"id": str(user_id), "data": "nav:users", "from": {"id": user_id},
+                                         "message": {"message_id": 1, "chat": {"id": user_id}}})
+                self.assertEqual(bot.ui_language(), "zh")
+            with patch.object(bot, "user_menu_keyboard", side_effect=keyboard), bot.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(callback, user_id) for user_id in (100, 200)]
+                for future in futures:
+                    future.result(timeout=5)
+            outputs = {call.args[0]: call.args for call in api.edit_message.call_args_list}
+            self.assertIn("用户列表", str(outputs[100][3]))
+            self.assertIn("Users", str(outputs[200][3]))
+            api.edit_message.side_effect = RuntimeError("send failed")
+            with bot.language_scope("ja"), self.assertRaises(RuntimeError):
+                service.handle_callback({"id": "error", "data": "nav:status", "from": {"id": 100},
+                                         "message": {"message_id": 1, "chat": {"id": 100}}})
+            self.assertEqual(bot.ui_language(), "zh")
+            service.stop()
+
+    def test_inline_cache_keeps_language_specific_results_separate(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "build_inline_results", side_effect=lambda url, debug: [{"id": bot.ui_language()}]) as builder:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.add(200)
+            store.add(300)
+            store.set_language(200, "zh-cn")
+            store.set_language(300, "en")
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for user_id, expected in ((200, "zh-cn"), (300, "en"), (200, "zh-cn")):
+                service._process_inline_query(str(user_id), "https://x.com/example/status/123", False, user_id)
+                self.assertEqual(api.answer_inline_query.call_args.args[1], [{"id": expected}])
+                self.assertEqual(bot.ui_language(), "zh")
+            self.assertEqual(builder.call_count, 2)
+            service.stop()
+
+    def test_language_navigation_cancels_pending_admin_input_without_changing_quotas(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for data in ("public:language", "lang:zh-cn"):
+                service.pending_default_quotas[100] = 100
+                service.pending_user_searches.add(100)
+                service.handle_callback({"id": "language", "data": data, "from": {"id": 100},
+                                         "message": {"message_id": 1, "chat": {"id": 100}}})
+                self.assertNotIn(100, service.pending_default_quotas)
+                self.assertNotIn(100, service.pending_user_searches)
+                self.assertEqual(store.default_daily_limit, 50)
+            service.stop()
 
     def test_optional_contact_is_not_hardcoded(self):
         with patch.object(bot, "OWNER_CONTACT_URL", ""):
@@ -3194,11 +3237,12 @@ class PublicReleaseLanguageTests(unittest.TestCase):
 
     def test_version_and_translation_catalog_are_complete(self):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)
-        self.assertTrue(all(len(values) == 3 for values in bot.ADMIN_TEXT.values()))
+        self.assertTrue(all(len(values) == 4 for values in bot.ADMIN_TEXT.values()))
         for key, values in bot.ADMIN_TEXT.items():
             placeholders = [set(bot.re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", value)) for value in values]
             self.assertEqual(placeholders[0], placeholders[1], key)
             self.assertEqual(placeholders[0], placeholders[2], key)
+            self.assertEqual(placeholders[0], placeholders[3], key)
 
 
 if __name__ == "__main__":

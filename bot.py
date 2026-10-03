@@ -16,7 +16,8 @@ import tempfile
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -29,7 +30,7 @@ from PIL import Image, ImageOps
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.3.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -51,9 +52,22 @@ ENV_OWNER_ID = env_int("OWNER_USER_ID", 0, 0, (1 << 52) - 1)
 BOOTSTRAP_CODE = os.environ.get("BOOTSTRAP_CODE", "").strip()
 OWNER_CONTACT_URL = os.environ.get("OWNER_CONTACT_URL", "").strip()
 OWNER_CONTACT_LABEL = os.environ.get("OWNER_CONTACT_LABEL", "").strip()
-OWNER_LANGUAGE = os.environ.get("OWNER_LANGUAGE", "zh").strip().lower()
-if OWNER_LANGUAGE not in {"zh", "ja", "en"}:
-    raise ValueError("OWNER_LANGUAGE must be zh, ja, or en")
+CURRENT_LANGUAGE: ContextVar[str] = ContextVar("current_language", default="zh")
+
+
+def ui_language() -> str:
+    return CURRENT_LANGUAGE.get()
+
+
+@contextmanager
+def language_scope(language: str):
+    token = CURRENT_LANGUAGE.set(language if language in PUBLIC_TEXT else "zh")
+    try:
+        yield
+    finally:
+        CURRENT_LANGUAGE.reset(token)
+
+
 BOT_TIMEZONE_NAME = os.environ.get("BOT_TIMEZONE", "UTC").strip()
 try:
     BOT_TIMEZONE = timezone.utc if BOT_TIMEZONE_NAME == "UTC" else ZoneInfo(BOT_TIMEZONE_NAME)
@@ -163,6 +177,45 @@ OWNER_BUTTONS = {
 }
 
 PUBLIC_TEXT = {
+    "zh-cn": {
+        "start_allowed": "请发送有效的 X/Twitter 单篇推文链接。",
+        "help_allowed": (
+            "使用说明\n\n"
+            "1. 发送 x.com 或 twitter.com 的单篇推文链接。\n"
+            "2. Bot 会回传推文文字与媒体；图片另附未压缩文件。\n"
+            "3. 引用推文只处理提交链接本身，不会切换到被引用内容。\n"
+            f"4. 在其他聊天输入 {BOT_MENTION} 加上推文链接，可直接选择并发送媒体；"
+            "内联模式不会发送图片原始文件。\n"
+            "5. 视频超过 50 MB 时不会处理。\n\n"
+            "使用 /id 可查看自己的 Telegram User ID。"
+        ),
+        "language_menu": "🌐 Language",
+        "help_menu": "ℹ️ 使用说明",
+        "choose_language": "请选择语言。",
+        "back": "↩️ 返回",
+        "start_owner": "管理菜单已加载，也可以直接发送 X/Twitter 推文链接。",
+        "access": "此账号尚未获取使用权限。",
+        "apply": "申请使用权限",
+        "apply_created": "申请已提交。",
+        "apply_pending": "你的申请仍在等待审批。",
+        "apply_allowed": "你已经获取使用权限。",
+        "apply_auto_approved": "申请已自动通过，现在可以开始使用。",
+        "service_paused": "目前已暂停普通用户使用，请稍后再试。",
+        "invalid_url": "请发送有效的 X/Twitter 单篇推文链接。",
+        "queue_full": "目前处理队列已满，请稍后再试。",
+        "quota": "今日使用已达到预设上限，请稍后再试或联系管理员。",
+        "approved": "你的 Bot 使用申请已通过，现在可以开始使用。",
+        "failed": "处理失败，请稍后重试。",
+        "post_unavailable": "目前无法获取这条推文的文字或媒体，请确认推文仍可公开浏览，或稍后再试。",
+        "url_only": "此账号只接受 X/Twitter 单篇推文链接。",
+        "inline_apply": "开启机器人申请使用权限",
+        "video_oversized": "有 {count} 个视频超过 50 MB，已跳过且未处理。",
+        "images_skipped": "部分图片超过上传或单篇总量限制，已跳过：{names}",
+        "preview_failed": "媒体预览未能发送，请稍后重新提交这条推文。",
+        "originals_failed": "预览已完成，但部分原始文件发送失败，请稍后重试。",
+        "language_set": "语言已切换为简体中文。",
+        "unsupported_language": "不支持此语言。",
+    },
     "zh": {
         "start_allowed": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "help_allowed": (
@@ -200,6 +253,7 @@ PUBLIC_TEXT = {
         "preview_failed": "媒體預覽未能傳送，請稍後重新提交這則貼文。",
         "originals_failed": "預覽已完成，但部分原始檔案傳送失敗，請稍後重試。",
         "language_set": "語言已切換為繁體中文。",
+        "unsupported_language": "不支援此語言。",
     },
     "en": {
         "start_allowed": "Send a valid single-post X/Twitter URL.",
@@ -238,6 +292,7 @@ PUBLIC_TEXT = {
         "preview_failed": "The media preview could not be delivered. Please submit this post again later.",
         "originals_failed": "The preview was sent, but some original files could not be delivered. Try again later.",
         "language_set": "Language changed to English.",
+        "unsupported_language": "Unsupported language.",
     },
     "ja": {
         "start_allowed": "有効な X/Twitter の単一投稿URLを送信してください。",
@@ -276,6 +331,7 @@ PUBLIC_TEXT = {
         "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから、この投稿をもう一度送信してください。",
         "originals_failed": "プレビューは送信できましたが、一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
         "language_set": "表示言語を日本語に変更しました。",
+        "unsupported_language": "この言語は対応していません。",
     },
 }
 
@@ -291,119 +347,118 @@ def public_help_text(language: str) -> str:
     help_text = public_text(language, "help_allowed")
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return help_text
-    label = OWNER_CONTACT_LABEL or {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner"}[language]
+    label = OWNER_CONTACT_LABEL or {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner", "zh-cn": ("联络管理员")}[language]
     return help_text + "\n\n" + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{html.escape(label)}</a>'
 
 
-# Administrator UI is fixed by the deployment, unlike user-selected public text.
+# Every account keeps its own language; request-local context isolates workers.
 ADMIN_TEXT = {
-    "menu": ("管理選單", "Management menu", "管理メニュー"),
-    "menu_ready": ("管理選單已載入。", "Management menu loaded.", "管理メニューを表示しました。"),
-    "users": ("用戶管理", "User management", "ユーザー管理"),
-    "user_list": ("用戶列表", "Users", "ユーザー一覧"),
-    "requests": ("申請審批", "Access requests", "利用申請"),
-    "permissions": ("用戶權限修改", "Change access", "権限を変更"),
-    "cookies": ("Cookies 管理", "Cookies management", "Cookies 管理"),
-    "cookie_import": ("匯入 Cookies", "Import Cookies", "Cookies を取り込む"),
-    "cookie_help": ("Cookies 說明", "Cookies guide", "Cookies の説明"),
-    "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除"),
-    "status": ("系統狀態", "System status", "システム状態"),
-    "help": ("使用說明", "Help", "使い方"),
-    "advanced": ("高級選項", "Advanced settings", "詳細設定"),
-    "implementation": ("實現方式", "Implementation details", "実装方法"),
-    "management_mode": ("管理模式", "Management mode", "管理モード"),
-    "access_switch": ("使用開關", "User access", "ユーザー利用"),
-    "auto_approve": ("自動通過", "Auto-approve", "自動承認"),
-    "cookie_switch": ("Cookies 使用", "Use Cookies", "Cookies の使用"),
-    "on": ("開啟", "On", "オン"),
-    "off": ("關閉", "Off", "オフ"),
-    "open": ("開放", "Open", "許可"),
-    "paused": ("暫停", "Paused", "停止"),
-    "back": ("返回", "Back", "戻る"),
-    "refresh": ("重新整理", "Refresh", "更新"),
-    "previous": ("上一頁", "Previous", "前へ"),
-    "next": ("下一頁", "Next", "次へ"),
-    "approve": ("通過", "Approve", "承認"),
-    "deny": ("拒絕", "Reject", "拒否"),
-    "approve_page": ("通過本頁全部", "Approve this page", "このページをすべて承認"),
-    "owner": ("所有者", "Owner", "所有者"),
-    "admin": ("管理員", "Administrator", "管理者"),
-    "ordinary": ("普通", "Regular", "一般"),
-    "blocked": ("封鎖", "Blocked", "ブロック"),
-    "pending": ("待審批", "Pending", "審査待ち"),
-    "initialized": ("初始化", "Initialized", "初期化"),
-    "unlimited": ("不限", "Unlimited", "無制限"),
-    "not_named": ("（未提供名稱）", "(No name)", "（名前なし）"),
-    "confirm_create": ("確認建立", "Create user", "ユーザーを作成"),
-    "confirm_change": ("確認修改", "Confirm change", "変更を確定"),
-    "cancel": ("取消", "Cancel", "キャンセル"),
-    "owner_account": ("所有者帳號", "Owner account", "所有者アカウント"),
-    "admin_read_only": ("管理員帳號（唯讀）", "Administrator (read-only)", "管理者（閲覧のみ）"),
-    "default_quota": ("預設許可 ({limit})", "Default ({limit})", "標準 ({limit})"),
-    "default_limit": ("預設額度", "Default limit", "標準上限"),
+    "menu": ("管理選單", "Management menu", "管理メニュー", "管理菜单"),
+    "menu_ready": ("管理選單已載入。", "Management menu loaded.", "管理メニューを表示しました。", "管理菜单已加载。"),
+    "users": ("用戶管理", "User management", "ユーザー管理", "用户管理"),
+    "user_list": ("用戶列表", "Users", "ユーザー一覧", "用户列表"),
+    "requests": ("申請審批", "Access requests", "利用申請", "申请审批"),
+    "permissions": ("用戶權限修改", "Change access", "権限を変更", "用户权限修改"),
+    "cookies": ("Cookies 管理", "Cookies management", "Cookies 管理", "Cookies 管理"),
+    "cookie_import": ("匯入 Cookies", "Import Cookies", "Cookies を取り込む", "导入 Cookies"),
+    "cookie_help": ("Cookies 說明", "Cookies guide", "Cookies の説明", "Cookies 说明"),
+    "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
+    "status": ("系統狀態", "System status", "システム状態", "系统状态"),
+    "help": ("使用說明", "Help", "使い方", "使用说明"),
+    "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
+    "implementation": ("實現方式", "Implementation details", "実装方法", "实现方式"),
+    "access_switch": ("使用開關", "User access", "ユーザー利用", "使用开关"),
+    "auto_approve": ("自動通過", "Auto-approve", "自動承認", "自动通过"),
+    "cookie_switch": ("Cookies 使用", "Use Cookies", "Cookies の使用", "Cookies 使用"),
+    "on": ("開啟", "On", "オン", "开启"),
+    "off": ("關閉", "Off", "オフ", "关闭"),
+    "open": ("開放", "Open", "許可", "开放"),
+    "paused": ("暫停", "Paused", "停止", "暂停"),
+    "back": ("返回", "Back", "戻る", "返回"),
+    "refresh": ("重新整理", "Refresh", "更新", "重新整理"),
+    "previous": ("上一頁", "Previous", "前へ", "上一页"),
+    "next": ("下一頁", "Next", "次へ", "下一页"),
+    "approve": ("通過", "Approve", "承認", "通过"),
+    "deny": ("拒絕", "Reject", "拒否", "拒绝"),
+    "approve_page": ("通過本頁全部", "Approve this page", "このページをすべて承認", "通过本页全部"),
+    "owner": ("所有者", "Owner", "所有者", "所有者"),
+    "admin": ("管理員", "Administrator", "管理者", "管理员"),
+    "ordinary": ("普通", "Regular", "一般", "普通"),
+    "blocked": ("封鎖", "Blocked", "ブロック", "封禁"),
+    "pending": ("待審批", "Pending", "審査待ち", "待审批"),
+    "initialized": ("初始化", "Initialized", "初期化", "初始化"),
+    "unlimited": ("不限", "Unlimited", "無制限", "不限"),
+    "not_named": ("（未提供名稱）", "(No name)", "（名前なし）", "（未提供名称）"),
+    "confirm_create": ("確認建立", "Create user", "ユーザーを作成", "确认建立"),
+    "confirm_change": ("確認修改", "Confirm change", "変更を確定", "确认修改"),
+    "cancel": ("取消", "Cancel", "キャンセル", "取消"),
+    "owner_account": ("所有者帳號", "Owner account", "所有者アカウント", "所有者账号"),
+    "admin_read_only": ("管理員帳號（唯讀）", "Administrator (read-only)", "管理者（閲覧のみ）", "管理员账号（唯读）"),
+    "default_quota": ("預設許可 ({limit})", "Default ({limit})", "標準 ({limit})", "预设许可 ({limit})"),
+    "default_limit": ("預設額度", "Default limit", "標準上限", "预设额度"),
     "default_limit_prompt": (
         "目前預設額度：{limit}。\n請輸入新的每日額度（1–100000）。",
         "Current default limit: {limit}.\nEnter a new daily limit (1–100000).",
         "現在の標準上限：{limit}。\n新しい1日の上限（1～100000）を入力してください。",
+        "目前预设额度：{limit}。\n请输入新的每日额度（1–100000）。",
     ),
     "default_limit_confirm": (
         "確認將預設額度改為 {limit}？\n只更新沿用原預設額度的正常普通用戶；其他額度與權限不變。新用戶使用新值，今日用量不變。",
         "Set the default limit to {limit}?\nOnly approved regular users matching the previous default are updated; other quotas and access stay unchanged. New users use the new value; today's usage stays unchanged.",
         "標準上限を {limit} に変更しますか？\n変更前の標準上限と同じ上限の承認済み一般ユーザーのみ更新します。他の上限・権限と本日の使用量は変えず、新規ユーザーには新しい値を使います。",
+        "确认将预设额度改为 {limit}？\n只更新沿用原预设额度的正常普通用户；其他额度与权限不变。新用户使用新值，今日用量不变。",
     ),
     "default_limit_changed": (
         "預設額度已設為 {limit}，已更新 {count} 位普通用戶。",
         "Default limit set to {limit}; updated {count} regular users.",
         "標準上限を {limit} に設定し、一般ユーザー {count} 人を更新しました。",
+        "预设额度已设为 {limit}，已更新 {count} 位普通用户。",
     ),
-    "default_limit_range": ("預設額度必須是 1 至 100000 的整數。", "The default limit must be an integer from 1 to 100000.", "標準上限は 1～100000 の整数にしてください。"),
-    "admin_unlimited": ("不限・管理員", "Unlimited · Administrator", "無制限・管理者"),
-    "no_requests": ("目前沒有待審批申請。", "No pending requests.", "審査待ちの申請はありません。"),
-    "find_user": ("請輸入要修改權限的 Telegram User ID。", "Enter the Telegram User ID to manage.", "権限を変更する Telegram User ID を入力してください。"),
-    "invalid_menu": ("無效選單。", "Invalid menu.", "無効なメニューです。"),
-    "invalid_action": ("無效操作。", "Invalid action.", "無効な操作です。"),
-    "private_only": ("管理功能只允許在 Bot 私聊使用。", "Management is available only in a private chat with the bot.", "管理機能は Bot との個別チャットでのみ利用できます。"),
-    "owner_only_cookies": ("Cookies 只允許所有者管理。", "Only the owner can manage Cookies.", "Cookies を管理できるのは所有者のみです。"),
-    "admin_only": ("只有管理員可以執行此操作。", "Only administrators can do this.", "この操作は管理者のみ実行できます。"),
-    "language_locked": ("管理員語言由部署設定。", "Administrator language is set on the server.", "管理者の言語はサーバーで設定されます。"),
-    "menu_invalid_page": ("頁碼無效。", "Invalid page number.", "ページ番号が無効です。"),
-    "page_changed": ("已切換頁面。", "Page changed.", "ページを切り替えました。"),
-    "current_page": ("目前頁面", "Current page", "現在のページ"),
-    "cancelled": ("已取消。", "Cancelled.", "キャンセルしました。"),
-    "create_cancelled": ("已取消建立用戶。", "User creation cancelled.", "ユーザー作成を中止しました。"),
-    "change_cancelled": ("已取消修改權限。", "Access change cancelled.", "権限の変更を中止しました。"),
-    "quota_missing": ("缺少額度。", "Missing limit.", "上限値がありません。"),
-    "default_quota_missing": ("缺少預設額度。", "Missing default limit.", "初期上限値がありません。"),
-    "quota_invalid": ("額度格式無效。", "Invalid limit.", "上限値が無効です。"),
-    "default_quota_invalid": ("預設額度無效。", "Invalid default limit.", "初期上限値が無効です。"),
-    "permission_missing": ("缺少權限值。", "Missing access value.", "権限値がありません。"),
-    "permission_invalid": ("權限值無效。", "Invalid access value.", "権限値が無効です。"),
-    "quota_range": ("額度必須是 -1、0 或 1 至 100000。", "The limit must be -1, 0, or 1–100000.", "上限値は -1、0、または 1～100000 にしてください。"),
-    "user_created": ("用戶已建立。", "User created.", "ユーザーを作成しました。"),
-    "user_exists": ("該 User ID 已存在，未覆寫現有資料。", "That User ID already exists; no data was overwritten.", "その User ID は既に存在します。データは上書きしていません。"),
-    "user_missing": ("用戶已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。"),
-    "permission_changed": ("權限已修改。", "Access changed.", "権限を変更しました。"),
-    "id_invalid": ("User ID 範圍無效。", "User ID is out of range.", "User ID が有効範囲外です。"),
-    "status_refreshed": ("狀態已更新。", "Status refreshed.", "状態を更新しました。"),
-    "management_off": ("管理模式已關閉，請先重新開啟。", "Management mode is off. Turn it on first.", "管理モードがオフです。先にオンにしてください。"),
-    "management_admin_only": ("只有管理員可以切換管理模式。", "Only administrators can change management mode.", "管理モードの切り替えは管理者のみ可能です。"),
-    "access_owner_only": ("使用開關只允許所有者切換。", "Only the owner can change user access.", "ユーザー利用の切り替えは所有者のみ可能です。"),
-    "auto_owner_only": ("自動通過只允許所有者切換。", "Only the owner can change auto-approval.", "自動承認の切り替えは所有者のみ可能です。"),
-    "cookie_owner_only": ("Cookies 開關只允許所有者切換。", "Only the owner can change the Cookies setting.", "Cookies 設定の切り替えは所有者のみ可能です。"),
-    "cookie_cleared": ("X/Twitter Cookies 已清除。", "X/Twitter Cookies cleared.", "X/Twitter の Cookies を削除しました。"),
-    "approve_missing": ("申請不存在或用戶已被封鎖。", "Request not found or user blocked.", "申請がないか、ユーザーがブロックされています。"),
-    "choose_access": ("選擇用戶權限。", "Choose access.", "権限を選択してください。"),
-    "owner_cannot_ban": ("不能封鎖所有者。", "The owner cannot be blocked.", "所有者はブロックできません。"),
-    "owner_cannot_change": ("不能修改所有者。", "The owner cannot be changed.", "所有者は変更できません。"),
-    "admin_cannot_self": ("管理員不能修改自己的權限。", "Administrators cannot change their own access.", "管理者は自分の権限を変更できません。"),
-    "admin_cannot_admin": ("管理員不能修改其他管理員。", "Administrators cannot change other administrators.", "管理者は他の管理者を変更できません。"),
-    "owner_only_admin": ("只有所有者可以新增管理員。", "Only the owner can add administrators.", "管理者の追加は所有者のみ可能です。"),
-    "advanced_owner_only": ("高級選項只允許所有者使用。", "Only the owner can use Advanced settings.", "詳細設定を使用できるのは所有者のみです。"),
+    "default_limit_range": ("預設額度必須是 1 至 100000 的整數。", "The default limit must be an integer from 1 to 100000.", "標準上限は 1～100000 の整数にしてください。", "预设额度必须是 1 至 100000 的整数。"),
+    "admin_unlimited": ("不限・管理員", "Unlimited · Administrator", "無制限・管理者", "不限・管理员"),
+    "no_requests": ("目前沒有待審批申請。", "No pending requests.", "審査待ちの申請はありません。", "目前没有待审批申请。"),
+    "find_user": ("請輸入要修改權限的 Telegram User ID。", "Enter the Telegram User ID to manage.", "権限を変更する Telegram User ID を入力してください。", "请输入要修改权限的 Telegram User ID。"),
+    "invalid_menu": ("無效選單。", "Invalid menu.", "無効なメニューです。", "无效菜单。"),
+    "invalid_action": ("無效操作。", "Invalid action.", "無効な操作です。", "无效操作。"),
+    "private_only": ("管理功能只允許在 Bot 私聊使用。", "Management is available only in a private chat with the bot.", "管理機能は Bot との個別チャットでのみ利用できます。", "管理功能只允许在 Bot 私聊使用。"),
+    "owner_only_cookies": ("Cookies 只允許所有者管理。", "Only the owner can manage Cookies.", "Cookies を管理できるのは所有者のみです。", "Cookies 只允许所有者管理。"),
+    "admin_only": ("只有管理員可以執行此操作。", "Only administrators can do this.", "この操作は管理者のみ実行できます。", "只有管理员可以执行此操作。"),
+    "menu_invalid_page": ("頁碼無效。", "Invalid page number.", "ページ番号が無効です。", "页码无效。"),
+    "page_changed": ("已切換頁面。", "Page changed.", "ページを切り替えました。", "已切换页面。"),
+    "current_page": ("目前頁面", "Current page", "現在のページ", "目前页面"),
+    "cancelled": ("已取消。", "Cancelled.", "キャンセルしました。", "已取消。"),
+    "create_cancelled": ("已取消建立用戶。", "User creation cancelled.", "ユーザー作成を中止しました。", "已取消建立用户。"),
+    "change_cancelled": ("已取消修改權限。", "Access change cancelled.", "権限の変更を中止しました。", "已取消修改权限。"),
+    "quota_missing": ("缺少額度。", "Missing limit.", "上限値がありません。", "缺少额度。"),
+    "default_quota_missing": ("缺少預設額度。", "Missing default limit.", "初期上限値がありません。", "缺少预设额度。"),
+    "quota_invalid": ("額度格式無效。", "Invalid limit.", "上限値が無効です。", "额度格式无效。"),
+    "default_quota_invalid": ("預設額度無效。", "Invalid default limit.", "初期上限値が無効です。", "预设额度无效。"),
+    "permission_missing": ("缺少權限值。", "Missing access value.", "権限値がありません。", "缺少权限值。"),
+    "permission_invalid": ("權限值無效。", "Invalid access value.", "権限値が無効です。", "权限值无效。"),
+    "quota_range": ("額度必須是 -1、0 或 1 至 100000。", "The limit must be -1, 0, or 1–100000.", "上限値は -1、0、または 1～100000 にしてください。", "额度必须是 -1、0 或 1 至 100000。"),
+    "user_created": ("用戶已建立。", "User created.", "ユーザーを作成しました。", "用户已建立。"),
+    "user_exists": ("該 User ID 已存在，未覆寫現有資料。", "That User ID already exists; no data was overwritten.", "その User ID は既に存在します。データは上書きしていません。", "该 User ID 已存在，未覆写现有数据。"),
+    "user_missing": ("用戶已不存在，未進行修改。", "User no longer exists; nothing changed.", "ユーザーが存在しません。変更はしていません。", "用户已不存在，未进行修改。"),
+    "permission_changed": ("權限已修改。", "Access changed.", "権限を変更しました。", "权限已修改。"),
+    "id_invalid": ("User ID 範圍無效。", "User ID is out of range.", "User ID が有効範囲外です。", "User ID 范围无效。"),
+    "status_refreshed": ("狀態已更新。", "Status refreshed.", "状態を更新しました。", "状态已更新。"),
+    "access_owner_only": ("使用開關只允許所有者切換。", "Only the owner can change user access.", "ユーザー利用の切り替えは所有者のみ可能です。", "使用开关只允许所有者切换。"),
+    "auto_owner_only": ("自動通過只允許所有者切換。", "Only the owner can change auto-approval.", "自動承認の切り替えは所有者のみ可能です。", "自动通过只允许所有者切换。"),
+    "cookie_owner_only": ("Cookies 開關只允許所有者切換。", "Only the owner can change the Cookies setting.", "Cookies 設定の切り替えは所有者のみ可能です。", "Cookies 开关只允许所有者切换。"),
+    "cookie_cleared": ("X/Twitter Cookies 已清除。", "X/Twitter Cookies cleared.", "X/Twitter の Cookies を削除しました。", "X/Twitter Cookies 已清除。"),
+    "approve_missing": ("申請不存在或用戶已被封鎖。", "Request not found or user blocked.", "申請がないか、ユーザーがブロックされています。", "申请不存在或用户已被封禁。"),
+    "choose_access": ("選擇用戶權限。", "Choose access.", "権限を選択してください。", "选择用户权限。"),
+    "owner_cannot_ban": ("不能封鎖所有者。", "The owner cannot be blocked.", "所有者はブロックできません。", "不能封禁所有者。"),
+    "owner_cannot_change": ("不能修改所有者。", "The owner cannot be changed.", "所有者は変更できません。", "不能修改所有者。"),
+    "admin_cannot_self": ("管理員不能修改自己的權限。", "Administrators cannot change their own access.", "管理者は自分の権限を変更できません。", "管理员不能修改自己的权限。"),
+    "admin_cannot_admin": ("管理員不能修改其他管理員。", "Administrators cannot change other administrators.", "管理者は他の管理者を変更できません。", "管理员不能修改其他管理员。"),
+    "owner_only_admin": ("只有所有者可以新增管理員。", "Only the owner can add administrators.", "管理者の追加は所有者のみ可能です。", "只有所有者可以新增管理员。"),
+    "advanced_owner_only": ("高級選項只允許所有者使用。", "Only the owner can use Advanced settings.", "詳細設定を使用できるのは所有者のみです。", "高级选项只允许所有者使用。"),
 }
 
 
 def admin_text(key: str) -> str:
-    return ADMIN_TEXT[key][{"zh": 0, "en": 1, "ja": 2}[OWNER_LANGUAGE]]
+    return ADMIN_TEXT[key][{"zh": 0, "en": 1, "ja": 2, "zh-cn": 3}[ui_language()]]
 
 URL_RE = re.compile(
     r"https?://(?:www\.)?(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/(\d+)(?:[^\s]*)?",
@@ -523,6 +578,7 @@ class ACLStore:
             record = users.setdefault(str(user_id), {"user_id": user_id})
             if not isinstance(record, dict):
                 raise ValueError("ACL user record must be an object")
+            record.pop("management_mode", None)
             record["user_id"] = user_id
             if user_id == data["owner_id"]:
                 record["quota"] = None
@@ -754,10 +810,6 @@ class ACLStore:
         record = self.data["users"].get(str(user_id)) or {}
         return user_id == self.owner_id and bool(record.get("debug_mode", False))
 
-    def management_mode(self, user_id: int) -> bool:
-        record = self.data["users"].get(str(user_id)) or {}
-        return self.is_admin(user_id) and bool(record.get("management_mode", True))
-
     def toggle_debug_mode(self, user_id: int) -> bool:
         if user_id != self.owner_id:
             raise ValueError("only the owner can change implementation details")
@@ -767,18 +819,6 @@ class ACLStore:
             )
             enabled = not bool(record.get("debug_mode", False))
             record["debug_mode"] = enabled
-            self._save()
-            return enabled
-
-    def toggle_management_mode(self, user_id: int) -> bool:
-        if not self.is_admin(user_id):
-            raise ValueError("user is not an administrator")
-        with self.lock:
-            record = self.data["users"].setdefault(
-                str(user_id), {"user_id": user_id, "quota": None}
-            )
-            enabled = not bool(record.get("management_mode", True))
-            record["management_mode"] = enabled
             self._save()
             return enabled
 
@@ -848,15 +888,11 @@ class ACLStore:
         return user_id != self.owner_id and self.quota(user_id) == -1
 
     def language(self, user_id: int) -> str:
-        if self.is_admin(user_id):
-            return OWNER_LANGUAGE
         record = self.data["users"].get(str(user_id)) or {}
         language = str(record.get("language") or "zh")
         return language if language in PUBLIC_TEXT else "zh"
 
     def set_language(self, user_id: int, language: str) -> None:
-        if self.is_admin(user_id):
-            raise ValueError("administrator language is configured at deployment")
         if language not in PUBLIC_TEXT:
             raise ValueError("unsupported language")
         with self.lock:
@@ -1105,15 +1141,14 @@ def normalize_status_url(text: str) -> str | None:
     return f"https://x.com/{path_match.group(1)}/status/{path_match.group(2)}"
 
 
-def owner_keyboard(management_mode: bool = True) -> dict[str, Any]:
-    management_state = admin_text("on" if management_mode else "off")
+def owner_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
                 {"text": f'👤 {admin_text("users")}', "callback_data": "nav:users"},
                 {
-                    "text": f'🛠 {admin_text("management_mode")}: {management_state}',
-                    "callback_data": "managementtoggle:0",
+                    "text": "🌐 Language",
+                    "callback_data": "public:language",
                 },
             ],
             [
@@ -1148,7 +1183,7 @@ def cookie_menu_keyboard(
                 {"text": f'📖 {admin_text("cookie_help")}', "callback_data": "nav:cookiehelp"},
             ],
             [{
-                "text": f'{admin_text("cookie_switch")}{"：" if OWNER_LANGUAGE != "en" else ": "}{cookie_state}',
+                "text": f'{admin_text("cookie_switch")}{"：" if ui_language() != "en" else ": "}{cookie_state}',
                 "callback_data": "ordinarycookiestoggle:0",
             }],
             [{"text": f'🗑 {admin_text("cookie_clear")}', "callback_data": "nav:clearcookies"}],
@@ -1193,7 +1228,7 @@ def language_row(selected: str) -> list[dict[str, str]]:
             "text": ("✓ " if selected == language else "") + label,
             "callback_data": f"lang:{language}",
         }
-        for language, label in (("zh", "繁體中文"), ("en", "English"), ("ja", "日本語"))
+        for language, label in (("zh-cn", "简体中文"), ("zh", "繁體中文"), ("en", "English"), ("ja", "日本語"))
     ]
 
 
@@ -1202,35 +1237,20 @@ def start_keyboard(
     is_admin: bool,
     is_allowed: bool,
     is_owner: bool = False,
-    management_mode: bool = True,
 ) -> dict[str, Any]:
     rows = []
-    if is_admin and management_mode:
-        rows.extend(
-            owner_keyboard(management_mode)["inline_keyboard"]
-        )
+    if is_admin:
+        rows.extend(owner_keyboard()["inline_keyboard"])
     elif not is_allowed:
         rows.append([{
             "text": public_text(language, "apply"),
             "callback_data": "apply",
         }])
-    if is_admin and not management_mode:
-        rows.append([{
-            "text": f'🛠 {admin_text("management_mode")}: {admin_text("off")}',
-            "callback_data": "managementtoggle:0",
-        }])
-    if not is_admin or not management_mode:
-        actions = []
-        if not is_admin:
-            actions.append({
-                "text": public_text(language, "language_menu"),
-                "callback_data": "public:language",
-            })
-        actions.append({
-            "text": public_text(language, "help_menu"),
-            "callback_data": "public:help",
-        })
-        rows.append(actions)
+    if not is_admin:
+        rows.append([
+            {"text": public_text(language, "language_menu"), "callback_data": "public:language"},
+            {"text": public_text(language, "help_menu"), "callback_data": "public:help"},
+        ])
     return {"inline_keyboard": rows}
 
 
@@ -1353,21 +1373,21 @@ def advanced_status_keyboard(
             "callback_data": "nav:cookies",
         }],
         [{
-            "text": f'🌐 {admin_text("access_switch")}{"：" if OWNER_LANGUAGE != "en" else ": "}{external_state}',
+            "text": f'🌐 {admin_text("access_switch")}{"：" if ui_language() != "en" else ": "}{external_state}',
             "callback_data": "externaltoggle:0",
         }],
         [{
-            "text": f'✅ {admin_text("auto_approve")}{"：" if OWNER_LANGUAGE != "en" else ": "}{auto_approve_state}',
+            "text": f'✅ {admin_text("auto_approve")}{"：" if ui_language() != "en" else ": "}{auto_approve_state}',
             "callback_data": "autoapprovetoggle:0",
         }],
         [{
-            "text": f'{admin_text("default_limit")}{"：" if OWNER_LANGUAGE != "en" else ": "}{default_daily_limit}',
+            "text": f'🎯 {admin_text("default_limit")}{"：" if ui_language() != "en" else ": "}{default_daily_limit}',
             "callback_data": "nav:defaultquota",
         }],
     ] if can_configure else []
     if can_configure:
         owner_rows.append([{
-            "text": f'🐞 {admin_text("implementation")}{"：" if OWNER_LANGUAGE != "en" else ": "}{debug_state}',
+            "text": f'🐞 {admin_text("implementation")}{"：" if ui_language() != "en" else ": "}{debug_state}',
             "callback_data": "debugtoggle:0",
         }])
     return {"inline_keyboard": [
@@ -1381,15 +1401,15 @@ def format_duration(seconds: float) -> str:
     days, remainder = divmod(total, 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
-    if OWNER_LANGUAGE == "en":
+    if ui_language() == "en":
         return f"{days}d {hours}h" if days else f"{hours}h {minutes}m" if hours else f"{minutes}m"
-    if OWNER_LANGUAGE == "ja":
+    if ui_language() == "ja":
         return f"{days}日 {hours}時間" if days else f"{hours}時間 {minutes}分" if hours else f"{minutes}分"
     if days:
-        return f"{days} 天 {hours} 小時"
+        return {"zh": (f"{days} 天 {hours} 小時"), "zh-cn": (f"{days} 天 {hours} 小时")}[ui_language()]
     if hours:
-        return f"{hours} 小時 {minutes} 分"
-    return f"{minutes} 分"
+        return {"zh": (f"{hours} 小時 {minutes} 分"), "zh-cn": (f"{hours} 小时 {minutes} 分")}[ui_language()]
+    return {"zh": (f"{minutes} 分"), "zh-cn": (f"{minutes} 分")}[ui_language()]
 
 
 def quota_choices_keyboard(
@@ -1425,7 +1445,10 @@ def cookie_upload_text() -> str:
     return {
         "en": "Upload a Netscape-format cookies.txt file (maximum 1 MB). Select Cookies guide if needed. The file passes through Telegram; use /cancel to cancel.",
         "ja": "Netscape 形式の cookies.txt をアップロードしてください（上限 1 MB）。必要なら Cookies の説明を開いてください。ファイルは Telegram を経由します。/cancel で中止できます。",
-    }.get(OWNER_LANGUAGE) or (
+        "zh-cn": ("请上传 Netscape 格式的 cookies.txt，文件上限 1 MB。\n"
+        "不清楚如何获取时，点选「Cookies 说明」。\n"
+        "文件会经 Telegram 发送；输入 /cancel 可取消。"),
+    }.get(ui_language()) or (
         "請上傳 Netscape 格式的 cookies.txt，檔案上限 1 MB。\n"
         "不清楚如何取得時，點選「Cookies 說明」。\n"
         "文件會經 Telegram 傳送；輸入 /cancel 可取消。"
@@ -1436,7 +1459,15 @@ def cookie_help_text() -> str:
     return {
         "en": "X/Twitter Cookies\n1. Sign in to x.com in a browser, ideally with a dedicated bot account.\n2. Use a trusted tool to export Netscape cookies.txt for x.com/twitter.com only.\n3. Select Import Cookies and upload the file as a document.\n4. After success, delete the original document from Telegram.\n\nCookies are login credentials. Do not export other sites or forward them. Import again if the X session expires.",
         "ja": "X/Twitter の Cookies\n1. ブラウザーで x.com にログインします。Bot 専用アカウントを推奨します。\n2. 信頼できるツールで x.com/twitter.com のみの Netscape 形式 cookies.txt を書き出します。\n3. Cookies を取り込むを選び、ファイルを文書として送信します。\n4. 成功後、Telegram の元ファイルを削除します。\n\nCookies はログイン資格情報です。他のサイトの情報を含めたり、第三者に転送したりしないでください。セッション失効時は再度取り込んでください。",
-    }.get(OWNER_LANGUAGE) or (
+        "zh-cn": ("获取 X/Twitter Cookies：\n"
+        "1. 在浏览器登入 x.com。建议使用专门给 Bot 的独立账号。\n"
+        "2. 使用可信任、可导出 Netscape cookies.txt 的浏览器工具，只导出 "
+        "x.com／twitter.com 目前网站的 Cookies。\n"
+        "3. 点「导入 Cookies」，再把 cookies.txt 当作文件上传。\n"
+        "4. Bot 显示成功后，删除 Telegram 对话中的原始文件。\n\n"
+        "Cookies 等同登入凭证。不要导出其他网站、不要转传给他人；"
+        "若 X 账号登出或工作阶段失效，需重新导入。"),
+    }.get(ui_language()) or (
         "取得 X/Twitter Cookies：\n"
         "1. 在瀏覽器登入 x.com。建議使用專門給 Bot 的獨立帳號。\n"
         "2. 使用可信任、可匯出 Netscape cookies.txt 的瀏覽器工具，只匯出 "
@@ -1449,7 +1480,7 @@ def cookie_help_text() -> str:
 
 
 def owner_help_text(is_owner: bool = True) -> str:
-    if OWNER_LANGUAGE == "en":
+    if ui_language() == "en":
         role = (
             "The owner can manage administrators; Cookies, access, auto-approval, and the default limit are in Advanced settings."
             if is_owner else
@@ -1458,7 +1489,7 @@ def owner_help_text(is_owner: bool = True) -> str:
         return (
             "Owner guide" if is_owner else "Administrator guide"
         ) + f"\n\nSend one X/Twitter post URL for text and media. In another chat, use {BOT_MENTION} followed by the URL for inline sharing.\n\nSend a User ID to find a user, or a User ID and quota to change access; confirm the change when prompted. Quotas: -1 blocks, 0 initializes, a positive number is the daily limit; only the owner can grant unlimited administrator access.\n\n{role}\nManagement works only in a private chat with the bot."
-    if OWNER_LANGUAGE == "ja":
+    if ui_language() == "ja":
         role = (
             "所有者は管理者を管理できます。Cookies、利用許可、自動承認、標準上限は詳細設定にあります。"
             if is_owner else
@@ -1468,13 +1499,20 @@ def owner_help_text(is_owner: bool = True) -> str:
             "所有者向けガイド" if is_owner else "管理者向けガイド"
         ) + f"\n\nX/Twitter の単一投稿URLで本文とメディアを取得できます。他のチャットでは {BOT_MENTION} とURLでインライン共有できます。\n\nUser ID でユーザーを検索し、「User ID 上限値」で権限を変更できます。確認画面で確定してください。-1 はブロック、0 は初期化、正の数は1日の上限、無制限の管理者権限は所有者のみが付与できます。\n\n{role}\n管理操作は Bot との個別チャットのみで使えます。"
     role = (
-        "Owner 可管理管理員；Cookies、使用開關、自動通過與預設額度位於高級選項。"
+        {"zh": ("Owner 可管理管理員；Cookies、使用開關、自動通過與預設額度位於高級選項。"
         if is_owner else
-        "管理員只能管理普通用戶，不能修改 Owner、自己、其他管理員或 Owner 專用設定。"
+        "管理員只能管理普通用戶，不能修改 Owner、自己、其他管理員或 Owner 專用設定。"), "zh-cn": ("Owner 可管理管理员；Cookies、使用开关、自动通过与预设额度位于高级选项。"
+        if is_owner else
+        "管理员只能管理普通用户，不能修改 Owner、自己、其他管理员或 Owner 专用设置。")}[ui_language()]
     )
-    return (
-        "所有者管理說明" if is_owner else "管理員使用說明"
-    ) + f"\n\n傳送單篇 X/Twitter 貼文網址取得文字與媒體；在其他聊天輸入 {BOT_MENTION} 加網址可內聯分享。\n\n直接傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。額度 -1 為封鎖、0 為初始化、正數為每日上限；僅 Owner 可授予不限額的管理員權限。\n\n{role}\n管理操作只在 Bot 私聊有效。"
+    return {
+        "zh": ((
+            "所有者管理說明" if is_owner else "管理員使用說明"
+        ) + f"\n\n傳送單篇 X/Twitter 貼文網址取得文字與媒體；在其他聊天輸入 {BOT_MENTION} 加網址可內聯分享。\n\n直接傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。額度 -1 為封鎖、0 為初始化、正數為每日上限；僅 Owner 可授予不限額的管理員權限。\n\n{role}\n管理操作只在 Bot 私聊有效。"),
+        "zh-cn": ((
+            "所有者管理说明" if is_owner else "管理员使用说明"
+        ) + f"\n\n发送单篇 X/Twitter 推文链接获取文字与媒体；在其他聊天输入 {BOT_MENTION} 加链接可内联分享。\n\n直接发送 User ID 查找用户，或发送「User ID 额度」修改权限，依提示确认。额度 -1 为封禁、0 为初始化、正数为每日上限；仅 Owner 可授予不限额的管理员权限。\n\n{role}\n管理操作只在 Bot 私聊有效。"),
+    }[ui_language()]
 
 
 def validate_cookie_file(content: bytes) -> str:
@@ -1755,10 +1793,10 @@ class TelegramAPI:
                 f"透過 {BOT_MENTION} 加網址使用內聯媒體。",
             ),
             "zh": (
-                "傳送 X/Twitter 貼文連結，取得文字、圖片與影片。",
-                "傳送單篇 X/Twitter 貼文連結，機器人會回傳作者連結、貼文文字、圖片與影片。"
-                "媒體可提供預覽；圖片另附未壓縮檔案。取得授權後，也可在其他聊天"
-                f"透過 {BOT_MENTION} 加網址使用內聯媒體。",
+                "发送 X/Twitter 推文链接，获取文字、图片与视频。",
+                "发送单篇 X/Twitter 推文链接，机器人会返回作者链接、推文文字、图片与视频。"
+                "媒体提供预览，图片另附未压缩文件。获得授权后，也可以在其他聊天"
+                f"通过 {BOT_MENTION} 加链接使用内联媒体。",
             ),
             "en": (
                 "Send an X/Twitter post URL to retrieve its text, images and videos.",
@@ -2299,7 +2337,7 @@ def inline_caption(
         text,
         url,
         1024,
-        {"zh": "取得方式：FxTwitter Inline", "en": "Method: FxTwitter Inline", "ja": "取得方法：FxTwitter Inline"}[OWNER_LANGUAGE] if debug else "",
+        {"zh": "取得方式：FxTwitter Inline", "en": "Method: FxTwitter Inline", "ja": "取得方法：FxTwitter Inline", "zh-cn": ("获取方式：FxTwitter Inline")}[ui_language()] if debug else "",
     )
 
 
@@ -2391,7 +2429,7 @@ def media_caption(
     debug: bool = False,
     method: str = "",
 ) -> str:
-    if OWNER_LANGUAGE != "zh":
+    if ui_language() in {"en", "ja"}:
         method = {
             "FxTwitter 直連": "FxTwitter direct",
             "FxTwitter 備援": "FxTwitter fallback",
@@ -2400,6 +2438,8 @@ def media_caption(
             "yt-dlp（匿名）": "yt-dlp (anonymous)",
             "yt-dlp（Cookies）": "yt-dlp (Cookies)",
         }.get(method, method)
+    elif ui_language() == "zh-cn":
+        method = {"FxTwitter 直連": "FxTwitter 直连", "FxTwitter 備援": "FxTwitter 备用"}.get(method, method)
     return tweet_html(
         author,
         author_url,
@@ -2410,7 +2450,8 @@ def media_caption(
             "zh": f"取得方式：{method or '未取得媒體'}",
             "en": f"Method: {method or 'No media'}",
             "ja": f"取得方法：{method or 'メディアなし'}",
-        }[OWNER_LANGUAGE] if debug else "",
+            "zh-cn": (f"获取方式：{method or '未获取媒体'}"),
+        }[ui_language()] if debug else "",
     )
 
 
@@ -2711,7 +2752,7 @@ class Bot:
         self.inline_futures: set[Future[Any]] = set()
         self.inline_cache_lock = threading.Lock()
         self.inline_cache: dict[
-            tuple[str, bool], tuple[float, list[dict[str, Any]]]
+            tuple[str, bool, str], tuple[float, list[dict[str, Any]]]
         ] = {}
         self.pending_cookie_uploads: set[int] = set()
         self.pending_user_searches: set[int] = set()
@@ -2722,7 +2763,7 @@ class Bot:
 
     def target_management_error(self, actor_id: int, target_id: int) -> str | None:
         if not is_telegram_user_id(target_id):
-            return {"zh": "User ID 不在 Telegram 的有效範圍內。", "en": "User ID is outside Telegram's valid range.", "ja": "User ID が Telegram の有効範囲外です。"}[OWNER_LANGUAGE]
+            return {"zh": "User ID 不在 Telegram 的有效範圍內。", "en": "User ID is outside Telegram's valid range.", "ja": "User ID が Telegram の有効範囲外です。", "zh-cn": ("User ID 不在 Telegram 的有效范围内。")}[ui_language()]
         if target_id == self.acl.owner_id:
             return admin_text("owner_cannot_change")
         if actor_id != self.acl.owner_id:
@@ -2788,10 +2829,16 @@ class Bot:
     def can_process(self, user_id: int) -> bool:
         return self.acl.is_allowed(user_id) and (
             self.acl.external_access_enabled
-            or (self.acl.is_admin(user_id) and self.acl.management_mode(user_id))
+            or self.acl.is_admin(user_id)
         )
 
     def handle_update(self, update: dict[str, Any]) -> None:
+        event = update.get("inline_query") or update.get("callback_query") or update.get("message") or update.get("edited_message") or {}
+        user_id = int((event.get("from") or {}).get("id", 0) or 0)
+        with language_scope(self.acl.language(user_id)):
+            self._handle_update(update)
+
+    def _handle_update(self, update: dict[str, Any]) -> None:
         inline_query = update.get("inline_query")
         if isinstance(inline_query, dict):
             self.handle_inline_query(inline_query)
@@ -2814,13 +2861,11 @@ class Bot:
 
         is_owner = user_id == self.acl.owner_id
         is_admin = self.acl.is_admin(user_id)
-        management_mode = self.acl.management_mode(user_id)
-        admin_mode = is_admin and management_mode
         is_private_chat = self.is_private_management_chat(user_id, chat_id)
 
         document = message.get("document")
         if isinstance(document, dict):
-            if admin_mode:
+            if is_admin:
                 self.handle_document(chat_id, message_id, user_id, document)
             else:
                 self.api.send_message(
@@ -2832,7 +2877,6 @@ class Bot:
                         is_admin,
                         self.acl.is_allowed(user_id),
                         is_owner,
-                        management_mode,
                     ),
                 )
             return
@@ -2841,14 +2885,14 @@ class Bot:
         if not text:
             return
 
-        if admin_mode and text in OWNER_BUTTONS:
+        if is_admin and text in OWNER_BUTTONS:
             text = OWNER_BUTTONS[text]
 
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].lower()
         argument = argument.strip()
 
-        if is_owner and admin_mode and user_id in self.pending_default_quotas:
+        if is_owner and is_admin and user_id in self.pending_default_quotas:
             if command.startswith("/"):
                 self.pending_default_quotas.pop(user_id, None)
             else:
@@ -2871,7 +2915,7 @@ class Bot:
                 return
 
         if (
-            admin_mode
+            is_admin
             and user_id in self.pending_user_searches
             and not command.startswith("/")
         ):
@@ -2888,7 +2932,7 @@ class Bot:
             except ValueError:
                 self.api.send_message(
                     chat_id,
-                    {"zh": "User ID 必須是 1 至 2^52-1 的正整數。請重新點選「用戶權限修改」。", "en": "User ID must be between 1 and 2^52-1. Select Change access again.", "ja": "User ID は 1～2^52-1 の整数にしてください。権限を変更をもう一度選んでください。"}[OWNER_LANGUAGE],
+                    {"zh": "User ID 必須是 1 至 2^52-1 的正整數。請重新點選「用戶權限修改」。", "en": "User ID must be between 1 and 2^52-1. Select Change access again.", "ja": "User ID は 1～2^52-1 の整数にしてください。権限を変更をもう一度選んでください。", "zh-cn": ("User ID 必须是 1 至 2^52-1 的正整数。请重新点选「用户权限修改」。")}[ui_language()],
                     message_id,
                     user_menu_keyboard(),
                 )
@@ -2896,7 +2940,7 @@ class Bot:
             if is_owner and not self.acl.has_user(target):
                 self.api.send_message(
                     chat_id,
-                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {self.acl.default_daily_limit} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {self.acl.default_daily_limit}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {self.acl.default_daily_limit} で作成しますか？"}[OWNER_LANGUAGE],
+                    {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {self.acl.default_daily_limit} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {self.acl.default_daily_limit}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {self.acl.default_daily_limit} で作成しますか？", "zh-cn": (f"数据库中没有 User ID {target}。\n确认以每日额度 {self.acl.default_daily_limit} 建立此用户？")}[ui_language()],
                     message_id,
                     confirm_new_user_keyboard(target, self.acl.default_daily_limit),
                 )
@@ -2904,7 +2948,7 @@ class Bot:
             self.send_user_search_result(chat_id, message_id, target, user_id)
             return
 
-        if admin_mode:
+        if is_admin:
             numeric_parts = text.split()
             if (
                 len(numeric_parts) in {1, 2}
@@ -2937,7 +2981,7 @@ class Bot:
                 if not self.acl.has_user(target):
                     self.api.send_message(
                         chat_id,
-                        {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {quota} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {quota}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {quota} で作成しますか？"}[OWNER_LANGUAGE],
+                        {"zh": f"資料庫中沒有 User ID {target}。\n確認以每日額度 {quota} 建立此用戶？", "en": f"User ID {target} is not in the database.\nCreate with a daily limit of {quota}?", "ja": f"User ID {target} はデータベースにありません。\n1日の上限 {quota} で作成しますか？", "zh-cn": (f"数据库中没有 User ID {target}。\n确认以每日额度 {quota} 建立此用户？")}[ui_language()],
                         message_id,
                         confirm_new_user_keyboard(target, quota),
                     )
@@ -2953,7 +2997,7 @@ class Bot:
                     )
                     self.api.send_message(
                         chat_id,
-                        {"zh": f"確認修改 User ID {target} 的權限？\n目前：{current_label}\n新值：{quota}", "en": f"Change access for User ID {target}?\nCurrent: {current_label}\nNew: {quota}", "ja": f"User ID {target} の権限を変更しますか？\n現在：{current_label}\n新しい値：{quota}"}[OWNER_LANGUAGE],
+                        {"zh": f"確認修改 User ID {target} 的權限？\n目前：{current_label}\n新值：{quota}", "en": f"Change access for User ID {target}?\nCurrent: {current_label}\nNew: {quota}", "ja": f"User ID {target} の権限を変更しますか？\n現在：{current_label}\n新しい値：{quota}", "zh-cn": (f"确认修改 User ID {target} 的权限？\n目前：{current_label}\n新值：{quota}")}[ui_language()],
                         message_id,
                         confirm_quota_change_keyboard(target, quota),
                     )
@@ -2963,7 +3007,7 @@ class Bot:
 
         if command == "/start":
             is_allowed = self.acl.is_allowed(user_id)
-            text_key = "start_owner" if admin_mode else "start_allowed"
+            text_key = "start_owner" if is_admin else "start_allowed"
             text = (
                 public_text(language, text_key)
                 if is_allowed
@@ -2978,7 +3022,6 @@ class Bot:
                     is_admin,
                     is_allowed,
                     is_owner,
-                    management_mode,
                 ),
             )
             return
@@ -2993,17 +3036,17 @@ class Bot:
         if command == "/claim":
             if not is_private_chat:
                 self.api.send_message(
-                    chat_id, {"zh": "Owner 認領只允許在 Bot 私聊完成。", "en": "Owner claim is available only in a private chat with the bot.", "ja": "所有者の登録は Bot との個別チャットでのみ可能です。"}[OWNER_LANGUAGE], message_id
+                    chat_id, {"zh": "Owner 認領只允許在 Bot 私聊完成。", "en": "Owner claim is available only in a private chat with the bot.", "ja": "所有者の登録は Bot との個別チャットでのみ可能です。", "zh-cn": ("Owner 认领只允许在 Bot 私聊完成。")}[ui_language()], message_id
                 )
                 return
             if self.acl.claim(user_id, argument):
                 self.api.configure_commands(user_id)
                 self.api.remove_reply_keyboard(chat_id)
                 self.api.send_message(
-                    chat_id, {"zh": "Owner 設定完成，管理選單已載入。", "en": "Owner configured. Management menu loaded.", "ja": "所有者を設定し、管理メニューを表示しました。"}[OWNER_LANGUAGE], message_id, owner_keyboard()
+                    chat_id, {"zh": "Owner 設定完成，管理選單已載入。", "en": "Owner configured. Management menu loaded.", "ja": "所有者を設定し、管理メニューを表示しました。", "zh-cn": ("Owner 设置完成，管理菜单已加载。")}[ui_language()], message_id, owner_keyboard()
                 )
             else:
-                self.api.send_message(chat_id, {"zh": "認領失敗或 Owner 已存在。", "en": "Claim failed or an owner already exists.", "ja": "登録に失敗したか、所有者が既に存在します。"}[OWNER_LANGUAGE], message_id)
+                self.api.send_message(chat_id, {"zh": "認領失敗或 Owner 已存在。", "en": "Claim failed or an owner already exists.", "ja": "登録に失敗したか、所有者が既に存在します。", "zh-cn": ("认领失败或 Owner 已存在。")}[ui_language()], message_id)
             return
 
         if command in {
@@ -3025,7 +3068,7 @@ class Bot:
             "/clearcookies",
             "/cancel",
         }:
-            if not admin_mode:
+            if not is_admin:
                 if command == "/help":
                     self.api.send_message(
                         chat_id,
@@ -3043,7 +3086,6 @@ class Bot:
                     is_admin,
                     self.acl.is_allowed(user_id),
                     is_owner,
-                    management_mode,
                 )
                 self.api.send_message(
                     chat_id,
@@ -3095,7 +3137,7 @@ class Bot:
         if not url:
             self.api.send_message(chat_id, public_text(language, "invalid_url"), message_id)
             return
-        if not admin_mode and not self.acl.external_access_enabled:
+        if not is_admin and not self.acl.external_access_enabled:
             self.api.send_message(
                 chat_id, public_text(language, "service_paused"), message_id
             )
@@ -3155,9 +3197,7 @@ class Bot:
                 },
             )
             return
-        privileged_mode = (
-            self.acl.is_admin(user_id) and self.acl.management_mode(user_id)
-        )
+        privileged_mode = self.acl.is_admin(user_id)
         if not privileged_mode and not self.acl.external_access_enabled:
             self.api.answer_inline_query(query_id, [])
             return
@@ -3202,12 +3242,18 @@ class Bot:
 
     def _process_inline_query(self, query_id: str, url: str, debug: bool,
                               user_id: int | None = None) -> None:
+        language = self.acl.language(user_id) if user_id is not None else ui_language()
+        with language_scope(language):
+            self._build_inline_query_response(query_id, url, debug, user_id)
+
+    def _build_inline_query_response(self, query_id: str, url: str, debug: bool,
+                                     user_id: int | None = None) -> None:
         try:
             if user_id is not None and not self.can_process(user_id):
                 self.api.answer_inline_query(query_id, [])
                 return
             now = time.monotonic()
-            key = (url, debug)
+            key = (url, debug, ui_language())
             with self.inline_cache_lock:
                 self.inline_cache = {
                     cache_key: value
@@ -3236,6 +3282,10 @@ class Bot:
                 LOG.warning("Could not answer failed inline query")
 
     def maybe_send_daily_report(self, force: bool = False) -> None:
+        with language_scope(self.acl.language(self.acl.owner_id)):
+            self._send_daily_report(force)
+
+    def _send_daily_report(self, force: bool = False) -> None:
         owner_id = self.acl.owner_id
         records = self.acl.pending()
         if not owner_id:
@@ -3249,7 +3299,8 @@ class Bot:
             "zh": f"每日使用簡報（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活躍用戶：{active}\n用量：{total}\n待審批：{len(records)}",
             "en": f"Daily usage report ({report_date}, {BOT_TIMEZONE_NAME})\n\nActive users: {active}\nUsage: {total}\nPending approvals: {len(records)}",
             "ja": f"日次利用レポート（{report_date}、{BOT_TIMEZONE_NAME}）\n\n利用ユーザー：{active}\n使用量：{total}\n審査待ち：{len(records)}",
-        }[OWNER_LANGUAGE]
+            "zh-cn": (f"每日使用简报（{report_date}，{BOT_TIMEZONE_NAME}）\n\n活跃用户：{active}\n用量：{total}\n待审批：{len(records)}"),
+        }[ui_language()]
         keyboard = pending_keyboard(records, 0) if records else None
         self.api.send_message(
             owner_id,
@@ -3268,10 +3319,11 @@ class Bot:
             "zh": f"用戶列表（第 {page + 1}/{pages} 頁，共 {len(records)} 位）",
             "en": f"Users (page {page + 1}/{pages}, {len(records)} total)",
             "ja": f"ユーザー一覧（{page + 1}/{pages} ページ、計 {len(records)} 人）",
-        }[OWNER_LANGUAGE]
+            "zh-cn": (f"用户列表（第 {page + 1}/{pages} 页，共 {len(records)} 位）"),
+        }[ui_language()]
         lines = [
             title,
-            {"zh": "ID｜狀態｜額度｜今日用量｜名稱", "en": "ID | Status | Limit | Usage today | Name", "ja": "ID｜状態｜上限｜本日の使用量｜名前"}[OWNER_LANGUAGE],
+            {"zh": "ID｜狀態｜額度｜今日用量｜名稱", "en": "ID | Status | Limit | Usage today | Name", "ja": "ID｜状態｜上限｜本日の使用量｜名前", "zh-cn": ("ID｜状态｜额度｜今日用量｜名称")}[ui_language()],
         ]
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             user_id = int(record["user_id"])
@@ -3320,7 +3372,8 @@ class Bot:
             "zh": f"待審批使用申請（第 {page + 1}/{pages} 頁，共 {len(records)} 筆）：",
             "en": f"Pending requests (page {page + 1}/{pages}, {len(records)} total):",
             "ja": f"審査待ちの申請（{page + 1}/{pages} ページ、計 {len(records)} 件）：",
-        }[OWNER_LANGUAGE]]
+            "zh-cn": (f"待审批使用申请（第 {page + 1}/{pages} 页，共 {len(records)} 笔）："),
+        }[ui_language()]]
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             lines.append(f"• {user_label(record)}｜ID {record['user_id']}")
         return "\n".join(lines), pending_keyboard(records, page), page
@@ -3346,7 +3399,7 @@ class Bot:
         elif quota == 0:
             status, quota_text = admin_text("initialized"), "0"
         else:
-            status, quota_text = ("普通用戶" if OWNER_LANGUAGE == "zh" else admin_text("ordinary")), str(quota)
+            status, quota_text = {"zh": "普通用戶", "zh-cn": "普通用户"}.get(ui_language(), admin_text("ordinary")), str(quota)
         can_modify = (
             actor_id is None
             or self.target_management_error(actor_id, target) is None
@@ -3356,7 +3409,8 @@ class Bot:
             "zh": f"{user_label(record)}\nUser ID：{target}\n狀態：{status}\n每日額度：{quota_text}\n今日用量：{used} 次",
             "en": f"{user_label(record)}\nUser ID: {target}\nStatus: {status}\nDaily limit: {quota_text}\nUsage today: {used}",
             "ja": f"{user_label(record)}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の使用量：{used} 回",
-        }[OWNER_LANGUAGE]
+            "zh-cn": (f"{user_label(record)}\nUser ID：{target}\n状态：{status}\n每日额度：{quota_text}\n今日用量：{used} 次"),
+        }[ui_language()]
         return (
             summary,
             searched_user_keyboard(
@@ -3379,7 +3433,8 @@ class Bot:
                     "zh": f"找不到 User ID {target}。此用戶可能尚未與 Bot 互動。",
                     "en": f"User ID {target} was not found. They may not have interacted with the bot yet.",
                     "ja": f"User ID {target} が見つかりません。まだ Bot を利用していない可能性があります。",
-                }[OWNER_LANGUAGE],
+                    "zh-cn": (f"找不到 User ID {target}。此用户可能尚未与 Bot 互动。"),
+                }[ui_language()],
                 message_id,
                 user_menu_keyboard(),
             )
@@ -3388,6 +3443,10 @@ class Bot:
         self.api.send_message(chat_id, text, message_id, keyboard)
 
     def system_status_text(self, viewer_id: int) -> str:
+        with language_scope(self.acl.language(viewer_id)):
+            return self._system_status_text(viewer_id)
+
+    def _system_status_text(self, viewer_id: int) -> str:
         records = self.acl.records()
         today = bot_date()
         ordinary = sum(
@@ -3427,7 +3486,7 @@ class Bot:
         queue_size = self.jobs.qsize()
         queue_percent = round(queue_size * 100 / MAX_QUEUE) if MAX_QUEUE else 0
         cookies_set = COOKIES_PATH.exists()
-        if OWNER_LANGUAGE == "en":
+        if ui_language() == "en":
             state = lambda enabled: "On" if enabled else "Off"
             return (
                 f"System status\n\nService: {'Running' if any(worker.is_alive() for worker in self.workers) else 'Worker stopped'}\n"
@@ -3440,10 +3499,9 @@ class Bot:
                 f"Cookies for regular users: {state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"User access: {'Open' if self.acl.external_access_enabled else 'Paused'}\n"
                 f"Auto-approve: {state(self.acl.auto_approve_enabled)}\n"
-                f"Management mode: {state(self.acl.management_mode(viewer_id))}"
                 + (f"\nImplementation details: {state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
             )
-        if OWNER_LANGUAGE == "ja":
+        if ui_language() == "ja":
             state = lambda enabled: "オン" if enabled else "オフ"
             return (
                 f"システム状態\n\nサービス：{'稼働中' if any(worker.is_alive() for worker in self.workers) else 'ワーカー停止'}\n"
@@ -3456,30 +3514,49 @@ class Bot:
                 f"一般ユーザーの Cookies：{state(self.acl.ordinary_user_cookies_enabled)}\n"
                 f"ユーザー利用：{'許可' if self.acl.external_access_enabled else '停止'}\n"
                 f"自動承認：{state(self.acl.auto_approve_enabled)}\n"
-                f"管理モード：{state(self.acl.management_mode(viewer_id))}"
                 + (f"\n実装方法：{state(self.acl.debug_mode(viewer_id))}" if viewer_id == self.acl.owner_id else "")
             )
-        return (
-            "系統狀態\n\n"
-            f"服務：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作執行緒未運行'}\n"
-            f"運行時間：{format_duration(time.time() - self.started_at)}\n"
-            f"處理佇列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
-            "用戶\n"
-            f"總記錄：{len(records)}｜普通：{ordinary}｜管理員：{administrators}｜"
-            f"初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n"
-            f"今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n"
-            f"統計重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
-            f"每日簡報：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
-            f"X Cookies：{'已設定' if COOKIES_PATH.exists() else '未設定'}\n"
-            f"Cookies 開關："
-            f"{'開啟' if self.acl.ordinary_user_cookies_enabled else '關閉'}\n"
-            f"使用開關：{'開放' if self.acl.external_access_enabled else '暫停'}\n"
-            f"自動通過：{'開啟' if self.acl.auto_approve_enabled else '關閉'}\n"
-            f"管理模式：{'開啟' if self.acl.management_mode(viewer_id) else '關閉'}"
-            + (f"\n實現方式：{'開啟' if self.acl.debug_mode(viewer_id) else '關閉'}" if viewer_id == self.acl.owner_id else "")
-        )
+        return {
+            "zh": ("系統狀態\n\n"
+                f"服務：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作執行緒未運行'}\n"
+                f"運行時間：{format_duration(time.time() - self.started_at)}\n"
+                f"處理佇列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
+                "用戶\n"
+                f"總記錄：{len(records)}｜普通：{ordinary}｜管理員：{administrators}｜"
+                f"初始化：{initialized}｜待審批：{pending}｜封鎖：{banned}\n"
+                f"今日活躍：{active_today}｜今日用量：{interactions}｜已達額度：{exhausted}\n"
+                f"統計重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
+                f"每日簡報：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
+                f"X Cookies：{'已設定' if COOKIES_PATH.exists() else '未設定'}\n"
+                f"Cookies 開關："
+                f"{'開啟' if self.acl.ordinary_user_cookies_enabled else '關閉'}\n"
+                f"使用開關：{'開放' if self.acl.external_access_enabled else '暫停'}\n"
+                f"自動通過：{'開啟' if self.acl.auto_approve_enabled else '關閉'}\n"
+                + (f"\n實現方式：{'開啟' if self.acl.debug_mode(viewer_id) else '關閉'}" if viewer_id == self.acl.owner_id else "")),
+            "zh-cn": ("系统状态\n\n"
+                f"服务：{'正常' if any(worker.is_alive() for worker in self.workers) else '工作线程未运行'}\n"
+                f"运行时间：{format_duration(time.time() - self.started_at)}\n"
+                f"处理队列：{queue_size}/{MAX_QUEUE}（{queue_percent}%）\n\n"
+                "用户\n"
+                f"总记录：{len(records)}｜普通：{ordinary}｜管理员：{administrators}｜"
+                f"初始化：{initialized}｜待审批：{pending}｜封禁：{banned}\n"
+                f"今日活跃：{active_today}｜今日用量：{interactions}｜已达额度：{exhausted}\n"
+                f"统计重置：每日 {DAILY_RESET_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n"
+                f"每日简报：{DAILY_REPORT_HOUR:02d}:00 {BOT_TIMEZONE_NAME}\n\n"
+                f"X Cookies：{'已设置' if COOKIES_PATH.exists() else '未设置'}\n"
+                f"Cookies 开关："
+                f"{'开启' if self.acl.ordinary_user_cookies_enabled else '关闭'}\n"
+                f"使用开关：{'开放' if self.acl.external_access_enabled else '暂停'}\n"
+                f"自动通过：{'开启' if self.acl.auto_approve_enabled else '关闭'}\n"
+                + (f"\n实现方式：{'开启' if self.acl.debug_mode(viewer_id) else '关闭'}" if viewer_id == self.acl.owner_id else "")),
+        }[ui_language()]
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
+        user_id = int((callback.get("from") or {}).get("id", 0) or 0)
+        with language_scope(self.acl.language(user_id)):
+            self._handle_callback(callback)
+
+    def _handle_callback(self, callback: dict[str, Any]) -> None:
         sender = callback.get("from") or {}
         user_id = int(sender.get("id", 0) or 0)
         callback_id = str(callback.get("id") or "")
@@ -3495,38 +3572,33 @@ class Bot:
             return
         is_owner = user_id == self.acl.owner_id
         is_admin = self.acl.is_admin(user_id)
-        management_mode = self.acl.management_mode(user_id)
 
         if data.startswith("lang:"):
-            if is_admin:
-                self.api.answer_callback(callback_id, admin_text("language_locked"), alert=True)
+            if is_admin and not self.is_private_management_chat(user_id, chat_id):
+                self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
                 return
             selected = data.split(":", 1)[1]
             try:
                 self.acl.set_language(user_id, selected)
             except ValueError:
-                self.api.answer_callback(callback_id, "Unsupported language", alert=True)
+                self.api.answer_callback(callback_id, public_text(language, "unsupported_language"), alert=True)
                 return
+            self.pending_user_searches.discard(user_id)
+            self.pending_default_quotas.pop(user_id, None)
             is_allowed = self.acl.is_allowed(user_id)
-            text_key = (
-                "start_owner" if is_admin and management_mode else "start_allowed"
-            )
+            text_key = "start_owner" if is_admin else "start_allowed"
             text = (
                 public_text(selected, text_key)
                 if is_allowed
                 else access_request_text(user_id, selected)
             )
+            with language_scope(selected):
+                keyboard = start_keyboard(selected, is_admin, is_allowed, is_owner)
             self.api.edit_message(
                 chat_id,
                 message_id,
                 text,
-                start_keyboard(
-                    selected,
-                    is_admin,
-                    is_allowed,
-                    is_owner,
-                    management_mode,
-                ),
+                keyboard,
             )
             self.api.answer_callback(
                 callback_id, public_text(selected, "language_set")
@@ -3540,9 +3612,11 @@ class Bot:
                 "callback_data": "public:main",
             }]]}
             if destination == "language":
-                if is_admin:
-                    self.api.answer_callback(callback_id, admin_text("language_locked"), alert=True)
+                if is_admin and not self.is_private_management_chat(user_id, chat_id):
+                    self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
                     return
+                self.pending_user_searches.discard(user_id)
+                self.pending_default_quotas.pop(user_id, None)
                 text = public_text(language, "choose_language")
                 keyboard = {
                     "inline_keyboard": [language_row(language)]
@@ -3563,7 +3637,7 @@ class Bot:
                     public_text(
                         language,
                         "start_owner"
-                        if is_admin and management_mode
+                        if is_admin
                         else "start_allowed",
                     )
                     if is_allowed
@@ -3578,7 +3652,6 @@ class Bot:
                         is_admin,
                         is_allowed,
                         is_owner,
-                        management_mode,
                     ),
                 )
             else:
@@ -3605,41 +3678,8 @@ class Bot:
             self.api.answer_callback(callback_id, responses[result], alert=True)
             return
 
-        if data == "managementtoggle:0":
-            if not is_admin:
-                self.api.answer_callback(
-                    callback_id, admin_text("management_admin_only"), alert=True
-                )
-                return
-            if not self.is_private_management_chat(user_id, chat_id):
-                self.api.answer_callback(
-                    callback_id, admin_text("private_only"), alert=True
-                )
-                return
-            enabled = self.acl.toggle_management_mode(user_id)
-            if enabled:
-                text = admin_text("menu")
-                keyboard = owner_keyboard(True)
-            else:
-                self.pending_user_searches.discard(user_id)
-                self.pending_default_quotas.pop(user_id, None)
-                text = public_text(language, "start_allowed")
-                keyboard = start_keyboard(
-                    language, True, True, is_owner, False
-                )
-            self.api.edit_message(chat_id, message_id, text, keyboard)
-            self.api.answer_callback(
-                callback_id, f"管理模式已{'開啟' if enabled else '關閉'}。" if OWNER_LANGUAGE == "zh" else f'{admin_text("management_mode")}: {admin_text("on" if enabled else "off")}'
-            )
-            return
-
         if not is_admin:
             self.api.answer_callback(callback_id, admin_text("admin_only"), alert=True)
-            return
-        if not management_mode:
-            self.api.answer_callback(
-                callback_id, admin_text("management_off"), alert=True
-            )
             return
         if not self.is_private_management_chat(user_id, chat_id):
             self.api.answer_callback(
@@ -3652,7 +3692,7 @@ class Bot:
             self.pending_user_searches.discard(user_id)
             self.pending_default_quotas.pop(user_id, None)
             if destination == "main":
-                text, keyboard = admin_text("menu"), owner_keyboard(True)
+                text, keyboard = admin_text("menu"), owner_keyboard()
             elif destination == "users":
                 text, keyboard = admin_text("users"), user_menu_keyboard()
             elif destination == "cookies":
@@ -3690,7 +3730,7 @@ class Bot:
                 text = admin_text("default_limit_prompt").format(limit=self.acl.default_daily_limit)
                 keyboard = default_limit_keyboard()
             elif destination == "help":
-                text, keyboard = owner_help_text(is_owner), owner_keyboard(True)
+                text, keyboard = owner_help_text(is_owner), owner_keyboard()
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
@@ -3861,7 +3901,7 @@ class Bot:
             result = self.user_search_result(target, user_id)
             if result is None:
                 self.api.edit_message(
-                    chat_id, message_id, {"zh": f"找不到 User ID {target}。", "en": f"User ID {target} not found.", "ja": f"User ID {target} が見つかりません。"}[OWNER_LANGUAGE], user_menu_keyboard()
+                    chat_id, message_id, {"zh": f"找不到 User ID {target}。", "en": f"User ID {target} not found.", "ja": f"User ID {target} が見つかりません。", "zh-cn": (f"找不到 User ID {target}。")}[ui_language()], user_menu_keyboard()
                 )
             else:
                 text, keyboard = result
@@ -3897,7 +3937,7 @@ class Bot:
                 ),
             )
             self.api.answer_callback(
-                callback_id, f"實現方式已{'開啟' if enabled else '關閉'}。" if OWNER_LANGUAGE == "zh" else f'{admin_text("implementation")}: {admin_text("on" if enabled else "off")}'
+                callback_id, f"實現方式已{'開啟' if enabled else '關閉'}。" if ui_language() == "zh" else f'{admin_text("implementation")}: {admin_text("on" if enabled else "off")}'
             )
             return
         if action == "externaltoggle":
@@ -3920,7 +3960,7 @@ class Bot:
                 ),
             )
             self.api.answer_callback(
-                callback_id, f"使用開關已{'開放' if enabled else '暫停'}。" if OWNER_LANGUAGE == "zh" else f'{admin_text("access_switch")}: {admin_text("open" if enabled else "paused")}'
+                callback_id, f"使用開關已{'開放' if enabled else '暫停'}。" if ui_language() == "zh" else f'{admin_text("access_switch")}: {admin_text("open" if enabled else "paused")}'
             )
             return
         if action == "autoapprovetoggle":
@@ -3943,7 +3983,7 @@ class Bot:
                 ),
             )
             self.api.answer_callback(
-                callback_id, f"自動通過已{'開啟' if enabled else '關閉'}。" if OWNER_LANGUAGE == "zh" else f'{admin_text("auto_approve")}: {admin_text("on" if enabled else "off")}'
+                callback_id, f"自動通過已{'開啟' if enabled else '關閉'}。" if ui_language() == "zh" else f'{admin_text("auto_approve")}: {admin_text("on" if enabled else "off")}'
             )
             return
         if action == "ordinarycookiestoggle":
@@ -3963,7 +4003,7 @@ class Bot:
             )
             self.api.answer_callback(
                 callback_id,
-                f"Cookies 開關已{'開啟' if enabled else '關閉'}。" if OWNER_LANGUAGE == "zh" else f'{admin_text("cookie_switch")}: {admin_text("on" if enabled else "off")}',
+                f"Cookies 開關已{'開啟' if enabled else '關閉'}。" if ui_language() == "zh" else f'{admin_text("cookie_switch")}: {admin_text("on" if enabled else "off")}',
             )
             return
         if action == "requestspage":
@@ -4016,7 +4056,7 @@ class Bot:
                     admin_text("no_requests"),
                     user_menu_keyboard(),
                 )
-            self.api.answer_callback(callback_id, {"zh": f"已通過 {approved} 筆申請。", "en": f"Approved {approved} requests.", "ja": f"{approved} 件の申請を承認しました。"}[OWNER_LANGUAGE])
+            self.api.answer_callback(callback_id, {"zh": f"已通過 {approved} 筆申請。", "en": f"Approved {approved} requests.", "ja": f"{approved} 件の申請を承認しました。", "zh-cn": (f"已通过 {approved} 笔申请。")}[ui_language()])
             return
 
         if action == "approve":
@@ -4027,7 +4067,7 @@ class Bot:
             if not self.acl.approve(target):
                 self.api.answer_callback(callback_id, admin_text("approve_missing"), alert=True)
                 return
-            self.api.answer_callback(callback_id, {"zh": f"已通過 {target}。", "en": f"Approved {target}.", "ja": f"{target} を承認しました。"}[OWNER_LANGUAGE])
+            self.api.answer_callback(callback_id, {"zh": f"已通過 {target}。", "en": f"Approved {target}.", "ja": f"{target} を承認しました。", "zh-cn": (f"已通过 {target}。")}[ui_language()])
             try:
                 self.api.send_message(
                     target,
@@ -4056,7 +4096,7 @@ class Bot:
                 self.api.answer_callback(callback_id, error, alert=True)
                 return
             self.acl.deny(target)
-            self.api.answer_callback(callback_id, {"zh": f"已拒絕 {target}。", "en": f"Rejected {target}.", "ja": f"{target} を拒否しました。"}[OWNER_LANGUAGE])
+            self.api.answer_callback(callback_id, {"zh": f"已拒絕 {target}。", "en": f"Rejected {target}.", "ja": f"{target} を拒否しました。", "zh-cn": (f"已拒绝 {target}。")}[ui_language()])
             if message_id and extra:
                 try:
                     page = max(0, int(extra[0]))
@@ -4077,7 +4117,7 @@ class Bot:
             self.api.edit_message(
                 chat_id,
                 message_id,
-                {"zh": f"修改 User ID {target} 的用戶權限：", "en": f"Change access for User ID {target}:", "ja": f"User ID {target} の権限を変更："}[OWNER_LANGUAGE],
+                {"zh": f"修改 User ID {target} 的用戶權限：", "en": f"Change access for User ID {target}:", "ja": f"User ID {target} の権限を変更：", "zh-cn": (f"修改 User ID {target} 的用户权限：")}[ui_language()],
                 quota_choices_keyboard(target, allow_admin=is_owner, default_daily_limit=self.acl.default_daily_limit),
             )
         elif action in {"quota", "limit", "ban", "unban"}:
@@ -4117,7 +4157,7 @@ class Bot:
                     callback_id, admin_text("quota_range"), alert=True
                 )
                 return
-            self.api.answer_callback(callback_id, {"zh": f"已設為 {label}。", "en": f"Set to {label}.", "ja": f"{label} に設定しました。"}[OWNER_LANGUAGE])
+            self.api.answer_callback(callback_id, {"zh": f"已設為 {label}。", "en": f"Set to {label}.", "ja": f"{label} に設定しました。", "zh-cn": (f"已设为 {label}。")}[ui_language()])
             result = self.user_search_result(target, user_id)
             if message_id and result:
                 text, keyboard = result
@@ -4131,7 +4171,7 @@ class Bot:
         if not self.is_private_management_chat(user_id, chat_id):
             if user_id == self.acl.owner_id:
                 self.api.send_message(
-                    chat_id, {"zh": "Cookies 只允許在 Bot 私聊匯入。", "en": "Import Cookies only in a private chat with the bot.", "ja": "Cookies の取り込みは Bot との個別チャットでのみ可能です。"}[OWNER_LANGUAGE], message_id
+                    chat_id, {"zh": "Cookies 只允許在 Bot 私聊匯入。", "en": "Import Cookies only in a private chat with the bot.", "ja": "Cookies の取り込みは Bot との個別チャットでのみ可能です。", "zh-cn": ("Cookies 只允许在 Bot 私聊导入。")}[ui_language()], message_id
                 )
             return
         if user_id != self.acl.owner_id:
@@ -4142,7 +4182,7 @@ class Bot:
         if user_id not in self.pending_cookie_uploads:
             self.api.send_message(
                 chat_id,
-                {"zh": "請先點選「匯入 Cookies」，再上傳 Netscape 格式 cookies.txt。", "en": "Select Import Cookies before uploading a Netscape-format cookies.txt file.", "ja": "先に Cookies を取り込むを選択し、Netscape 形式の cookies.txt をアップロードしてください。"}[OWNER_LANGUAGE],
+                {"zh": "請先點選「匯入 Cookies」，再上傳 Netscape 格式 cookies.txt。", "en": "Select Import Cookies before uploading a Netscape-format cookies.txt file.", "ja": "先に Cookies を取り込むを選択し、Netscape 形式の cookies.txt をアップロードしてください。", "zh-cn": ("请先点选「导入 Cookies」，再上传 Netscape 格式 cookies.txt。")}[ui_language()],
                 message_id,
                 cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
             )
@@ -4152,7 +4192,7 @@ class Bot:
         if not file_id or file_size > MAX_COOKIE_BYTES:
             self.api.send_message(
                 chat_id,
-                {"zh": "Cookies 檔案無效或超過 1 MB。", "en": "Invalid Cookies file or larger than 1 MB.", "ja": "Cookies ファイルが無効か、1 MB を超えています。"}[OWNER_LANGUAGE],
+                {"zh": "Cookies 檔案無效或超過 1 MB。", "en": "Invalid Cookies file or larger than 1 MB.", "ja": "Cookies ファイルが無効か、1 MB を超えています。", "zh-cn": ("Cookies 文件无效或超过 1 MB。")}[ui_language()],
                 message_id,
                 cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
             )
@@ -4179,7 +4219,13 @@ class Bot:
                         "只接受 Netscape 格式的 cookies.txt。": "Netscape 形式の cookies.txt のみ受け付けます。",
                         "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "有効な X/Twitter の Cookie が見つかりません。",
                     }.get(str(error), "Cookies ファイルが無効か、ダウンロードに失敗しました。"),
-                }[OWNER_LANGUAGE],
+                    "zh-cn": "导入失败：" + {
+                        "Cookies 檔案必須小於 1 MB。": "Cookies 文件必须小于 1 MB。",
+                        "Cookies 檔案必須是 UTF-8 文字格式。": "Cookies 文件必须是 UTF-8 文本。",
+                        "只接受 Netscape 格式的 cookies.txt。": "只接受 Netscape 格式的 cookies.txt。",
+                        "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "文件中没有有效的 X/Twitter Cookie。",
+                    }.get(str(error), "Cookies 文件无效或下载失败。"),
+                }[ui_language()],
                 message_id,
                 cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
             )
@@ -4187,7 +4233,7 @@ class Bot:
         self.pending_cookie_uploads.discard(user_id)
         self.api.send_message(
             chat_id,
-            {"zh": "X/Twitter Cookies 已匯入並立即生效。Telegram 中的原始文件可自行刪除。", "en": "X/Twitter Cookies imported and active. You can delete the original document from Telegram.", "ja": "X/Twitter の Cookies を取り込み、すぐに反映しました。Telegram の元ファイルは削除できます。"}[OWNER_LANGUAGE],
+            {"zh": "X/Twitter Cookies 已匯入並立即生效。Telegram 中的原始文件可自行刪除。", "en": "X/Twitter Cookies imported and active. You can delete the original document from Telegram.", "ja": "X/Twitter の Cookies を取り込み、すぐに反映しました。Telegram の元ファイルは削除できます。", "zh-cn": ("X/Twitter Cookies 已导入并立即生效。Telegram 中的原始文件可自行删除。")}[ui_language()],
             message_id,
             cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
         )
@@ -4199,6 +4245,13 @@ class Bot:
         actor_id: int,
         command: str,
         argument: str,
+    ) -> None:
+        with language_scope(self.acl.language(actor_id)):
+            self._handle_owner_command(chat_id, message_id, actor_id, command, argument)
+
+    def _handle_owner_command(
+        self, chat_id: int, message_id: int, actor_id: int,
+        command: str, argument: str,
     ) -> None:
         is_owner = actor_id == self.acl.owner_id
         if command == "/menu":
@@ -4229,7 +4282,7 @@ class Bot:
                 if not is_telegram_user_id(target):
                     raise ValueError
             except ValueError:
-                self.api.send_message(chat_id, {"zh": f"用法：{command} <User ID>", "en": f"Usage: {command} <User ID>", "ja": f"使い方：{command} <User ID>"}[OWNER_LANGUAGE], message_id)
+                self.api.send_message(chat_id, {"zh": f"用法：{command} <User ID>", "en": f"Usage: {command} <User ID>", "ja": f"使い方：{command} <User ID>", "zh-cn": (f"用法：{command} <User ID>")}[ui_language()], message_id)
                 return
             error = self.target_management_error(actor_id, target)
             if error:
@@ -4237,20 +4290,20 @@ class Bot:
                 return
             if command == "/allow":
                 self.acl.add(target)
-                response = {"zh": f"已允許 {target}。", "en": f"Allowed {target}.", "ja": f"{target} を許可しました。"}[OWNER_LANGUAGE]
+                response = {"zh": f"已允許 {target}。", "en": f"Allowed {target}.", "ja": f"{target} を許可しました。", "zh-cn": (f"已允许 {target}。")}[ui_language()]
             elif command == "/deny":
                 self.acl.remove(target)
-                response = {"zh": f"已移除 {target}。", "en": f"Removed {target}.", "ja": f"{target} を削除しました。"}[OWNER_LANGUAGE]
+                response = {"zh": f"已移除 {target}。", "en": f"Removed {target}.", "ja": f"{target} を削除しました。", "zh-cn": (f"已移除 {target}。")}[ui_language()]
             elif command == "/ban":
                 try:
                     self.acl.ban(target)
                 except ValueError:
                     self.api.send_message(chat_id, admin_text("owner_cannot_ban"), message_id)
                     return
-                response = {"zh": f"已永久封鎖 {target}。", "en": f"Blocked {target}.", "ja": f"{target} をブロックしました。"}[OWNER_LANGUAGE]
+                response = {"zh": f"已永久封鎖 {target}。", "en": f"Blocked {target}.", "ja": f"{target} をブロックしました。", "zh-cn": (f"已永久封禁 {target}。")}[ui_language()]
             else:
                 self.acl.unban(target)
-                response = {"zh": f"已解除 {target} 的永久封鎖。", "en": f"Unblocked {target}.", "ja": f"{target} のブロックを解除しました。"}[OWNER_LANGUAGE]
+                response = {"zh": f"已解除 {target} 的永久封鎖。", "en": f"Unblocked {target}.", "ja": f"{target} のブロックを解除しました。", "zh-cn": (f"已解除 {target} 的永久封禁。")}[ui_language()]
             self.api.send_message(chat_id, response, message_id)
         elif command == "/users":
             records = self.acl.records()
@@ -4295,13 +4348,13 @@ class Bot:
             except (ValueError, TypeError):
                 self.api.send_message(
                     chat_id,
-                    {"zh": "用法：/limit <User ID> <-1|0|每日次數|unlimited>。", "en": "Usage: /limit <User ID> <-1|0|daily limit|unlimited>.", "ja": "使い方：/limit <User ID> <-1|0|1日の上限|unlimited>。"}[OWNER_LANGUAGE],
+                    {"zh": "用法：/limit <User ID> <-1|0|每日次數|unlimited>。", "en": "Usage: /limit <User ID> <-1|0|daily limit|unlimited>.", "ja": "使い方：/limit <User ID> <-1|0|1日の上限|unlimited>。", "zh-cn": ("用法：/limit <User ID> <-1|0|每日次数|unlimited>。")}[ui_language()],
                     message_id,
                 )
                 return
             self.api.send_message(
                 chat_id,
-                {"zh": f"已將 {target} 設為 {admin_text('admin_unlimited') if quota is None else quota}。", "en": f"Set {target} to {admin_text('admin_unlimited') if quota is None else quota}.", "ja": f"{target} を {admin_text('admin_unlimited') if quota is None else quota} に設定しました。"}[OWNER_LANGUAGE],
+                {"zh": f"已將 {target} 設為 {admin_text('admin_unlimited') if quota is None else quota}。", "en": f"Set {target} to {admin_text('admin_unlimited') if quota is None else quota}.", "ja": f"{target} を {admin_text('admin_unlimited') if quota is None else quota} に設定しました。", "zh-cn": (f"已将 {target} 设为 {admin_text('admin_unlimited') if quota is None else quota}。")}[ui_language()],
                 message_id,
             )
         elif command == "/status":
@@ -4387,6 +4440,10 @@ class Bot:
                 self.jobs.task_done()
 
     def notify_cookie_failure(self) -> None:
+        with language_scope(self.acl.language(self.acl.owner_id)):
+            self._notify_cookie_failure()
+
+    def _notify_cookie_failure(self) -> None:
         owner_id = self.acl.owner_id
         if not owner_id or not cookie_alert_due():
             return
@@ -4397,13 +4454,13 @@ class Bot:
                     "zh": "X/Twitter Cookies 可能已失效，登入型媒體抓取遭到拒絕。請使用「匯入 Cookies」更新 cookies.txt。此通知 24 小時內不會重複發送。",
                     "en": "X/Twitter Cookies may have expired; authenticated media access was denied. Use Import Cookies to update cookies.txt. This notice is limited to once per 24 hours.",
                     "ja": "X/Twitter の Cookies が失効し、ログインが必要なメディア取得が拒否された可能性があります。Cookies を取り込むから cookies.txt を更新してください。この通知は24時間以内に繰り返されません。",
-                }[OWNER_LANGUAGE],
+                    "zh-cn": ("X/Twitter Cookies 可能已失效，登入型媒体抓取遭到拒绝。请使用「导入 Cookies」更新 cookies.txt。此通知 24 小时内不会重复发送。"),
+                }[ui_language()],
                 reply_markup=start_keyboard(
                     self.acl.language(owner_id),
                     True,
                     True,
                     True,
-                    self.acl.management_mode(owner_id),
                 ),
             )
             record_cookie_alert()
@@ -4411,6 +4468,12 @@ class Bot:
             LOG.exception("Could not notify owner about invalid cookies")
 
     def process_url(
+        self, chat_id: int, message_id: int, user_id: int, url: str
+    ) -> None:
+        with language_scope(self.acl.language(user_id)):
+            self._process_url(chat_id, message_id, user_id, url)
+
+    def _process_url(
         self, chat_id: int, message_id: int, user_id: int, url: str
     ) -> None:
         if not self.can_process(user_id):
