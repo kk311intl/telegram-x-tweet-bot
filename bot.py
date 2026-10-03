@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.9"
+APP_VERSION = "3.3.10"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -82,7 +82,8 @@ INLINE_MAX_PENDING = max(
     env_int("INLINE_MAX_PENDING", 4, 1, 32),
 )
 MAX_MEDIA_BYTES = env_int("MAX_MEDIA_BYTES", 48 * 1024 * 1024, 1024 * 1024, 50_000_000)
-MAX_VIDEO_BYTES = env_int("MAX_VIDEO_BYTES", 50_000_000, 1024 * 1024, 50_000_000)
+TELEGRAM_VIDEO_MAX_BYTES = 50_000_000
+MAX_VIDEO_BYTES = env_int("MAX_VIDEO_BYTES", TELEGRAM_VIDEO_MAX_BYTES, 1024 * 1024, TELEGRAM_VIDEO_MAX_BYTES)
 MAX_TOTAL_BYTES = env_int(
     "MAX_TOTAL_BYTES", 160 * 1024 * 1024, 1024 * 1024, 500 * 1024 * 1024
 )
@@ -272,6 +273,7 @@ PUBLIC_TEXT = {
         "url_only": "请发送有效的 X/Twitter 单篇推文链接。",
         "inline_apply": "开启机器人申请使用权限",
         "video_oversized": "{count} 个视频超过 Telegram 的 50 MB 上限，已跳过。",
+        "video_limited": "{count} 个视频超过大小限制，已跳过。",
         "images_skipped": "部分图片超过大小限制，已跳过。",
         "media_skipped": "部分媒体无法发送，已跳过。",
         "preview_failed": "媒体预览发送失败，请稍后重试。",
@@ -307,6 +309,7 @@ PUBLIC_TEXT = {
         "url_only": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "inline_apply": "開啟機器人申請使用權限",
         "video_oversized": "{count} 個影片超過 Telegram 的 50 MB 上限，已略過。",
+        "video_limited": "{count} 個影片超過大小限制，已略過。",
         "images_skipped": "部分圖片超過大小限制，已略過。",
         "media_skipped": "部分媒體無法傳送，已略過。",
         "preview_failed": "媒體預覽傳送失敗，請稍後重試。",
@@ -342,6 +345,7 @@ PUBLIC_TEXT = {
         "url_only": "Send a valid single-post X/Twitter URL.",
         "inline_apply": "Open the Bot to request access",
         "video_oversized": "{count} video(s) exceeded Telegram's 50 MB limit and were skipped.",
+        "video_limited": "{count} video(s) exceeded the size limit and were skipped.",
         "images_skipped": "Some images were too large and were skipped.",
         "media_skipped": "Some media could not be sent and were skipped.",
         "preview_failed": "Couldn't send the media preview. Try again later.",
@@ -377,6 +381,7 @@ PUBLIC_TEXT = {
         "url_only": "有効な X/Twitter の単一投稿URLを送信してください。",
         "inline_apply": "Botを開いて利用を申請",
         "video_oversized": "{count} 件の動画が Telegram の 50 MB 上限を超えたため、スキップしました。",
+        "video_limited": "{count} 件の動画がサイズ上限を超えたため、スキップしました。",
         "images_skipped": "一部の画像はサイズが大きすぎるため、スキップしました。",
         "media_skipped": "一部のメディアを送信できなかったため、スキップしました。",
         "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから再試行してください。",
@@ -2032,6 +2037,8 @@ class TelegramAPI:
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
         ]
         if not supported:
+            if paths:
+                self.send_message(chat_id, caption, parse_mode=parse_mode)
             return []
         if len(supported) == 1:
             result = self.send_preview(
@@ -2560,6 +2567,7 @@ def media_caption(
     url: str,
     debug: bool = False,
     method: str = "",
+    limit: int = 1024,
 ) -> str:
     if ui_language() in {"en", "ja"}:
         method = {
@@ -2577,7 +2585,7 @@ def media_caption(
         author_url,
         text,
         url,
-        1024,
+        limit,
         {
             "zh": f"取得方式：{method or '未取得媒體'}",
             "en": f"Method: {method or 'No media'}",
@@ -2607,9 +2615,9 @@ def download_fxtwitter_media(
         for candidate in candidates:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise requests.Timeout("Media download exceeded its time limit")
+                break  # Keep completed files; later items share this deadline.
             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
-                raise OSError("Not enough free space for media download")
+                break
             media_url = trusted_twimg_url(candidate.get("url"))
             if not media_url or media_url in seen_urls:
                 continue
@@ -2772,6 +2780,18 @@ def video_dimensions(path: Path) -> tuple[int, int] | None:
 def download_media(
     url: str, directory: Path, allow_cookies: bool = True
 ) -> tuple[list[Path], str, str, bool]:
+    def run_extractor(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
+                raise OSError("Not enough free space for media download")
+            return run_command(arguments, timeout=240, directory=directory)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            # run_command has stopped the child. Keep completed files, but never
+            # expose exception text that might include credentials or headers.
+            diagnostic = f"Media extractor failed: {type(error).__name__}"
+            LOG.warning(diagnostic)
+            return subprocess.CompletedProcess(arguments, 1, diagnostic)
+
     command = [
         "/opt/x-tweet-telegram-bot/venv/bin/gallery-dl",
         "--ignore-config",
@@ -2796,15 +2816,14 @@ def download_media(
         "-o",
         "downloader.ytdl.format=best[filesize<45M]/best[filesize_approx<45M]/worst",
     ]
-    result = run_command([*command, url], timeout=240, directory=directory)
+    result = run_extractor([*command, url])
     files = media_files(directory)
     method = "gallery-dl（匿名）" if files else ""
     cookie_invalid = False
 
     if not files and allow_cookies and COOKIES_PATH.exists():
-        result = run_command(
+        result = run_extractor(
             [*command, "--cookies", str(COOKIES_PATH), url],
-            timeout=240, directory=directory,
         )
         cookie_invalid = cookies_look_invalid(result.stdout)
         files = media_files(directory)
@@ -2825,15 +2844,14 @@ def download_media(
             "--output",
             str(directory / "%(id)s.%(ext)s"),
         ]
-        result = run_command([*fallback, url], timeout=240, directory=directory)
+        result = run_extractor([*fallback, url])
         files = media_files(directory)
         if files:
             method = "yt-dlp（匿名）"
 
         if not files and allow_cookies and COOKIES_PATH.exists():
-            result = run_command(
+            result = run_extractor(
                 [*fallback, "--cookies", str(COOKIES_PATH), url],
-                timeout=240, directory=directory,
             )
             cookie_invalid = cookie_invalid or cookies_look_invalid(result.stdout)
             files = media_files(directory)
@@ -2897,7 +2915,7 @@ class Bot:
         self.pending_user_searches: set[int] = set()
         self.pending_default_quotas: dict[int, int | None] = {}
         self.inline_usage_lock = threading.Lock()
-        self.inline_usage: dict[tuple[int, str], float] = {}
+        self.inline_usage: dict[tuple[int, str, str], float] = {}
         self.started_at = time.time()
         self.last_disk_cleanup = 0.0
 
@@ -3312,7 +3330,7 @@ class Bot:
 
     def consume_inline_once(self, user_id: int, url: str) -> bool:
         now = time.time()
-        key = (user_id, url)
+        key = (user_id, url, bot_date(now))
         with self.inline_usage_lock:
             self.inline_usage = {
                 item: timestamp
@@ -4602,6 +4620,12 @@ class Bot:
                 if files:
                     method = "FxTwitter 備援"
             files, rejected = trim_files(files)
+            # Size-rejected items already have their own notice. Count only
+            # other missing media, including downloads stopped by the deadline.
+            fallback_skipped_media = fallback_skipped_media or (
+                len(files) + len(rejected) + fallback_oversized_videos
+                < len(fxtwitter_media(fallback_tweet or {}))
+            )
             if not files and not text and not rejected and not fallback_oversized_videos:
                 LOG.warning("Post text and media unavailable after extraction: %s: %s", effective_url, extractor_log)
                 if self.can_process(user_id):
@@ -4611,6 +4635,13 @@ class Bot:
                         message_id,
                     )
                 return
+            previews = [
+                prepare_image(path)
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                else path
+                for path in files
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
+            ]
             caption = media_caption(
                 author,
                 author_url,
@@ -4618,13 +4649,8 @@ class Bot:
                 effective_url,
                 self.acl.debug_mode(user_id),
                 method,
+                limit=1024 if previews else 4096,
             )
-            previews = [
-                prepare_image(path)
-                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-                else path
-                for path in files
-            ]
             if not self.can_process(user_id):
                 return
             if previews:
@@ -4674,7 +4700,7 @@ class Bot:
                     chat_id,
                     public_text(
                         self.acl.language(user_id),
-                        "video_oversized",
+                        "video_oversized" if MAX_VIDEO_BYTES == TELEGRAM_VIDEO_MAX_BYTES else "video_limited",
                         count=oversized_video_count,
                     ),
                 )

@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.9
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.10
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -39,13 +39,13 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | 媒體暫存達到 1 GiB 時暫停接受新下載；不是硬配額。 |
 | `TEMP_RETENTION_HOURS` | `24` | 每小時清理超過此時數且不在使用的媒體暫存；啟動時亦清理。 |
 
-下載器快取隨每次任務的暫存一同清除；直連下載亦檢查剩餘空間與時間，失敗時清除未完成檔案。不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
+下載器快取與未完成檔案隨任務暫存清除；直連下載會檢查剩餘空間與時間。直連或備援失敗時保留已完成的媒體並提示略過，未取得媒體時繼續降級；空間不足則不啟動下載器。不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
 
-其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
+其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
 
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
 
-影片超限提示只在未能取得符合大小限制的影片時顯示；累計媒體上限等其他原因使用一般略過提示，不歸因於 Telegram 的單片限制。
+影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
 
 高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
 
@@ -53,7 +53,7 @@ Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁�
 
 「預設額度」接受 1–100000，確認後只更新沿用舊預設的正常普通用戶，新用戶採用新值。自訂額度、初始化、待審、封鎖和管理員不變，當日用量不重置。設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。
 
-`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。
+`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
 
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
@@ -94,13 +94,13 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | メディア一時ファイルが 1 GiB に達したら新規ダウンロードを停止します。ハード上限ではありません。 |
 | `TEMP_RETENTION_HOURS` | `24` | この時間を超えた未使用の一時ファイルを起動時と1時間ごとに削除します。 |
 
-ダウンローダーのキャッシュは各処理の一時ファイルとともに削除します。直リンクの取得中も空き容量と経過時間を確認し、失敗時は未完了ファイルを削除します。ACL、資格情報、破損時の復旧ファイルは自動削除しません。上記の容量設定は変更でき、有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
+キャッシュと未完了ファイルは処理終了時に一時ファイルとともに削除します。直リンクの取得中も空き容量と経過時間を確認します。直リンク・代替ダウンローダーの失敗時は取得済みのメディアを送信し、不足分を通知します。取得できなければ別の方法を試しますが、空き容量不足ならダウンローダーを起動しません。ACL、資格情報、破損時の復旧ファイルは自動削除しません。容量設定の有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
 
-`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信し、切り替え前の時刻に設定した場合は前の利用日を集計します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
+`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信し、切り替え前の時刻に設定した場合は前の利用日を集計します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
-動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。メディア合計上限など、ほかの理由は一般的なスキップ通知とし、Telegram の単一動画制限とは区別します。
+動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
 
 詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
@@ -108,7 +108,7 @@ Telegram のコマンドメニューと紹介文は端末言語に対応しま�
 
 「標準上限」は 1～100000 を指定し、確認すると旧標準値を使う承認済み一般ユーザーだけを更新します。新規ユーザーには新しい値を使います。独自の上限、初期状態、審査待ち、ブロック中のユーザー、管理者と当日の使用量は変更しません。設定は ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。
 
-`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。
+`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
 
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
@@ -149,13 +149,13 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | Stop accepting downloads when media temporary files reach 1 GiB; not a hard quota. |
 | `TEMP_RETENTION_HOURS` | `24` | Remove unused media temporary files older than this at startup and hourly. |
 
-Downloader caches are removed with each job's temporary files. Direct downloads also check free space and elapsed time, removing partial files on failure. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. These disk settings are configurable; see `bot.py` for bounds. This repository does not include cross-server backups.
+Caches and incomplete files are removed with each job's temporary files. Direct downloads check free space and elapsed time. Direct or extractor failures retain completed media and report missing items; when none were obtained, another method is tried. Extractors are not started when disk space is low. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. See `bot.py` for configurable disk bounds. This repository does not include cross-server backups.
 
-You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; if its time precedes the reset, it summarizes the previous usage day. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
+You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_VIDEO_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; if its time precedes the reset, it summarizes the previous usage day. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
-Video-size notices appear only when no suitable smaller video was recovered. Other reasons, such as the total media cap, use a general skip notice rather than blaming Telegram's per-video limit.
+Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
 
 Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
@@ -163,7 +163,7 @@ Telegram's command menu and short/full descriptions follow the client's language
 
 Default limit accepts 1–100000. Confirmation updates only approved regular users matching the old default; new users use the new value. Custom quotas, initialized, pending, blocked and administrator accounts, and today's usage stay unchanged. The value is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`.
 
-`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries.
+`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries. Inline requests for the same URL are charged once per five-minute window, but are charged again after the configured daily reset.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 

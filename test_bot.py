@@ -125,7 +125,12 @@ class ReliabilityTests(unittest.TestCase):
                      patch.object(bot, "download_media", return_value=([], "", "", False)) as download:
                     service.process_url(200, 1, 200, "https://x.com/example/status/123")
                     download.assert_called_once()
-                    self.assertIn("example", service.api.send_message.call_args.args[1])
+                    messages = [call.args[1] for call in service.api.send_message.call_args_list]
+                    self.assertIn("example", messages[0])
+                    if bot.fxtwitter_media({"media": media}):
+                        self.assertEqual(messages[1:], [bot.public_text("zh", "media_skipped")])
+                    else:
+                        self.assertEqual(len(messages), 1)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
 
@@ -134,8 +139,8 @@ class ReliabilityTests(unittest.TestCase):
             # Source videos, fallback videos, fallback photos, expected notice.
             (1, [5], [], None),
             (2, [5], [], "media_skipped"),
-            (1, [], [5], "video_oversized"),
-            (1, [11], [], "video_oversized"),
+            (1, [], [5], "video_limited"),
+            (1, [11], [], "video_limited"),
         ]
         for language in bot.PUBLIC_TEXT:
             for sources, video_sizes, photo_sizes, notice in cases:
@@ -2950,6 +2955,253 @@ class TelegramConfigurationTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_each_extractor_stage_preserves_completed_files_on_failure(self):
+        methods = ["gallery-dl（匿名）", "gallery-dl（Cookies）", "yt-dlp（匿名）", "yt-dlp（Cookies）"]
+        errors = [subprocess.TimeoutExpired("extractor", 240), OSError("interrupted"), ValueError("directory limit")]
+        for stage, method in enumerate(methods):
+            for error in errors:
+                with self.subTest(stage=stage, error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    cookies = directory / "cookies.txt"
+                    cookies.write_text("example", encoding="utf-8")
+                    complete = directory / "complete.jpg"
+                    attempts = []
+                    def extract(command, timeout, directory):
+                        attempts.append(command)
+                        if len(attempts) == stage + 1:
+                            complete.write_bytes(b"complete")
+                            (directory / "incomplete.mp4.part").write_bytes(b"partial")
+                            raise error
+                        return subprocess.CompletedProcess(command, 0, "no media")
+                    with patch.object(bot, "COOKIES_PATH", cookies), \
+                         patch.object(bot, "run_command", side_effect=extract), \
+                         patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+                         self.assertLogs(bot.LOG, level="WARNING"):
+                        files, log, actual_method, invalid = bot.download_media("https://x.com/example/status/123", directory)
+                    self.assertEqual(files, [complete])
+                    self.assertEqual(actual_method, method)
+                    self.assertEqual(len(attempts), stage + 1)
+                    self.assertIn(type(error).__name__, log)
+                    self.assertFalse(invalid)
+
+    def test_failed_extractor_falls_back_or_still_delivers_fetched_text(self):
+        for recovered in (False, True):
+            with self.subTest(recovered=recovered), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                tweet = {"id": "123", "text": "already fetched text", "media": {"all": [
+                    {"type": "photo", "url": "https://pbs.twimg.com/example.jpg"}
+                ]}}
+                service = bot.Bot(MagicMock(), bot.ACLStore(directory / "acl.json", 100))
+                attempts = []
+                def extract(command, timeout, directory):
+                    attempts.append(command)
+                    if recovered and len(attempts) == 2:
+                        (directory / "complete.jpg").write_bytes(b"complete")
+                        return subprocess.CompletedProcess(command, 0, "ok")
+                    raise subprocess.TimeoutExpired(command, timeout)
+                with patch.object(bot, "TMP_DIR", directory), \
+                     patch.object(bot, "COOKIES_PATH", directory / "missing-cookies.txt"), \
+                     patch.object(bot, "media_disk_available", return_value=True), \
+                     patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+                     patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                     patch.object(bot, "download_fxtwitter_media", return_value=([], "", 0)), \
+                     patch.object(bot, "run_command", side_effect=extract), \
+                     patch.object(bot, "prepare_image", side_effect=lambda path: path), \
+                     self.assertLogs(bot.LOG, level="WARNING"):
+                    service.process_url(100, 1, 100, "https://x.com/example/status/123")
+                self.assertEqual(len(attempts), 2)
+                if recovered:
+                    self.assertIn("already fetched text", service.api.send_previews.call_args.args[2])
+                    service.api.send_message.assert_not_called()
+                else:
+                    self.assertIn("already fetched text", service.api.send_message.call_args_list[0].args[1])
+                    self.assertEqual(service.api.send_message.call_args.args[1], bot.public_text("zh", "media_skipped"))
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_low_disk_space_does_not_start_extractor_retries(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "COOKIES_PATH", Path(temporary) / "missing"), \
+             patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=0)), \
+             patch.object(bot, "run_command") as runner, self.assertLogs(bot.LOG, level="WARNING"):
+            files, _, _, _ = bot.download_media("https://x.com/example/status/123", Path(temporary))
+            self.assertEqual(files, [])
+            runner.assert_not_called()
+
+    def test_text_only_and_document_only_posts_use_message_not_caption_limit(self):
+        for language in bot.PUBLIC_TEXT:
+            for suffix in (None, ".webm", ".jpg"):
+                with self.subTest(language=language, suffix=suffix), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    files = []
+                    if suffix:
+                        path = directory / ("media" + suffix)
+                        path.write_bytes(b"media")
+                        files.append(path)
+                    text = "a" * 2990 + "END_MARKER"
+                    tweet = {"id": "123", "text": text, "author": {"name": "Example", "screen_name": "example"}}
+                    store = bot.ACLStore(directory / "acl.json", 100)
+                    store.set_language(100, language)
+                    store.toggle_debug_mode(100)
+                    api = bot.TelegramAPI("YOUR_API_TOKEN")
+                    api.call = MagicMock(return_value={"message_id": 1})
+                    service = bot.Bot(api, store)
+                    with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "media_disk_available", return_value=True), \
+                         patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                         patch.object(bot, "download_media", return_value=(files, "", "gallery-dl（匿名）", False)), \
+                         patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                        service.process_url(100, 1, 100, "https://x.com/example/status/123")
+                    calls = [call for call in api.call.call_args_list if call.args[0] in {"sendMessage", "sendPhoto"}]
+                    self.assertEqual(len(calls), 1)
+                    method, data = calls[0].args[:2]
+                    output = data["caption"] if method == "sendPhoto" else data["text"]
+                    self.assertEqual("END_MARKER" in output, suffix != ".jpg")
+                    self.assertIn('<a href="https://x.com/example">Example</a>:', output)
+                    self.assertIn("https://x.com/example/status/123", output)
+                    self.assertEqual(data["parse_mode"], "HTML")
+                    plain = bot.html.unescape(bot.re.sub("<[^>]*>", "", output))
+                    self.assertLessEqual(len(plain), 1024 if suffix == ".jpg" else 4096)
+                    self.assertIn("gallery-dl", output)
+                    service.stop()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_custom_video_limit_notice_does_not_blame_telegram(self):
+        for language in bot.PUBLIC_TEXT:
+            for limit in (10_000_000, 50_000_000):
+                for direct in (False, True):
+                    with self.subTest(language=language, limit=limit, direct=direct), tempfile.TemporaryDirectory() as temporary:
+                        directory = Path(temporary)
+                        video = directory / "video.mp4"
+                        video.write_bytes(b"video")
+                        tweet = {"id": "123", "text": "example", "media": {"all": [
+                            {"type": "video", "url": "https://video.twimg.com/example.mp4"}
+                        ]}}
+                        store = bot.ACLStore(directory / "acl.json", 100)
+                        store.set_language(100, language)
+                        service = bot.Bot(MagicMock(), store)
+                        stat = Path.stat
+                        def oversized(path, *args, **kwargs):
+                            return MagicMock(st_size=limit + 1) if path == video else stat(path, *args, **kwargs)
+                        with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "media_disk_available", return_value=True), \
+                             patch.object(bot, "MAX_VIDEO_BYTES", limit), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                             patch.object(bot, "download_fxtwitter_media", return_value=([], "", 1 if direct else 0)), \
+                             patch.object(bot, "download_media", return_value=([] if direct else [video], "", "", False)), \
+                             patch.object(Path, "stat", oversized):
+                            service.process_url(100, 1, 100, "https://x.com/example/status/123")
+                        key = "video_oversized" if limit == 50_000_000 else "video_limited"
+                        self.assertEqual(service.api.send_message.call_args.args[1], bot.public_text(language, key, count=1))
+                        service.stop()
+                        service.inline_executor.shutdown(wait=True)
+
+    def test_direct_media_keeps_completed_files_when_resources_run_out(self):
+        for exhausted in ("between_items", "during_item", "disk"):
+            with self.subTest(exhausted=exhausted), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                tweet = {"media": {"all": [
+                    {"type": "photo", "url": f"https://pbs.twimg.com/{index}.jpg"}
+                    for index in range(3)
+                ]}}
+                clock = MagicMock(return_value=0)
+                disk = MagicMock(return_value=MagicMock(free=10**12))
+                first = MagicMock(headers={})
+                first.__enter__.return_value = first
+                def first_chunks(*args, **kwargs):
+                    if first_chunks.done:
+                        if exhausted == "between_items":
+                            clock.return_value = 241
+                        elif exhausted == "disk":
+                            disk.return_value.free = 0
+                        return b""
+                    first_chunks.done = True
+                    return b"complete"
+                first_chunks.done = False
+                first.raw.read1.side_effect = first_chunks
+                second = MagicMock(headers={})
+                second.__enter__.return_value = second
+                def second_chunks(*args, **kwargs):
+                    clock.return_value = 241
+                    return b"partial"
+                second.raw.read1.side_effect = second_chunks
+                with patch.object(bot, "trusted_twimg_response", side_effect=[first, second]) as download, \
+                     patch.object(bot.time, "monotonic", clock), \
+                     patch.object(bot.shutil, "disk_usage", disk), patch.object(bot.LOG, "warning"):
+                    files, _, oversized = bot.download_fxtwitter_media(tweet, directory)
+                self.assertEqual(files, [directory / "fxtwitter_1.jpg"])
+                self.assertEqual(files[0].read_bytes(), b"complete")
+                self.assertEqual(list(directory.iterdir()), files)
+                self.assertEqual(oversized, 0)
+                self.assertEqual(download.call_count, 2 if exhausted == "during_item" else 1)
+
+    def test_partial_direct_failure_delivers_success_and_localized_skip_notice(self):
+        for language in bot.PUBLIC_TEXT:
+            for failure in ("connection", "deadline"):
+                with self.subTest(language=language, failure=failure), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    store = bot.ACLStore(directory / "acl.json", 100)
+                    store.add(200)
+                    store.set_language(200, language)
+                    service = bot.Bot(MagicMock(), store)
+                    tweet = {"id": "123", "text": "example text", "media": {"all": [
+                        {"type": "photo", "url": f"https://pbs.twimg.com/{index}.jpg"}
+                        for index in range(2)
+                    ]}}
+                    clock = MagicMock(return_value=0)
+                    response = MagicMock(headers={})
+                    response.__enter__.return_value = response
+                    def chunks(*args, **kwargs):
+                        if chunks.done:
+                            if failure == "deadline":
+                                clock.return_value = 241
+                            return b""
+                        chunks.done = True
+                        return b"image"
+                    chunks.done = False
+                    response.raw.read1.side_effect = chunks
+                    with patch.object(bot, "TMP_DIR", directory), \
+                         patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                         patch.object(bot, "trusted_twimg_response", side_effect=[response, bot.requests.ConnectionError("failed")]), \
+                         patch.object(bot.time, "monotonic", clock), \
+                         patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+                         patch.object(bot, "prepare_image", side_effect=lambda path: path), \
+                         patch.object(bot, "download_media") as fallback, patch.object(bot.LOG, "warning"):
+                        service.process_url(200, 1, 200, "https://x.com/example/status/123")
+                    fallback.assert_not_called()
+                    service.api.send_previews.assert_called_once()
+                    self.assertEqual(len(service.api.send_previews.call_args.args[1]), 1)
+                    self.assertIn("example text", service.api.send_previews.call_args.args[2])
+                    service.api.send_documents.assert_called_once()
+                    service.api.send_message.assert_called_once_with(200, bot.public_text(language, "media_skipped"))
+                    self.assertFalse(list(directory.glob("tweet-*")))
+                    service.stop()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_missing_media_notice_does_not_duplicate_known_rejection(self):
+        for language in bot.PUBLIC_TEXT:
+            for missing in (False, True):
+                with self.subTest(language=language, missing=missing), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    image = directory / "image.jpg"
+                    image.write_bytes(b"image")
+                    tweet = {"id": "123", "text": "example", "media": {"all": [
+                        {"type": "photo", "url": "https://pbs.twimg.com/image.jpg"},
+                        {"type": "video", "url": "https://video.twimg.com/large.mp4"},
+                    ] + ([{"type": "photo", "url": "https://pbs.twimg.com/missing.jpg"}] if missing else [])}}
+                    store = bot.ACLStore(directory / "acl.json", 100)
+                    store.set_language(100, language)
+                    service = bot.Bot(MagicMock(), store)
+                    with patch.object(bot, "TMP_DIR", directory), \
+                         patch.object(bot, "media_disk_available", return_value=True), \
+                         patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                         patch.object(bot, "download_fxtwitter_media", return_value=([image], "", 1)), \
+                         patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                        service.process_url(100, 1, 100, "https://x.com/example/status/123")
+                    messages = [call.args[1] for call in service.api.send_message.call_args_list]
+                    expected = [bot.public_text(language, "video_oversized", count=1)]
+                    if missing:
+                        expected.append(bot.public_text(language, "media_skipped"))
+                    self.assertEqual(messages, expected)
+                    service.stop()
+                    service.inline_executor.shutdown(wait=True)
+
     def test_extractor_rename_race_cannot_bypass_deadline(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(bot.subprocess, "Popen") as start, patch.object(bot.time, "monotonic", side_effect=[0, 2]), patch.object(Path, "rglob", side_effect=FileNotFoundError), patch.object(bot.os, "killpg", create=True) as kill_group:
             process = start.return_value
@@ -3435,11 +3687,50 @@ class MediaTests(unittest.TestCase):
                 bot, "download_fxtwitter_media", return_value=([media], "", 0)
             ):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
-                api = MagicMock()
+                api = bot.TelegramAPI("YOUR_API_TOKEN")
+                api.call = MagicMock()
                 service = bot.Bot(api, store)
                 service.process_url(100, 10, 100, "https://x.com/author/status/123")
 
-            api.send_documents.assert_called_once_with(100, [media])
+            methods = [call.args[0] for call in api.call.call_args_list]
+            self.assertEqual(methods, ["sendChatAction", "sendMessage", "sendDocument"])
+            message = api.call.call_args_list[1].args[1]
+            self.assertIn('<a href="https://x.com/author">Author</a>:\nwebm', message["text"])
+            self.assertIn("https://x.com/author/status/123", message["text"])
+            self.assertEqual(message["parse_mode"], "HTML")
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_mixed_preview_and_document_media_does_not_duplicate_caption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            photo = directory / "photo.jpg"
+            document = directory / "video.webm"
+            photo.write_bytes(b"photo")
+            document.write_bytes(b"video")
+            api = bot.TelegramAPI("YOUR_API_TOKEN")
+            api.call = MagicMock(return_value={"message_id": 1})
+            api.send_previews(100, [document, photo], "example text", parse_mode="HTML")
+            api.call.assert_called_once()
+            self.assertEqual(api.call.call_args.args[0], "sendPhoto")
+            self.assertEqual(api.call.call_args.args[1]["caption"], "example text")
+
+    def test_document_only_previews_keep_caption_in_every_language(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                path = Path(temporary) / "video.webm"
+                path.write_bytes(b"video")
+                caption = bot.media_caption("Example", "https://x.com/example", "example text", "https://x.com/example/status/123")
+                api = bot.TelegramAPI("YOUR_API_TOKEN")
+                api.call = MagicMock()
+                self.assertEqual(api.send_previews(100, [path, path], caption, parse_mode="HTML"), [])
+                api.call.assert_called_once()
+                self.assertEqual(api.call.call_args.args[0], "sendMessage")
+                self.assertEqual(api.call.call_args.args[1]["text"], caption)
+                self.assertEqual(api.call.call_args.args[1]["parse_mode"], "HTML")
+                api.call.reset_mock()
+                self.assertEqual(api.send_previews(100, [], caption, parse_mode="HTML"), [])
+                api.call.assert_not_called()
 
     def test_original_file_failure_reports_localized_partial_success(self):
         tweet = {
@@ -3716,6 +4007,23 @@ class MediaTests(unittest.TestCase):
 
 
 class InlineQueryTests(unittest.TestCase):
+    def test_inline_deduplication_uses_configured_quota_day(self):
+        for zone, hour in ((bot.timezone.utc, 0), (bot.timezone(bot.timedelta(hours=9)), 6)):
+            with self.subTest(zone=zone, hour=hour), tempfile.TemporaryDirectory() as temporary:
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, 1)
+                service = bot.Bot(MagicMock(), store)
+                boundary = datetime(2026, 10, 4, hour, tzinfo=zone).timestamp()
+                with patch.object(bot, "BOT_TIMEZONE", zone), patch.object(bot, "DAILY_RESET_HOUR", hour):
+                    for now in (boundary - 60, boundary - 50, boundary + 60, boundary + 70):
+                        with patch.object(bot.time, "time", return_value=now):
+                            self.assertTrue(service.consume_inline_once(200, "https://x.com/example/status/123"))
+                            self.assertEqual(store.usage_summary(bot.bot_date()), (1, 1))
+                    with patch.object(bot.time, "time", return_value=boundary + 80):
+                        self.assertFalse(service.consume_inline_once(200, "https://x.com/example/status/456"))
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
     def test_inline_api_enables_short_personal_result_caching(self):
         api = bot.TelegramAPI("12345678:test-token-value-for-unit-tests")
         api.call = MagicMock()
