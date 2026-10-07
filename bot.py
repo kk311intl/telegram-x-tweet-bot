@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.10"
+APP_VERSION = "3.3.11"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -97,7 +97,7 @@ DEFAULT_DAILY_LIMIT = env_int("DEFAULT_DAILY_LIMIT", 50, 1, MAX_DAILY_LIMIT)
 MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
-USER_LIST_NAME_WIDTH = 10
+LANGUAGE_CODES = {"zh-cn": "CNS", "zh": "CNT", "ja": "JA", "en": "EN"}
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
@@ -585,6 +585,7 @@ class ACLStore:
             "users": {},
             "pending_applications": {},
             "last_daily_report_date": "",
+            "daily_usage": {},
             "external_access_enabled": True,
             "ordinary_user_cookies_enabled": True,
             "auto_approve_enabled": False,
@@ -640,11 +641,23 @@ class ACLStore:
                         "auto_approve_enabled", "debug_mode"):
             if setting in raw and type(raw[setting]) is not bool:
                 raise ValueError(f"invalid ACL boolean: {setting}")
+        daily_usage = raw.get("daily_usage", {})
+        if not isinstance(daily_usage, dict) or len(daily_usage) > 3:
+            raise ValueError("invalid daily usage history")
+        for day, counts in daily_usage.items():
+            if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                raise ValueError("invalid daily usage date")
+            datetime.fromisoformat(day)
+            if (not isinstance(counts, dict) or set(counts) != {"active", "total"}
+                    or any(type(counts[key]) is not int or counts[key] < 0 for key in counts)
+                    or counts["active"] > counts["total"]):
+                raise ValueError("invalid daily usage counts")
         data: dict[str, Any] = {
             "owner_id": owner_id,
             "users": users,
             "pending_applications": pending,
             "last_daily_report_date": str(raw.get("last_daily_report_date") or ""),
+            "daily_usage": daily_usage,
             "external_access_enabled": bool(raw.get("external_access_enabled", True)),
             "ordinary_user_cookies_enabled": bool(
                 raw.get("ordinary_user_cookies_enabled", True)
@@ -1147,21 +1160,35 @@ class ACLStore:
     def mark_daily_report(self, now: float | None = None) -> None:
         with self.lock:
             current = time.time() if now is None else now
+            self._remember_usage_day(bot_date(current))
             self.data["last_daily_report_date"] = datetime.fromtimestamp(
                 current, BOT_TIMEZONE
             ).strftime("%Y-%m-%d")
             self._save()
 
     def usage_summary(self, usage_date: str) -> tuple[int, int]:
-        active = total = 0
         with self.lock:
-            for record in self.data["users"].values():
-                count = 0
-                if record.get("usage_date") == usage_date:
-                    count = int(record.get("usage_count", 0) or 0)
-                active += int(count > 0)
-                total += count
+            return self._usage_summary(usage_date)
+
+    def _usage_summary(self, usage_date: str) -> tuple[int, int]:
+        counts = self.data["daily_usage"].get(usage_date)
+        if counts is not None:
+            return counts["active"], counts["total"]
+        active = total = 0
+        for record in self.data["users"].values():
+            count = int(record.get("usage_count", 0) or 0) if record.get("usage_date") == usage_date else 0
+            active += int(count > 0)
+            total += count
         return active, total
+
+    def _remember_usage_day(self, usage_date: str) -> dict[str, int]:
+        # Caller holds self.lock. Keep today and two completed quota days only.
+        days = {(datetime.fromisoformat(usage_date) - timedelta(days=offset)).strftime("%Y-%m-%d")
+                for offset in range(3)}
+        active, total = self._usage_summary(usage_date)
+        self.data["daily_usage"].setdefault(usage_date, {"active": active, "total": total})
+        self.data["daily_usage"] = {day: counts for day, counts in self.data["daily_usage"].items() if day in days}
+        return self.data["daily_usage"][usage_date]
 
     def set_quota(self, user_id: int, quota: int | None) -> None:
         if user_id == self.owner_id:
@@ -1192,12 +1219,13 @@ class ACLStore:
                 return False, 0, limit
             if job is not None and f"{job[0]}:{job[1]}" in self.data["pending_jobs"]:
                 return False, int(record.get("usage_count", 0)), limit
-            if record.get("usage_date") != usage_date:
-                record["usage_date"] = usage_date
-                record["usage_count"] = 0
-            used = int(record.get("usage_count", 0) or 0)
+            used = int(record.get("usage_count", 0) or 0) if record.get("usage_date") == usage_date else 0
             if quota is not None and quota > 0 and used >= quota:
                 return False, used, limit
+            counts = self._remember_usage_day(usage_date)
+            counts["active"] += int(used == 0)
+            counts["total"] += 1
+            record["usage_date"] = usage_date
             used += 1
             record["usage_count"] = used
             if job is not None:
@@ -3461,6 +3489,12 @@ class Bot:
             return
         now = time.time()
         report_date = bot_date(now)
+        if DAILY_REPORT_HOUR == DAILY_RESET_HOUR:
+            report_date = (datetime.fromisoformat(report_date) - timedelta(days=1)).strftime("%Y-%m-%d")
+            if report_date not in self.acl.data["daily_usage"]:
+                # Migration cannot reconstruct counters overwritten before this version.
+                self.acl.mark_daily_report(now)
+                return
         active, total = self.acl.usage_summary(report_date)
         text = {
             "zh": f"每日使用簡報（{report_date}）\n\n活躍用戶：{active}\n用量：{total}\n待審批：{len(records)}",
@@ -3490,15 +3524,15 @@ class Bot:
         }[ui_language()]
         lines = [
             title,
-            {"zh": "ID｜狀態｜額度｜今日用量｜名稱", "en": "ID | Status | Limit | Usage today | Name", "ja": "ID｜状態｜上限｜本日の使用量｜名前", "zh-cn": ("ID｜状态｜额度｜今日用量｜名称")}[ui_language()],
+            {"zh": "ID｜狀態｜已用/總量｜語言", "en": "ID | Status | Used/Total | Language", "ja": "ID｜状態｜使用量/上限｜言語", "zh-cn": "ID｜状态｜已用/总量｜语言"}[ui_language()],
         ]
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             user_id = int(record["user_id"])
             quota = record.get("quota")
             if user_id == self.acl.owner_id:
-                status, quota_text = admin_text("owner"), admin_text("unlimited")
+                status, quota_text = admin_text("owner"), "∞"
             elif quota is None:
-                status, quota_text = admin_text("admin"), admin_text("unlimited")
+                status, quota_text = admin_text("admin"), "∞"
             elif quota == -1:
                 status, quota_text = admin_text("blocked"), "-1"
             elif record.get("pending"):
@@ -3507,25 +3541,10 @@ class Bot:
                 status, quota_text = admin_text("initialized"), "0"
             else:
                 status, quota_text = admin_text("ordinary"), str(quota)
-            name = user_name(record)
-            if name != admin_text("not_named"):
-                width = 0
-                for index, character in enumerate(name):
-                    width += 1 if character.isascii() and (
-                        character.isalnum() or character == " "
-                    ) else 2
-                    if width > USER_LIST_NAME_WIDTH:
-                        name = name[:index] + "…"
-                        break
-            name = html.escape(name)
-            username = telegram_username(record)
-            name_text = (
-                f'<a href="https://t.me/{username}">{name}</a>'
-                if username else name
-            )
+            language_code = LANGUAGE_CODES[self.acl.language(user_id)]
             usage = int(record.get("usage_count", 0) or 0)
             lines.append(
-                f"<code>{user_id}</code>｜{status}｜{quota_text}｜{usage}｜{name_text}"
+                f"<code>{user_id}</code>｜{status}｜{usage}/{quota_text}｜{language_code}"
             )
         return "\n".join(lines), users_page_keyboard(page, len(records)), page
 
@@ -3586,11 +3605,18 @@ class Bot:
             or self.target_management_error(actor_id, target) is None
         )
         used = int(record.get("usage_count", 0) or 0)
+        username = telegram_username(record)
+        label = html.escape(user_name(record))
+        if username:
+            label += f' (<a href="https://t.me/{username}">@{username}</a>)'
+        else:
+            label = html.escape(user_label(record))
+        language_code = LANGUAGE_CODES[self.acl.language(target)]
         summary = {
-            "zh": f"{user_label(record)}\nUser ID：{target}\n狀態：{status}\n每日額度：{quota_text}\n今日用量：{used} 次",
-            "en": f"{user_label(record)}\nUser ID: {target}\nStatus: {status}\nDaily limit: {quota_text}\nUsage today: {used}",
-            "ja": f"{user_label(record)}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の使用量：{used} 回",
-            "zh-cn": (f"{user_label(record)}\nUser ID：{target}\n状态：{status}\n每日额度：{quota_text}\n今日用量：{used} 次"),
+            "zh": f"{label}\nUser ID：{target}\n狀態：{status}\n每日額度：{quota_text}\n今日用量：{used} 次\n語言：{language_code}",
+            "en": f"{label}\nUser ID: {target}\nStatus: {status}\nDaily limit: {quota_text}\nUsage today: {used}\nLanguage: {language_code}",
+            "ja": f"{label}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の使用量：{used} 回\n言語：{language_code}",
+            "zh-cn": f"{label}\nUser ID：{target}\n状态：{status}\n每日额度：{quota_text}\n今日用量：{used} 次\n语言：{language_code}",
         }[ui_language()]
         return (
             summary,
@@ -3621,7 +3647,7 @@ class Bot:
             )
             return
         text, keyboard = result
-        self.api.send_message(chat_id, text, message_id, keyboard)
+        self.api.send_message(chat_id, text, message_id, keyboard, parse_mode="HTML")
 
     def system_status_text(self, viewer_id: int) -> str:
         with language_scope(self.acl.language(viewer_id)):
@@ -3998,7 +4024,7 @@ class Bot:
             result = self.user_search_result(target, user_id)
             if result:
                 result_text, keyboard = result
-                self.api.edit_message(chat_id, message_id, result_text, keyboard)
+                self.api.edit_message(chat_id, message_id, result_text, keyboard, parse_mode="HTML")
             return
         if action in {"confirmquota", "cancelquota"}:
             if action == "cancelquota":
@@ -4031,7 +4057,7 @@ class Bot:
             result = self.user_search_result(target, user_id)
             if result:
                 result_text, keyboard = result
-                self.api.edit_message(chat_id, message_id, result_text, keyboard)
+                self.api.edit_message(chat_id, message_id, result_text, keyboard, parse_mode="HTML")
             return
         if action == "findresult":
             if not is_telegram_user_id(target):
@@ -4044,7 +4070,7 @@ class Bot:
                 )
             else:
                 text, keyboard = result
-                self.api.edit_message(chat_id, message_id, text, keyboard)
+                self.api.edit_message(chat_id, message_id, text, keyboard, parse_mode="HTML")
             self.api.answer_callback(callback_id, "")
             return
         if action == "statusrefresh":
@@ -4233,7 +4259,7 @@ class Bot:
             result = self.user_search_result(target, user_id)
             if message_id and result:
                 text, keyboard = result
-                self.api.edit_message(chat_id, message_id, text, keyboard)
+                self.api.edit_message(chat_id, message_id, text, keyboard, parse_mode="HTML")
         else:
             self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
 

@@ -1485,6 +1485,100 @@ class ACLTests(unittest.TestCase):
             self.assertIsNone(api.send_message.call_args.kwargs["reply_markup"])
             service.stop()
 
+    def test_midnight_report_keeps_completed_day_after_new_usage_and_restart(self):
+        boundary = datetime(2026, 10, 7, tzinfo=bot.timezone.utc).timestamp()
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, \
+                 patch.object(bot, "BOT_TIMEZONE", bot.timezone.utc), \
+                 patch.object(bot, "DAILY_RESET_HOUR", 0), patch.object(bot, "DAILY_REPORT_HOUR", 0):
+                path = Path(temporary) / "acl.json"
+                store = bot.ACLStore(path, 100)
+                store.set_language(100, language)
+                store.set_quota(200, 100)
+                for _ in range(8):
+                    store.consume(200, now=boundary - 1)
+                store.consume(200, now=boundary + 1)
+                reloaded = bot.ACLStore(path, 100)
+                self.assertEqual(reloaded.usage_summary("2026-10-06"), (1, 8))
+                self.assertEqual(reloaded.usage_summary("2026-10-07"), (1, 1))
+                api = MagicMock()
+                service = bot.Bot(api, reloaded)
+                with patch.object(bot.time, "time", return_value=boundary + 30):
+                    service.maybe_send_daily_report()
+                    service.maybe_send_daily_report()
+                api.send_message.assert_called_once()
+                text = api.send_message.call_args.args[1]
+                self.assertIn("2026-10-06", text.splitlines()[0])
+                self.assertIn({"zh": "用量：8", "zh-cn": "用量：8", "en": "Usage: 8", "ja": "使用量：8"}[language], text)
+                self.assertEqual(reloaded.quota(200), 100)
+                self.assertEqual(reloaded.data["users"]["200"]["usage_count"], 1)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_report_migration_skips_incomplete_past_day_and_keeps_empty_days(self):
+        boundary = datetime(2026, 10, 7, tzinfo=bot.timezone.utc).timestamp()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "BOT_TIMEZONE", bot.timezone.utc), \
+             patch.object(bot, "DAILY_RESET_HOUR", 0), patch.object(bot, "DAILY_REPORT_HOUR", 0):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, 100)
+            for _ in range(4):
+                store.consume(200, now=boundary + 1)
+            store.data["daily_usage"] = {}  # Old versions did not retain per-day totals.
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            with patch.object(bot.time, "time", return_value=boundary + 30):
+                service.maybe_send_daily_report()
+            api.send_message.assert_not_called()
+            self.assertEqual(store.usage_summary("2026-10-07"), (1, 4))
+            with patch.object(bot.time, "time", return_value=boundary + 86430):
+                service.maybe_send_daily_report()
+            self.assertIn("2026-10-07", api.send_message.call_args.args[1])
+            self.assertIn("用量：4", api.send_message.call_args.args[1])
+            with patch.object(bot.time, "time", return_value=boundary + 2 * 86400 + 30):
+                service.maybe_send_daily_report()
+            self.assertIn("2026-10-08", api.send_message.call_args.args[1])
+            self.assertIn("用量：0", api.send_message.call_args.args[1])
+            self.assertIsNone(api.send_message.call_args.kwargs["reply_markup"])
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_daily_usage_history_is_bounded_and_export_does_not_include_it(self):
+        first_day = datetime(2026, 10, 1, tzinfo=bot.timezone.utc).timestamp()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "BOT_TIMEZONE", bot.timezone.utc), patch.object(bot, "DAILY_RESET_HOUR", 0):
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            for offset in range(10):
+                store.consume(100, now=first_day + offset * 86400)
+            self.assertEqual(set(store.data["daily_usage"]), {"2026-10-08", "2026-10-09", "2026-10-10"})
+            self.assertNotIn("daily_usage", store.export_access())
+            self.assertEqual(bot.ACLStore(path, 100).usage_summary("2026-10-09"), (1, 1))
+
+    def test_daily_usage_history_rejects_invalid_dates_counts_and_unbounded_entries(self):
+        invalid = [[], {"invalid": {"active": 0, "total": 0}}, {"2026-02-30": {"active": 0, "total": 0}},
+                   {"2026-10-07": {"active": True, "total": 1}}, {"2026-10-07": {"active": 2, "total": 1}},
+                   {"2026-10-07": {"active": 0, "total": -1}},
+                   {f"2026-10-0{day}": {"active": 0, "total": 0} for day in range(1, 5)}]
+        for history in invalid:
+            with self.subTest(history=history), self.assertRaises(ValueError):
+                bot.ACLStore.__new__(bot.ACLStore)._apply_state({"daily_usage": history}, 0)
+
+    def test_report_at_custom_reset_hour_uses_completed_quota_day(self):
+        zone = bot.timezone(bot.timedelta(hours=9))
+        boundary = datetime(2026, 10, 7, 6, tzinfo=zone).timestamp()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "BOT_TIMEZONE", zone), \
+             patch.object(bot, "DAILY_RESET_HOUR", 6), patch.object(bot, "DAILY_REPORT_HOUR", 6):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.consume(100, now=boundary - 1)
+            store.consume(100, now=boundary + 1)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            with patch.object(bot.time, "time", return_value=boundary + 30):
+                service.maybe_send_daily_report()
+            self.assertIn("2026-10-06", api.send_message.call_args.args[1])
+            self.assertEqual(store.usage_summary("2026-10-07"), (1, 1))
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
     def test_daily_report_title_has_date_without_timezone_in_all_languages(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary:
@@ -1738,10 +1832,13 @@ class MenuTests(unittest.TestCase):
                 status = service.system_status_text(100)
                 page = service.users_page(store.records(), 0)[0]
                 card = service.user_search_result(200, 100)[0]
-                for text in (report, status, page, card):
+                for text in (report, status, card):
                     self.assertIn(usage_label, text)
                     self.assertNotIn(old_label, text)
                     self.assertNotIn("使用者", text)
+                self.assertIn("1/50", page)
+                self.assertNotIn(old_label, page)
+                self.assertNotIn("使用者", page)
                 service.stop()
         self.assertTrue(all("使用者" not in values[0] for values in bot.ADMIN_TEXT.values()))
 
@@ -1981,7 +2078,7 @@ class MenuTests(unittest.TestCase):
             ["userspage:0", "noop:0", "userspage:2"],
         )
 
-    def test_user_list_copies_id_and_links_name_when_username_exists(self):
+    def test_user_list_copies_id_and_only_shows_quota_fraction_and_language(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -1995,10 +2092,11 @@ class MenuTests(unittest.TestCase):
             user_line = next(line for line in text.splitlines() if "<code>200</code>" in line)
             self.assertEqual(
                 user_line,
-                '<code>200</code>｜普通｜50｜0｜'
-                '<a href="https://t.me/example_user">Example</a>',
+                '<code>200</code>｜普通｜0/50｜CNT',
             )
             self.assertNotIn("@example_user", user_line)
+            self.assertNotIn("Example", text)
+            self.assertNotIn("https://t.me/", text)
             self.assertEqual(len(keyboard["inline_keyboard"]), 2)
 
     def test_user_list_copies_id_when_username_is_missing(self):
@@ -2012,21 +2110,12 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page(records, 0)
         self.assertIn(
-            "<code>9876543210123456</code>｜普通｜50｜0｜"
-            "ABCDEFGHIJ",
+            "<code>9876543210123456</code>｜普通｜0/50｜CNT",
             text,
         )
-        records[0]["first_name"] = "ABCDEFGHIJK"
-        truncated, _, _ = service.users_page(records, 0)
-        self.assertIn("｜ABCDEFGHIJ…", truncated)
-        records[0]["first_name"] = "中文測試名字"
-        truncated, _, _ = service.users_page(records, 0)
-        self.assertIn("｜中文測試名…", truncated)
-        records[0]["first_name"] = "AB.CDEFGHI"
-        truncated, _, _ = service.users_page(records, 0)
-        self.assertIn("｜AB.CDEFGH…", truncated)
+        self.assertNotIn("ABCDEFGHIJ", text)
 
-    def test_user_list_uses_profile_refreshed_on_next_day(self):
+    def test_user_details_use_profile_refreshed_on_next_day(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -2041,14 +2130,13 @@ class MenuTests(unittest.TestCase):
                 "username": "new_user",
             }, now=186_400)
             service = bot.Bot(MagicMock(), store)
-            text, _, _ = service.users_page(store.records(), 0)
+            text, _ = service.user_search_result(200, 100)
             self.assertIn(
-                '<code>200</code>｜普通｜50｜0｜'
-                '<a href="https://t.me/new_user">New Name</a>',
+                'New Name (<a href="https://t.me/new_user">@new_user</a>)',
                 text,
             )
             self.assertNotIn('https://t.me/old_user', text)
-            self.assertNotIn("@new_user", text)
+            self.assertEqual(store.data["users"]["200"]["profile_checked_date"], bot.bot_date(186_400))
 
     def test_user_label_without_name_does_not_repeat_user_id(self):
         record = {"user_id": 987654321, "quota": 0}
@@ -2057,10 +2145,11 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page([record], 0)
         user_line = text.splitlines()[-1]
-        self.assertIn("（未提供名稱）", user_line)
+        self.assertNotIn("（未提供名稱）", user_line)
+        self.assertTrue(user_line.endswith("｜0/0｜CNT"))
         self.assertEqual(user_line.count("987654321"), 1)
 
-    def test_user_list_escapes_names_and_rejects_invalid_username_links(self):
+    def test_user_details_escape_names_and_reject_invalid_username_links(self):
         record = {
             "user_id": 200,
             "first_name": "<b>Not markup</b>",
@@ -2069,19 +2158,16 @@ class MenuTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.data["users"]["200"] = record
             service = bot.Bot(MagicMock(), store)
-            text, _, _ = service.users_page([record], 0)
-        self.assertIn("<code>200</code>", text)
-        self.assertIn("&lt;b&gt;Not m…", text)
-        self.assertNotIn("https://t.me/", text)
+            text, _ = service.user_search_result(200, 100)
+            self.assertIn("&lt;b&gt;Not markup&lt;/b&gt;", text)
+            self.assertNotIn("https://t.me/", text)
+            record["username"] = "valid_user"
+            linked_text, _ = service.user_search_result(200, 100)
+            self.assertIn('<a href="https://t.me/valid_user">@valid_user</a>', linked_text)
 
-        record["username"] = "valid_user"
-        linked_text, _, _ = service.users_page([record], 0)
-        self.assertIn(
-            '<a href="https://t.me/valid_user">&lt;b&gt;Not m…', linked_text
-        )
-
-    def test_user_list_normalizes_and_truncates_long_names_to_one_line(self):
+    def test_user_details_keep_full_long_names_on_one_line(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -2091,17 +2177,46 @@ class MenuTests(unittest.TestCase):
             })
             store.set_quota(200, 50)
             service = bot.Bot(MagicMock(), store)
-            text, _, _ = service.users_page(store.records(), 0)
-            user_line = next(
-                line for line in text.splitlines() if "<code>200</code>" in line
-            )
-            name_field = user_line.rsplit("｜", 1)[1]
-            self.assertTrue(name_field.startswith('<a href="https://t.me/'))
-            self.assertTrue(name_field.endswith("</a>"))
-            name = name_field.split(">", 1)[1].removesuffix("</a>")
-            self.assertIn("…", name)
-            self.assertNotIn("\n", name)
-            self.assertEqual(name, "♣ 闇猫 ・…")
+            text, _ = service.user_search_result(200, 100)
+            self.assertTrue(text.startswith('♣ 闇猫 ・ヴィクトリカ・ド・ブロワ ♣ (<a href="https://t.me/example_long_username">@example_long_username</a>)\n'))
+            self.assertNotIn("…", text)
+
+    def test_user_list_language_codes_and_fraction_in_four_languages(self):
+        for language, code in bot.LANGUAGE_CODES.items():
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, 100)
+                store.set_language(200, language)
+                for _ in range(8):
+                    store.consume(200)
+                service = bot.Bot(MagicMock(), store)
+                text, _, _ = service.users_page(store.records(), 0)
+                self.assertIn(f'<code>200</code>｜{bot.admin_text("ordinary")}｜8/100｜{code}', text)
+                self.assertIn('0/∞', text)
+                self.assertEqual(len(text.splitlines()[-1].split("｜")), 4)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_user_detail_sends_and_all_edit_paths_use_html(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
+                store.observe({"id": 200, "first_name": "Full <Name>", "last_name": "Surname", "username": "example_user"})
+                store.set_quota(200, 100)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                service.send_user_search_result(100, 1, 200, 100)
+                self.assertEqual(api.send_message.call_args.kwargs["parse_mode"], "HTML")
+                self.assertIn('Full &lt;Name&gt; Surname (<a href="https://t.me/example_user">@example_user</a>)', api.send_message.call_args.args[1])
+                for action in ("findresult:200", "quota:200:100", "confirmquota:200:100", "createuser:200:100"):
+                    api.reset_mock()
+                    service.handle_callback({"id": "callback", "data": action, "from": {"id": 100},
+                                             "message": {"message_id": 1, "chat": {"id": 100}}})
+                    self.assertEqual(api.edit_message.call_args.kwargs["parse_mode"], "HTML")
+                    self.assertIn('<a href="https://t.me/example_user">@example_user</a>', api.edit_message.call_args.args[2])
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
 
     def test_batch_approval_only_approves_the_selected_page(self):
         with tempfile.TemporaryDirectory() as temporary:

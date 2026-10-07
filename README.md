@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.3.10
+# Telegram X／Twitter 貼文媒體 Bot · v3.3.11
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -41,7 +41,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 下載器快取與未完成檔案隨任務暫存清除；直連下載會檢查剩餘空間與時間。直連或備援失敗時保留已完成的媒體並提示略過，未取得媒體時繼續降級；空間不足則不啟動下載器。不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
 
-其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；若設定在換日前，統計屬上一個額度日。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
+其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；簡報與換日時刻相同時統計剛結束的完整額度日，否則顯示發送當下用量。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
+
+列表顯示 ID、狀態、已用/總量與語言代碼（CNS 簡體、CNT 繁體、JA 日語、EN 英語）；完整名稱和可點擊的 @帳號保留在 ID 查詢詳情。完整日簡報在 ACL 保留最多三日彙總；首次遷移不補發不完整的舊日統計，不更動用戶額度。
 
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
 
@@ -96,7 +98,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 キャッシュと未完了ファイルは処理終了時に一時ファイルとともに削除します。直リンクの取得中も空き容量と経過時間を確認します。直リンク・代替ダウンローダーの失敗時は取得済みのメディアを送信し、不足分を通知します。取得できなければ別の方法を試しますが、空き容量不足ならダウンローダーを起動しません。ACL、資格情報、破損時の復旧ファイルは自動削除しません。容量設定の有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
 
-`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信し、切り替え前の時刻に設定した場合は前の利用日を集計します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
+`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信します。送信と利用日の切り替えが同時なら直前の1日分、それ以外は送信時点の利用量を表示します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
+
+一覧は ID、状態、使用量/上限、言語コード（CNS 簡体字、CNT 繁体字、JA 日本語、EN 英語）を表示し、完全な名前とクリック可能な @ユーザー名は ID の詳細に残します。日次集計は ACL に最大3日分保存します。移行前の不完全な集計は送らず、利用上限も変更しません。
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
@@ -151,7 +155,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 Caches and incomplete files are removed with each job's temporary files. Direct downloads check free space and elapsed time. Direct or extractor failures retain completed media and report missing items; when none were obtained, another method is tried. Extractors are not started when disk space is low. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. See `bot.py` for configurable disk bounds. This repository does not include cross-server backups.
 
-You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_VIDEO_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; if its time precedes the reset, it summarizes the previous usage day. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
+You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_VIDEO_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; matching report and reset hours report the completed usage day; otherwise it shows usage at send time. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
+
+The list shows ID, status, used/total and language code (CNS Simplified Chinese, CNT Traditional Chinese, JA Japanese, EN English). Full names and linked @usernames remain in ID details. Keep at most three daily aggregates in the ACL; do not send incomplete pre-migration reports or change user quotas.
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 
