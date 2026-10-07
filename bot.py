@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.5.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -251,8 +251,8 @@ PUBLIC_TEXT = {
         "start_allowed": "请发送有效的 X/Twitter 单篇推文链接。",
         "help_allowed": (
             "使用说明\n\n"
-            "发送单篇 X/Twitter 推文链接，即可获取文字、图片和视频。\n"
-            f"在其他聊天输入 {BOT_MENTION} 加上推文链接，可选择并分享媒体。"
+            "发送 X/Twitter 单篇推文链接，获取文字、图片和视频。\n"
+            f"其他聊天输入 {BOT_MENTION} 加上推文链接即可分享。"
         ),
         "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使用说明",
@@ -287,8 +287,8 @@ PUBLIC_TEXT = {
         "start_allowed": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "help_allowed": (
             "使用說明\n\n"
-            "傳送單篇 X/Twitter 貼文網址，即可取得文字、圖片和影片。\n"
-            f"在其他聊天輸入 {BOT_MENTION} 加上貼文網址，可選擇並分享媒體。"
+            "傳送 X/Twitter 單篇貼文網址，取得文字、圖片和影片。\n"
+            f"其他聊天輸入 {BOT_MENTION} 加上貼文網址即可分享。"
         ),
         "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使用說明",
@@ -323,8 +323,8 @@ PUBLIC_TEXT = {
         "start_allowed": "Send a valid single-post X/Twitter URL.",
         "help_allowed": (
             "How to use\n\n"
-            "Send a single X/Twitter post URL to get its text, images and videos.\n"
-            f"In another chat, type {BOT_MENTION} followed by the post URL to select and share media."
+            "Send an X/Twitter post URL to get its text, images and videos.\n"
+            f"Share elsewhere: type {BOT_MENTION} followed by the post URL."
         ),
         "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ How to use",
@@ -360,7 +360,7 @@ PUBLIC_TEXT = {
         "help_allowed": (
             "使い方\n\n"
             "X/Twitter の単一投稿URLを送ると、本文・画像・動画を取得できます。\n"
-            f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると、メディアを選んで共有できます。"
+            f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると共有できます。"
         ),
         "language_menu": "🌐 語言/Language",
         "help_menu": "ℹ️ 使い方",
@@ -525,6 +525,12 @@ ADMIN_TEXT = {
     "no_requests": ("目前沒有待審批申請。", "No pending requests.", "審査待ちの申請はありません。", "目前没有待审批申请。"),
     "no_filtered_users": ("沒有符合條件的用戶。", "No matching users.", "該当するユーザーはいません。", "没有符合条件的用户。"),
     "find_user": ("請輸入要修改權限的 Telegram User ID。", "Enter the Telegram User ID to manage.", "権限を変更する Telegram User ID を入力してください。", "请输入要修改权限的 Telegram User ID。"),
+    "quota_shortcut": (
+        "修改額度：傳送「{user_id} 額度」。",
+        "Change limit: send ‘{user_id} limit’.",
+        "上限の変更：「{user_id} 上限値」を送信してください。",
+        "修改额度：发送「{user_id} 额度」。",
+    ),
     "invalid_menu": ("無效選單。", "Invalid menu.", "無効なメニューです。", "无效菜单。"),
     "invalid_action": ("無效操作。", "Invalid action.", "無効な操作です。", "无效操作。"),
     "private_only": ("管理功能只允許在 Bot 私聊使用。", "Management is available only in a private chat with the bot.", "管理機能は Bot との個別チャットでのみ利用できます。", "管理功能只允许在 Bot 私聊使用。"),
@@ -1338,13 +1344,13 @@ def owner_keyboard() -> dict[str, Any]:
         "inline_keyboard": [
             [
                 {"text": f'👤 {admin_text("users")}', "callback_data": "nav:users"},
+                {"text": f'📊 {admin_text("status")}', "callback_data": "nav:status"},
+            ],
+            [
                 {
                     "text": public_text(ui_language(), "language_menu"),
                     "callback_data": "public:language",
                 },
-            ],
-            [
-                {"text": f'📊 {admin_text("status")}', "callback_data": "nav:status"},
                 {"text": f'ℹ️ {admin_text("help")}', "callback_data": "nav:help"},
             ],
         ],
@@ -1714,42 +1720,6 @@ def cookie_help_text() -> str:
         "Cookies 等同登入憑證。不要匯出其他網站、不要轉傳給他人；"
         "若 X 帳號登出或工作階段失效，需重新匯入。"
     )
-
-
-def owner_help_text(is_owner: bool = True) -> str:
-    if ui_language() == "en":
-        role = (
-            "Only the owner can grant administrator access and use Advanced settings."
-            if is_owner else
-            "Administrators can manage regular users only, not the owner, themselves, or other administrators."
-        )
-        return (
-            "Owner guide" if is_owner else "Administrator guide"
-        ) + f"\n\nIn a private chat, send a User ID to search, or ‘User ID quota’ to change access; confirm when prompted.\n-1: blocked · 0: initialized · positive: daily limit\n\n{role}"
-    if ui_language() == "ja":
-        role = (
-            "管理者権限の付与と詳細設定は所有者のみ利用できます。"
-            if is_owner else
-            "管理者が変更できるのは一般ユーザーのみです。所有者、自分、他の管理者は変更できません。"
-        )
-        return (
-            "所有者向けガイド" if is_owner else "管理者向けガイド"
-        ) + f"\n\n個別チャットで User ID を送ると検索、「User ID 上限値」で権限を変更できます。確認画面で確定してください。\n-1：ブロック · 0：初期化 · 正の数：1日の上限\n\n{role}"
-    role = (
-        {"zh": ("僅所有者可授予管理員權限及使用高級選項。"
-        if is_owner else
-        "管理員只能管理普通用戶，不能修改所有者、自己或其他管理員。"), "zh-cn": ("仅所有者可授予管理员权限及使用高级选项。"
-        if is_owner else
-        "管理员只能管理普通用户，不能修改所有者、自己或其他管理员。")}[ui_language()]
-    )
-    return {
-        "zh": ((
-            "所有者管理說明" if is_owner else "管理員使用說明"
-        ) + f"\n\n在 Bot 私聊傳送 User ID 查找用戶，或傳送「User ID 額度」修改權限，依提示確認。\n-1：封鎖 · 0：初始化 · 正數：每日上限\n\n{role}"),
-        "zh-cn": ((
-            "所有者管理说明" if is_owner else "管理员使用说明"
-        ) + f"\n\n在 Bot 私聊发送 User ID 查找用户，或发送「User ID 额度」修改权限，依提示确认。\n-1：封禁 · 0：初始化 · 正数：每日上限\n\n{role}"),
-    }[ui_language()]
 
 
 def validate_cookie_file(content: bytes) -> str:
@@ -3740,6 +3710,8 @@ class Bot:
             "ja": f"{label}\nUser ID：{target}\n状態：{status}\n1日の上限：{quota_text}\n本日の使用量：{used} 回\n言語：{language_code}",
             "zh-cn": f"{label}\nUser ID：{target}\n状态：{status}\n每日额度：{quota_text}\n今日用量：{used} 次\n语言：{language_code}",
         }[ui_language()]
+        if can_modify and target != self.acl.owner_id:
+            summary += "\n\n" + admin_text("quota_shortcut").format(user_id=target)
         return (
             summary,
             searched_user_keyboard(
@@ -4006,7 +3978,7 @@ class Bot:
                     text = admin_text("bulk_quota_prompt")
                     keyboard = quota_input_keyboard()
             elif destination == "help":
-                text, keyboard = owner_help_text(is_owner), owner_keyboard()
+                text, keyboard = public_help_text(language), owner_keyboard()
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
@@ -4048,7 +4020,7 @@ class Bot:
             else:
                 self.api.answer_callback(callback_id, admin_text("invalid_menu"), alert=True)
                 return
-            if destination == "userlist":
+            if destination in {"userlist", "help"}:
                 self.api.edit_message(
                     chat_id, message_id, text, keyboard, parse_mode="HTML"
                 )
@@ -4612,9 +4584,10 @@ class Bot:
         elif command == "/help":
             self.api.send_message(
                 chat_id,
-                owner_help_text(is_owner),
+                public_help_text(ui_language()),
                 message_id,
                 owner_keyboard(),
+                parse_mode="HTML",
             )
         elif command == "/cookies":
             self.pending_cookie_uploads.add(actor_id)
@@ -4649,9 +4622,10 @@ class Bot:
         else:
             self.api.send_message(
                 chat_id,
-                owner_help_text(is_owner),
+                public_help_text(ui_language()),
                 message_id,
                 owner_keyboard(),
+                parse_mode="HTML",
             )
 
     def _worker(self) -> None:

@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.5.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.5.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -49,7 +49,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
 
-高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
+所有角色共用簡潔的使用說明，管理提示只在對應功能頁顯示。高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
 
 Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
 
@@ -106,7 +106,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
 
-詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
+使い方は全ユーザー共通の簡潔な説明とし、管理操作の案内は該当画面に表示します。詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
 Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
@@ -163,7 +163,7 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 
 Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
 
-Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
+All roles share the same brief help page; management guidance appears only in the relevant screens. Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
 Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 

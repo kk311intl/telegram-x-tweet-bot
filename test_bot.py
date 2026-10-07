@@ -497,7 +497,7 @@ class ReliabilityTests(unittest.TestCase):
                     self.assertIn(bot.admin_text("back") + separator, cookie_rows[-1][0]["text"])
                     self.assertIn(bot.admin_text("default_limit"), bot.admin_text("default_quota"))
                     if language in ("zh", "zh-cn"):
-                        self.assertNotIn("Owner", bot.owner_help_text())
+                        self.assertNotIn("Owner", bot.public_help_text(language))
                 service.stop()
 
     def test_stale_approval_never_changes_quota_or_creates_users(self):
@@ -2200,8 +2200,8 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(
             [[button["callback_data"] for button in row] for row in main],
             [
-                ["nav:users", "public:language"],
-                ["nav:status", "nav:help"],
+                ["nav:users", "nav:status"],
+                ["public:language", "nav:help"],
             ],
         )
         self.assertIn("nav:userlist", str(users))
@@ -3019,30 +3019,48 @@ class MenuTests(unittest.TestCase):
             })
             self.assertEqual(store.quota(987654321), 50)
 
-    def test_administrator_help_omits_owner_only_shortcuts(self):
-        for language, titles, shortcut in (
-            ("zh", ("所有者管理說明", "管理員使用說明"), "User ID 額度"),
-            ("ja", ("所有者向けガイド", "管理者向けガイド"), "User ID 上限値"),
-            ("en", ("Owner guide", "Administrator guide"), "User ID quota"),
-            ("zh-cn", ("所有者管理说明", "管理员使用说明"), "User ID 额度"),
-        ):
-            with self.subTest(language=language), bot.language_scope(language):
-                owner_help = bot.owner_help_text(True)
-                admin_help = bot.owner_help_text(False)
-                self.assertTrue(owner_help.startswith(titles[0]))
-                self.assertTrue(admin_help.startswith(titles[1]))
-                for text in (owner_help, admin_help):
-                    self.assertIn(shortcut, text)
-                    self.assertNotIn(bot.BOT_MENTION, text)
-                    self.assertLess(len(text), 750)
-                    for detail in ("FxTwitter", "gallery-dl", "yt-dlp", "50 MB", "52-bit", bot.BOT_TIMEZONE_NAME):
-                        self.assertNotIn(detail, text)
-                self.assertNotEqual(owner_help, admin_help)
-                self.assertIn(bot.admin_text("advanced").lower(), owner_help.lower())
-                self.assertNotIn(bot.admin_text("default_limit").lower(), admin_help.lower())
-                self.assertNotIn("auto-approval", admin_help)
-                self.assertNotIn("自動通過", admin_help)
-                self.assertNotIn("自動承認", admin_help)
+    def test_all_roles_share_minimal_help_with_html_contact_in_four_languages(self):
+        for language in bot.PUBLIC_TEXT:
+            for contact in ("", "https://example.com/contact?a=1&b=2"):
+                with self.subTest(language=language, contact=bool(contact)), tempfile.TemporaryDirectory() as temporary, \
+                     patch.object(bot, "OWNER_CONTACT_URL", contact), patch.object(bot, "OWNER_CONTACT_LABEL", "Contact & help"):
+                    store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                    store.set_quota(200, None)
+                    store.set_quota(300, 50)
+                    api = MagicMock()
+                    service = bot.Bot(api, store)
+                    expected = bot.public_help_text(language)
+                    for user_id in (100, 200, 300, 400):
+                        store.set_language(user_id, language)
+                        service.handle_update({"message": {"message_id": 1, "from": {"id": user_id},
+                                                           "chat": {"id": user_id}, "text": "/help"}})
+                        self.assertEqual(api.send_message.call_args.args[1], expected)
+                        self.assertEqual(api.send_message.call_args.kwargs["parse_mode"], "HTML")
+                        action = "nav:help" if store.is_admin(user_id) else "public:help"
+                        service.handle_callback({"id": "help", "data": action, "from": {"id": user_id},
+                                                 "message": {"message_id": 1, "chat": {"id": user_id}}})
+                        self.assertEqual(api.edit_message.call_args.args[2], expected)
+                        self.assertEqual(api.edit_message.call_args.kwargs["parse_mode"], "HTML")
+                    for detail in ("User ID", "FxTwitter", "gallery-dl", "yt-dlp", "50 MB", "Owner guide", "管理員", "管理员", "管理者"):
+                        self.assertNotIn(detail, expected)
+                    self.assertLess(len(expected), 350)
+                    service.stop()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_quota_shortcut_hint_is_local_to_editable_user_details(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, None)
+                store.set_quota(300, 50)
+                service = bot.Bot(MagicMock(), store)
+                hint = bot.admin_text("quota_shortcut").format(user_id=300)
+                self.assertIn(hint, service.user_search_result(300, 100)[0])
+                self.assertIn(hint, service.user_search_result(300, 200)[0])
+                for target, actor in ((100, 100), (100, 200), (200, 200)):
+                    self.assertNotIn(bot.admin_text("quota_shortcut").format(user_id=target), service.user_search_result(target, actor)[0])
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
 
     def test_administrator_numeric_shortcut_creates_only_non_privileged_users(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4851,7 +4869,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                                 self.assertEqual(api.edit_message.call_args.args[3], bot.owner_keyboard())
                             service.handle_callback({**callback, "data": "nav:help"})
                             with bot.language_scope(language):
-                                self.assertEqual(api.edit_message.call_args.args[2], bot.owner_help_text(user_id == 100))
+                                self.assertEqual(api.edit_message.call_args.args[2], bot.public_help_text(language))
                                 self.assertEqual(api.edit_message.call_args.args[3], bot.owner_keyboard())
                 store.set_language(user_id, "zh")
             self.assertEqual([store.quota(user_id) for user_id in (100, 300, 200, 400)], [None, None, 75, 0])
@@ -4940,7 +4958,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                 self.assertIn(status, api.send_message.call_args.args[1])
                 service.handle_owner_command(100, 2, 100, "/help", "")
                 with bot.language_scope(language):
-                    self.assertEqual(api.send_message.call_args.args[1], bot.owner_help_text())
+                    self.assertEqual(api.send_message.call_args.args[1], bot.public_help_text(language))
                 service.handle_owner_command(200, 2, 200, "/status", "")
                 self.assertIn("System status", api.send_message.call_args.args[1])
                 service.maybe_send_daily_report(force=True)
