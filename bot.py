@@ -2588,10 +2588,9 @@ def inline_caption(
 
 
 def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
-    root_tweet = fetch_fxtwitter(url)
-    if not root_tweet:
+    tweet = fetch_fxtwitter(url)
+    if not tweet:
         return []
-    tweet = root_tweet
     effective_url = fxtwitter_tweet_url(tweet) or url
     text, author, author_url = fxtwitter_text_author(tweet)
     if not text:
@@ -3459,10 +3458,7 @@ class Bot:
                 message_id,
             )
             return
-        try:
-            self.jobs.put_nowait((chat_id, message_id, user_id, url))
-        except queue.Full:
-            self.api.send_message(chat_id, public_text(language, "queue_full"), message_id)
+        self.jobs.put_nowait(job)
 
     def consume_inline_once(self, user_id: int, url: str) -> bool:
         now = time.time()
