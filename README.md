@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.5.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.5.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -49,11 +49,11 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
 
-所有角色共用簡潔的使用說明，管理提示只在對應功能頁顯示。高級選項（含「實現方式」）僅供所有者使用；管理員可管理普通用戶及查看系統狀態。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
+所有角色共用簡潔的使用說明，管理提示只在對應功能頁顯示。高級選項（含「實現方式」）與用戶控制管理僅供所有者使用；管理員可管理普通用戶及查看用量總覽、系統狀態。用量總覽在用戶管理內顯示用戶分布與今日用量；系統狀態只顯示服務、運行時間、版本與可用磁碟。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
 
 Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
 
-高級選項的「用戶控制管理」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
+用戶管理內的「用戶控制管理」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
 
 `status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
 
@@ -106,11 +106,11 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
 
-使い方は全ユーザー共通の簡潔な説明とし、管理操作の案内は該当画面に表示します。詳細設定（「実装方法」を含む）は所有者のみ利用できます。管理者は一般ユーザーを管理し、システム状態を確認できます。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
+使い方は全ユーザー共通の簡潔な説明とし、管理操作の案内は該当画面に表示します。詳細設定（「実装方法」を含む）とユーザー利用設定は所有者のみ利用できます。管理者は一般ユーザーを管理し、利用状況とシステム状態を確認できます。ユーザー管理の利用状況にはユーザー数と本日の使用量、システム状態には稼働状況・時間・バージョン・ディスク空き容量のみ表示します。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
 Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
-詳細設定の「ユーザー利用設定」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
+ユーザー管理の「ユーザー利用設定」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
 
 `status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
 
@@ -163,11 +163,11 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 
 Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
 
-All roles share the same brief help page; management guidance appears only in the relevant screens. Advanced settings, including Implementation details, are owner-only. Administrators can manage regular users and view system status. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
+All roles share the same brief help page; management guidance appears only in the relevant screens. Advanced settings, including Implementation details, and User controls are owner-only. Administrators can manage regular users and view Usage overview and system status. Usage overview under User management shows user counts and today's usage; system status shows only service state, uptime, version, and free disk space. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
 Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 
-User controls in Advanced settings groups user access, auto-approval, and Quota management. Quota management has Default limit and Bulk change. The default applies only to regular users approved afterwards; existing users are unchanged. It is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`. For Bulk change, enter `A B` (e.g. `50 100`) and confirm to change only approved regular users whose current limit is A to B, without changing the default. A and B must be different integers from 1 to 100000. Initialized, pending, blocked, owner, and administrator accounts are excluded; today's usage stays unchanged. Set up the operation again if the target users or limits change before confirmation.
+The User controls menu under User management groups user access, auto-approval, and Quota management. Quota management has Default limit and Bulk change. The default applies only to regular users approved afterwards; existing users are unchanged. It is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`. For Bulk change, enter `A B` (e.g. `50 100`) and confirm to change only approved regular users whose current limit is A to B, without changing the default. A and B must be different integers from 1 to 100000. Initialized, pending, blocked, owner, and administrator accounts are excluded; today's usage stays unchanged. Set up the operation again if the target users or limits change before confirmation.
 
 `status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries. Inline requests for the same URL are charged once per five-minute window, but are charged again after the configured daily reset.
 

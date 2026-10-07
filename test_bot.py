@@ -1854,7 +1854,8 @@ class MenuTests(unittest.TestCase):
                 ).splitlines()[1:]
                 self.assertEqual(len(counts), 9)
                 for line in counts:
-                    self.assertIn(line, status.splitlines())
+                    self.assertIn(line, service.usage_overview_text(100).splitlines())
+                    self.assertNotIn(line, status.splitlines())
                     self.assertNotIn("｜", line)
                     self.assertNotIn(" | ", line)
                 for detail in ("Cookies", bot.admin_text("access_switch"), bot.admin_text("auto_approve"), bot.admin_text("implementation")):
@@ -1873,11 +1874,15 @@ class MenuTests(unittest.TestCase):
                         self.assertIn("nav:status", str(api.edit_message.call_args.args[3]))
                     elif action in {"nav:usercontrols", "externaltoggle:0", "autoapprovetoggle:0"}:
                         self.assertEqual(text, bot.admin_text("user_controls"))
-                        self.assertIn("nav:advanced", str(api.edit_message.call_args.args[3]))
+                        self.assertIn("nav:users", str(api.edit_message.call_args.args[3]))
                 service.handle_callback({
                     "id": "back", "data": "nav:status", "from": {"id": 100},
                     "message": {"message_id": 1, "chat": {"id": 100}},
                 })
+                for line in counts:
+                    self.assertNotIn(line, api.edit_message.call_args.args[2].splitlines())
+                service.handle_callback({"id": "overview", "data": "nav:usageoverview", "from": {"id": 100},
+                                         "message": {"message_id": 1, "chat": {"id": 100}}})
                 for line in counts:
                     self.assertIn(line, api.edit_message.call_args.args[2].splitlines())
                 service.stop()
@@ -1894,10 +1899,10 @@ class MenuTests(unittest.TestCase):
                 service = bot.Bot(api, store)
                 service.maybe_send_daily_report(force=True)
                 report = api.send_message.call_args.args[1]
-                status = service.system_status_text(100)
+                overview = service.usage_overview_text(100)
                 page = service.users_page(store.records(), 0)[0]
                 card = service.user_search_result(200, 100)[0]
-                for text in (report, status, card):
+                for text in (report, overview, card):
                     self.assertIn(usage_label, text)
                     self.assertNotIn(old_label, text)
                     self.assertNotIn("使用者", text)
@@ -1906,6 +1911,62 @@ class MenuTests(unittest.TestCase):
                 self.assertNotIn("使用者", page)
                 service.stop()
         self.assertTrue(all("使用者" not in values[0] for values in bot.ADMIN_TEXT.values()))
+
+    def test_user_management_overview_and_owner_controls_are_role_aware_in_four_languages(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, None)
+                store.set_quota(300, 50)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                for actor in (100, 200, 300):
+                    store.set_language(actor, language)
+                    store.observe({"id": actor})
+                before = json.dumps(store.data, sort_keys=True)
+                for actor in (100, 200):
+                    for command in ("/usermenu", "/finduser"):
+                        service.handle_update({"message": {"message_id": 1, "from": {"id": actor},
+                                                           "chat": {"id": actor}, "text": command}})
+                        self.assertEqual(api.send_message.call_args.args[3], bot.user_menu_keyboard(actor == 100))
+                    service.handle_callback({"id": "users", "data": "nav:users", "from": {"id": actor},
+                                             "message": {"message_id": 1, "chat": {"id": actor}}})
+                    rows = api.edit_message.call_args.args[3]["inline_keyboard"]
+                    self.assertEqual([button["callback_data"] for button in rows[1]], ["nav:finduser", "nav:usageoverview"])
+                    self.assertEqual("nav:usercontrols" in str(rows), actor == 100)
+                    if actor == 100:
+                        self.assertEqual(rows[2][0]["callback_data"], "nav:usercontrols")
+                    self.assertEqual(service.pending_page([], 0, actor == 100)[1], bot.user_menu_keyboard(actor == 100))
+                    for _ in range(2):
+                        service.handle_callback({"id": "overview", "data": "nav:usageoverview", "from": {"id": actor},
+                                                 "message": {"message_id": 1, "chat": {"id": actor}}})
+                        self.assertEqual(api.edit_message.call_args.args[2], service.usage_overview_text(actor))
+                        self.assertEqual(api.edit_message.call_args.args[3], bot.usage_overview_keyboard())
+                for actor, chat_id, error in ((300, 300, "admin_only"), (100, -100, "private_only")):
+                    api.reset_mock()
+                    service.handle_callback({"id": "overview", "data": "nav:usageoverview", "from": {"id": actor},
+                                             "message": {"message_id": 1, "chat": {"id": chat_id}}})
+                    api.edit_message.assert_not_called()
+                    self.assertEqual(api.answer_callback.call_args.args[1], bot.admin_text(error))
+                self.assertEqual(json.dumps(store.data, sort_keys=True), before)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_system_status_uses_only_runtime_and_safe_disk_information(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
+                service = bot.Bot(MagicMock(), store)
+                with patch.object(store, "records", side_effect=AssertionError("status must not enumerate users")), \
+                     patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=5 * 1024 ** 3)):
+                    text = service.system_status_text(100)
+                    self.assertIn(bot.admin_text("status_technical").format(version=bot.APP_VERSION, disk="5.0 GiB"), text)
+                    self.assertNotIn(str(bot.STATE_DIR), text)
+                with patch.object(bot.shutil, "disk_usage", side_effect=OSError):
+                    self.assertIn(bot.admin_text("unavailable"), service.system_status_text(100))
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
 
     def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
         for language in ("zh-cn", "zh", "en", "ja"):
@@ -1971,11 +2032,11 @@ class MenuTests(unittest.TestCase):
                                                        "chat": {"id": 100}, "text": text}})
                 callback("nav:advanced")
                 self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
-                                 ["nav:cookies", "nav:usercontrols", "debugtoggle:0", "nav:status"])
+                                 ["nav:cookies", "debugtoggle:0", "nav:status"])
                 callback("nav:usercontrols")
                 self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("user_controls"))
                 self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
-                                 ["externaltoggle:0", "autoapprovetoggle:0", "nav:quotamanagement", "nav:advanced"])
+                                 ["externaltoggle:0", "autoapprovetoggle:0", "nav:quotamanagement", "nav:users"])
                 callback("nav:quotamanagement")
                 self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("quota_management"))
                 self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
@@ -2580,7 +2641,7 @@ class MenuTests(unittest.TestCase):
             })
 
             api.edit_message.assert_called_once_with(
-                100, 77, "用戶管理", bot.user_menu_keyboard()
+                100, 77, "用戶管理", bot.user_menu_keyboard(True)
             )
             api.send_message.assert_not_called()
 
@@ -2632,7 +2693,7 @@ class MenuTests(unittest.TestCase):
         self.assertNotIn("quota:200:100", serialized)
         self.assertNotIn("quota:200:200", serialized)
 
-    def test_system_status_summarizes_large_user_metrics(self):
+    def test_usage_overview_and_system_status_show_their_own_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({"id": 200, "first_name": "Allowed"})
@@ -2648,10 +2709,10 @@ class MenuTests(unittest.TestCase):
             status = service.system_status_text(100)
 
             self.assertIn("服務：正常", status)
-            self.assertIn("普通：1", status)
-            self.assertIn("待審批：1", status)
-            self.assertIn("今日用量：1", status)
-            self.assertIn("已達額度：1", status)
+            overview = service.usage_overview_text(100)
+            for line in ("普通：1", "待審批：1", "今日用量：1", "已達額度：1"):
+                self.assertIn(line, overview)
+                self.assertNotIn(line, status)
             self.assertEqual(
                 bot.status_keyboard()["inline_keyboard"][0][0]["callback_data"],
                 "statusrefresh:0",
@@ -2668,12 +2729,10 @@ class MenuTests(unittest.TestCase):
             )
             self.assertEqual(
                 advanced[1][0]["text"],
-                "🎛️ 用戶控制管理",
-            )
-            self.assertEqual(
-                advanced[2][0]["text"],
                 "🐞 實現方式：關閉",
             )
+            self.assertNotIn("nav:usercontrols", str(advanced))
+            self.assertEqual(bot.user_menu_keyboard(True)["inline_keyboard"][2][0]["text"], "🎛️ 用戶控制管理")
             controls = bot.user_controls_keyboard(True, False)["inline_keyboard"]
             self.assertEqual(
                 controls[0][0]["text"],
@@ -2751,7 +2810,7 @@ class MenuTests(unittest.TestCase):
                                 "message": {"message_id": 1, "chat": {"id": 200}},
                             })
                             api.answer_callback.assert_called_once_with(
-                                data, bot.admin_text("advanced_owner_only"), alert=True
+                                data, bot.admin_text("advanced_owner_only" if data in {"nav:advanced", "debugtoggle:0"} else "user_controls_owner_only"), alert=True
                             )
                             api.edit_message.assert_not_called()
                     self.assertNotIn(implementation, service.system_status_text(200))
@@ -4976,9 +5035,9 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             service = bot.Bot(api, store)
             barrier = bot.threading.Barrier(2)
             original = bot.user_menu_keyboard
-            def keyboard():
+            def keyboard(is_owner=False):
                 barrier.wait(timeout=3)
-                return original()
+                return original(is_owner)
             def callback(user_id):
                 service.handle_callback({"id": str(user_id), "data": "nav:users", "from": {"id": user_id},
                                          "message": {"message_id": 1, "chat": {"id": user_id}}})
@@ -4990,6 +5049,8 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             outputs = {call.args[0]: call.args for call in api.edit_message.call_args_list}
             self.assertIn("用户列表", str(outputs[100][3]))
             self.assertIn("Users", str(outputs[200][3]))
+            self.assertIn("nav:usercontrols", str(outputs[100][3]))
+            self.assertNotIn("nav:usercontrols", str(outputs[200][3]))
             api.edit_message.side_effect = RuntimeError("send failed")
             with bot.language_scope("ja"), self.assertRaises(RuntimeError):
                 service.handle_callback({"id": "error", "data": "nav:status", "from": {"id": 100},

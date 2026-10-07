@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.5.1"
+APP_VERSION = "3.5.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -422,6 +422,14 @@ ADMIN_TEXT = {
     "cookie_help": ("Cookies 說明", "Cookies guide", "Cookies の説明", "Cookies 说明"),
     "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
     "status": ("系統狀態", "System status", "システム状態", "系统状态"),
+    "usage_overview": ("用量總覽", "Usage overview", "利用状況", "用量总览"),
+    "status_technical": (
+        "版本：{version}\n可用磁碟：{disk}",
+        "Version: {version}\nFree disk: {disk}",
+        "バージョン：{version}\nディスク空き容量：{disk}",
+        "版本：{version}\n可用磁盘：{disk}",
+    ),
+    "unavailable": ("無法取得", "Unavailable", "取得できません", "无法获取"),
     "status_runtime": (
         "服務：{service}\n運行時間：{uptime}\n\n",
         "Service: {service}\nUptime: {uptime}\n\n",
@@ -565,6 +573,7 @@ ADMIN_TEXT = {
     "admin_cannot_admin": ("管理員不能修改其他管理員。", "Administrators cannot change other administrators.", "管理者は他の管理者を変更できません。", "管理员不能修改其他管理员。"),
     "owner_only_admin": ("只有所有者可以新增管理員。", "Only the owner can add administrators.", "管理者の追加は所有者のみ可能です。", "只有所有者可以新增管理员。"),
     "advanced_owner_only": ("高級選項只允許所有者使用。", "Only the owner can use Advanced settings.", "詳細設定を使用できるのは所有者のみです。", "高级选项只允许所有者使用。"),
+    "user_controls_owner_only": ("用戶控制管理只允許所有者使用。", "Only the owner can use User controls.", "ユーザー利用設定を使用できるのは所有者のみです。", "用户控制管理只允许所有者使用。"),
 }
 
 
@@ -1357,14 +1366,18 @@ def owner_keyboard() -> dict[str, Any]:
     }
 
 
-def user_menu_keyboard() -> dict[str, Any]:
+def user_menu_keyboard(is_owner: bool = False) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
                 {"text": f'👥 {admin_text("user_list")}', "callback_data": "nav:userlist"},
                 {"text": f'📝 {admin_text("requests")}', "callback_data": "nav:requests"},
             ],
-            [{"text": f'🔐 {admin_text("permissions")}', "callback_data": "nav:finduser"}],
+            [
+                {"text": f'🔐 {admin_text("permissions")}', "callback_data": "nav:finduser"},
+                {"text": f'📊 {admin_text("usage_overview")}', "callback_data": "nav:usageoverview"},
+            ],
+            *([[{"text": f'🎛️ {admin_text("user_controls")}', "callback_data": "nav:usercontrols"}]] if is_owner else []),
             [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("menu")}', "callback_data": "nav:main"}],
         ],
     }
@@ -1602,7 +1615,14 @@ def user_controls_keyboard(
         [{"text": f'🌐 {admin_text("access_switch")}{": " if ui_language() == "en" else "："}{external_state}', "callback_data": "externaltoggle:0"}],
         [{"text": f'✅ {admin_text("auto_approve")}{": " if ui_language() == "en" else "："}{auto_approve_state}', "callback_data": "autoapprovetoggle:0"}],
         [{"text": f'🎯 {admin_text("quota_management")}', "callback_data": "nav:quotamanagement"}],
-        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("advanced")}', "callback_data": "nav:advanced"}],
+        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("users")}', "callback_data": "nav:users"}],
+    ]}
+
+
+def usage_overview_keyboard() -> dict[str, Any]:
+    return {"inline_keyboard": [
+        [{"text": f'🔄 {admin_text("refresh")}', "callback_data": "nav:usageoverview"}],
+        [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
     ]}
 
 
@@ -1626,10 +1646,6 @@ def advanced_status_keyboard(
         [{
             "text": f'🍪 {admin_text("cookies")}',
             "callback_data": "nav:cookies",
-        }],
-        [{
-            "text": f'🎛️ {admin_text("user_controls")}',
-            "callback_data": "nav:usercontrols",
         }],
     ] if can_configure else []
     if can_configure:
@@ -3221,7 +3237,7 @@ class Bot:
                     chat_id,
                     {"zh": "User ID 必須是 1 至 2^52-1 的正整數。請重新點選「用戶權限修改」。", "en": "User ID must be between 1 and 2^52-1. Select Change access again.", "ja": "User ID は 1～2^52-1 の整数にしてください。権限を変更をもう一度選んでください。", "zh-cn": ("User ID 必须是 1 至 2^52-1 的正整数。请重新点选「用户权限修改」。")}[ui_language()],
                     message_id,
-                    user_menu_keyboard(),
+                    user_menu_keyboard(is_owner),
                 )
                 return
             if is_owner and not self.acl.has_user(target):
@@ -3641,10 +3657,10 @@ class Bot:
         return "\n".join(lines), users_page_keyboard(page, len(records), role), page
 
     def pending_page(
-        self, records: list[dict[str, Any]], page: int
+        self, records: list[dict[str, Any]], page: int, is_owner: bool = False
     ) -> tuple[str, dict[str, Any], int]:
         if not records:
-            return admin_text("no_requests"), user_menu_keyboard(), 0
+            return admin_text("no_requests"), user_menu_keyboard(is_owner), 0
         pages = max(1, (len(records) + MANAGEMENT_PAGE_SIZE - 1) // MANAGEMENT_PAGE_SIZE)
         page = max(0, min(page, pages - 1))
         start = page * MANAGEMENT_PAGE_SIZE
@@ -3726,6 +3742,7 @@ class Bot:
     def send_user_search_result(
         self, chat_id: int, message_id: int | None, target: int, actor_id: int
     ) -> None:
+        is_owner = actor_id == self.acl.owner_id
         result = self.user_search_result(target, actor_id)
         if result is None:
             self.api.send_message(
@@ -3737,7 +3754,7 @@ class Bot:
                     "zh-cn": (f"找不到 User ID {target}。此用户可能尚未与 Bot 互动。"),
                 }[ui_language()],
                 message_id,
-                user_menu_keyboard(),
+                user_menu_keyboard(is_owner),
             )
             return
         text, keyboard = result
@@ -3748,6 +3765,23 @@ class Bot:
             return self._system_status_text(viewer_id)
 
     def _system_status_text(self, viewer_id: int) -> str:
+        text = admin_text("status") + "\n\n"
+        text += admin_text("status_runtime").format(
+            service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
+            uptime=format_duration(time.time() - self.started_at),
+        )
+        try:
+            disk = f"{shutil.disk_usage(STATE_DIR).free / 1024 ** 3:.1f} GiB"
+        except OSError:
+            disk = admin_text("unavailable")
+        text += admin_text("status_technical").format(version=APP_VERSION, disk=disk)
+        return text.rstrip()
+
+    def usage_overview_text(self, viewer_id: int) -> str:
+        with language_scope(self.acl.language(viewer_id)):
+            return self._usage_overview_text()
+
+    def _usage_overview_text(self) -> str:
         records = self.acl.records()
         today = bot_date()
         ordinary = sum(
@@ -3784,11 +3818,7 @@ class Bot:
             and int(item.get("usage_count", 0) or 0)
             >= int(item.get("quota", 0))
         )
-        text = admin_text("status") + "\n\n"
-        text += admin_text("status_runtime").format(
-            service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
-            uptime=format_duration(time.time() - self.started_at),
-        )
+        text = admin_text("usage_overview") + "\n\n"
         text += admin_text("status_users").format(
             total=len(records), ordinary=ordinary, administrators=administrators,
             initialized=initialized, pending=pending, banned=banned,
@@ -3935,7 +3965,9 @@ class Bot:
             if destination == "main":
                 text, keyboard = admin_text("menu"), owner_keyboard()
             elif destination == "users":
-                text, keyboard = admin_text("users"), user_menu_keyboard()
+                text, keyboard = admin_text("users"), user_menu_keyboard(is_owner)
+            elif destination == "usageoverview":
+                text, keyboard = self.usage_overview_text(user_id), usage_overview_keyboard()
             elif destination == "cookies":
                 if not is_owner:
                     self.api.answer_callback(
@@ -3961,7 +3993,7 @@ class Bot:
                 )
             elif destination in {"usercontrols", "quotamanagement", "defaultquota", "bulkquota"}:
                 if not is_owner:
-                    self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                    self.api.answer_callback(callback_id, admin_text("user_controls_owner_only"), alert=True)
                     return
                 if destination == "usercontrols":
                     text = admin_text("user_controls")
@@ -3982,10 +4014,10 @@ class Bot:
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
-                text, keyboard, _ = self.pending_page(self.acl.pending(), 0)
+                text, keyboard, _ = self.pending_page(self.acl.pending(), 0, is_owner)
             elif destination == "finduser":
                 self.pending_user_searches.add(user_id)
-                text, keyboard = admin_text("find_user"), user_menu_keyboard()
+                text, keyboard = admin_text("find_user"), user_menu_keyboard(is_owner)
             elif destination == "cookieupload":
                 if not is_owner:
                     self.api.answer_callback(
@@ -4042,7 +4074,7 @@ class Bot:
 
         if action == "defaultquota":
             if not is_owner:
-                self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                self.api.answer_callback(callback_id, admin_text("user_controls_owner_only"), alert=True)
                 return
             if not 1 <= target <= MAX_DAILY_LIMIT:
                 self.api.answer_callback(callback_id, admin_text("default_limit_range"), alert=True)
@@ -4062,7 +4094,7 @@ class Bot:
 
         if action == "bulkquota":
             if not is_owner:
-                self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                self.api.answer_callback(callback_id, admin_text("user_controls_owner_only"), alert=True)
                 return
             pending = self.pending_bulk_quotas.get(user_id)
             if not pending or len(extra) != 1 or (target, extra[0]) != (pending[0], str(pending[1])):
@@ -4097,7 +4129,7 @@ class Bot:
                 requested_at = None
             if (requested_at is None or not application or
                     requested_at != application.get("requested_at")):
-                self.edit_pending_page(chat_id, message_id, self.acl.pending(), 0, user_menu_keyboard())
+                self.edit_pending_page(chat_id, message_id, self.acl.pending(), 0, user_menu_keyboard(is_owner))
                 self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
                 return
 
@@ -4120,7 +4152,7 @@ class Bot:
         if action in {"createuser", "cancelcreate"}:
             if action == "cancelcreate":
                 self.api.edit_message(
-                    chat_id, message_id, admin_text("create_cancelled"), user_menu_keyboard()
+                    chat_id, message_id, admin_text("create_cancelled"), user_menu_keyboard(is_owner)
                 )
                 self.api.answer_callback(callback_id, admin_text("cancelled"))
                 return
@@ -4152,7 +4184,7 @@ class Bot:
         if action in {"confirmquota", "cancelquota"}:
             if action == "cancelquota":
                 self.api.edit_message(
-                    chat_id, message_id, admin_text("change_cancelled"), user_menu_keyboard()
+                    chat_id, message_id, admin_text("change_cancelled"), user_menu_keyboard(is_owner)
                 )
                 self.api.answer_callback(callback_id, admin_text("cancelled"))
                 return
@@ -4189,7 +4221,7 @@ class Bot:
             result = self.user_search_result(target, user_id)
             if result is None:
                 self.api.edit_message(
-                    chat_id, message_id, {"zh": f"找不到 User ID {target}。", "en": f"User ID {target} not found.", "ja": f"User ID {target} が見つかりません。", "zh-cn": (f"找不到 User ID {target}。")}[ui_language()], user_menu_keyboard()
+                    chat_id, message_id, {"zh": f"找不到 User ID {target}。", "en": f"User ID {target} not found.", "ja": f"User ID {target} が見つかりません。", "zh-cn": (f"找不到 User ID {target}。")}[ui_language()], user_menu_keyboard(is_owner)
                 )
             else:
                 text, keyboard = result
@@ -4264,7 +4296,7 @@ class Bot:
                 return
             records = self.acl.pending()
             if not extra or extra[0] != pending_page_fingerprint(records, target):
-                self.edit_pending_page(chat_id, message_id, records, target, user_menu_keyboard())
+                self.edit_pending_page(chat_id, message_id, records, target, user_menu_keyboard(is_owner))
                 self.api.answer_callback(callback_id, admin_text("requests_changed"), alert=True)
                 return
             start = target * MANAGEMENT_PAGE_SIZE
@@ -4288,7 +4320,7 @@ class Bot:
                     LOG.exception(
                         "Could not notify approved user %s", applicant_id
                     )
-            self.edit_pending_page(chat_id, message_id, self.acl.pending(), target, user_menu_keyboard())
+            self.edit_pending_page(chat_id, message_id, self.acl.pending(), target, user_menu_keyboard(is_owner))
             self.api.answer_callback(callback_id, {"zh": f"已通過 {approved} 筆申請。", "en": f"Approved {approved} requests.", "ja": f"{approved} 件の申請を承認しました。", "zh-cn": (f"已通过 {approved} 笔申请。")}[ui_language()])
             return
 
@@ -4483,7 +4515,7 @@ class Bot:
         elif command == "/usermenu":
             self.pending_user_searches.discard(actor_id)
             self.api.send_message(
-                chat_id, admin_text("users"), message_id, user_menu_keyboard()
+                chat_id, admin_text("users"), message_id, user_menu_keyboard(is_owner)
             )
         elif command == "/cookiemenu":
             self.pending_user_searches.discard(actor_id)
@@ -4545,7 +4577,7 @@ class Bot:
                 chat_id,
                 admin_text("find_user"),
                 message_id,
-                user_menu_keyboard(),
+                user_menu_keyboard(is_owner),
             )
         elif command == "/limit":
             try:
