@@ -6,171 +6,240 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 ## 中文
 
-**給 AI coding agent 的無代碼部署提示詞**
+不熟悉程式時，可把儲存庫連結和以下提示詞交給能讀檔、執行指令的 AI：
 
-> 請先讀取這個 repository 的 README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit 和測試，再協助我在自己的 Debian／Ubuntu Linux 主機部署這個以 Python、systemd 和 Telegram Bot API 運行的 X/Twitter 單篇貼文媒體 Bot。我沒有程式經驗，請逐步說明每條命令的用途與預期結果，只詢問真正缺少的資料（主機登入方式、Bot Token、我的 Telegram User ID 與時區）。Telegram Bot 的建立、主機登入授權、Token 的安全輸入和任何 SSH 金鑰確認須由我本人完成；不要要求我把 Secret 貼到聊天、issue 或 Git。先查是否已有同名服務與資料，未經確認不得覆寫或重啟既有部署，不要重設原有用戶資料、Webhook 或憑證。依現有工程部署，不自行改寫架構；每一步執行後檢查結果，排錯後再繼續，最後驗證服務、Bot `/start`、一條公開貼文及四種介面語言（所有角色均自行切換）。對未實際驗證的步驟明確標示，不要聲稱已完成。
+> 請先讀這個儲存庫的 README、VERSION、bot.py、config_cli.py、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝 README 指定的發布版本。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
 
-這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括所有者與管理員）均可從「語言/Language」選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
+傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「語言/Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
-需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換；切換後服務／設定檢查失敗時回滾程式。另建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
+### 部署
 
-在全新主機上 clone 本 repository，於工程目錄執行：
+需要 Debian／Ubuntu、systemd、git、Python 3.10+ 和 root 或 sudo 權限。主機須能連接 Telegram 與媒體來源。部署腳本會準備 Python 3.12 及缺少的 ffmpeg，在獨立環境測試後才切換；服務或設定檢查失敗會還原程式。Bot 採長輪詢（long polling），不需 Webhook 或開放入站埠。
+
+先在 BotFather 建立 Bot。以下指令用於尚未安裝本 Bot 的主機，最後一步會在終端隱藏輸入 Token；不要把 Token 放進命令引數。
 
 ```sh
+git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
+```
+
+未設定 Token 時服務會等待。設定後向 Bot 傳送 `/id`，取得自己的用戶 ID，再執行：
+
+```sh
 sudo x-tweet-bot-config set-owner YOUR_TELEGRAM_USER_ID
 sudo x-tweet-bot-config status
 systemctl status x-tweet-telegram-bot.service --no-pager
 ```
 
-`set-token` 在本機隱藏輸入並向 Telegram 驗證；請勿把 Token 寫在命令列。`/id` 可取得自己的 Telegram User ID。`deploy.sh` 初次啟動時如尚未設定 Token，服務只會等待設定，不會對 Telegram 發訊。設定保存在 root 才能讀的 `/etc/x-tweet-telegram-bot.env`；不要提交它。修改後 `sudo systemctl restart x-tweet-telegram-bot.service`。
+### 設定與使用
+
+設定在 `/etc/x-tweet-telegram-bot.env`，僅 root 可讀；狀態在 `/var/lib/x-tweet-telegram-bot`。不要把這些檔案或其備份放進 Git。修改環境設定後執行 `sudo systemctl restart x-tweet-telegram-bot.service`。
 
 | 設定 | 預設 | 用途 |
 | --- | --- | --- |
-| `BOT_TIMEZONE` | `UTC` | IANA 時區，如 `Asia/Tokyo`；用於每日額度與簡報。 |
-| `DAILY_RESET_HOUR` | `0` | 該時區每日換日的整點，0–23。 |
-| `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向所有者發送每日用量與待審摘要。 |
-| `DEFAULT_DAILY_LIMIT` | `50` | 未在 Bot 設定「預設額度」時，新獲授權普通用戶的每日額度，1–100000；修改此環境值不會批次改動既有額度。 |
-| `OWNER_CONTACT_URL` | 空白 | 可選的使用說明聯絡連結，如 `https://example.com/contact`；空白則不顯示。 |
-| `OWNER_CONTACT_LABEL` | 空白 | 聯絡連結文字；空白時使用翻譯文字。設為 `Powered by YOUR_NAME` 時只連結名字。 |
-| `WORKER_COUNT` | `2` | 貼文處理並行數，範圍 1–8。 |
-| `MIN_FREE_DISK_BYTES` | `1073741824` | 可用空間低於 1 GiB 時暫停接受新下載。 |
-| `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | 媒體暫存達到 1 GiB 時暫停接受新下載；不是硬配額。 |
-| `TEMP_RETENTION_HOURS` | `24` | 每小時清理超過此時數且不在使用的媒體暫存；啟動時亦清理。 |
+| `BOT_TIMEZONE` | UTC | 每日額度與簡報使用的 IANA 時區。 |
+| `DAILY_RESET_HOUR` | 0 | 該時區每日換日的整點，0–23。 |
+| `DAILY_REPORT_HOUR` | 22 | 向所有者發送用量與待審申請簡報的整點，0–23。 |
+| `DEFAULT_DAILY_LIMIT` | 50 | 新授權普通用戶額度，1–100000；Bot 內設定優先，不批次改現有額度。 |
+| `OWNER_CONTACT_URL` | 空白 | 可選的說明頁聯絡連結，例如 https://example.com/contact；空白則不顯示。 |
+| `OWNER_CONTACT_LABEL` | 空白 | 自訂連結文字；空白用翻譯標籤，`Powered by YOUR_NAME` 只連結名字。 |
+| `WORKER_COUNT` | 2 | 貼文並行數，1–8。 |
+| `MIN_FREE_DISK_BYTES` | 1073741824 | 可用空間低於 1 GiB 時不接受新下載。 |
+| `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | 媒體暫存達到 1 GiB 時不接受新下載；非硬配額。 |
+| `TEMP_RETENTION_HOURS` | 24 | 清理過期且未使用的媒體暫存；啟動時及每小時檢查。 |
 
-下載器快取與未完成檔案隨任務暫存清除；直連下載會檢查剩餘空間與時間。直連或備援失敗時保留已完成的媒體並提示略過，未取得媒體時繼續降級；空間不足則不啟動下載器。不自動刪除 ACL、憑證或損壞恢復檔。上述磁碟設定可修改，安全範圍見 `bot.py`。本 repository 不含異機備份系統。
+簡報與換日設為同一時刻時，統計剛結束的完整額度日；否則顯示發送當下的用量。例如兩者都設為 0，就會在午夜推送前一天的完整統計。用量按扣除額度的次數計算，不等於成功傳送次數。其他上限與設定範圍見 `bot.py`，依賴版本見 `requirements.txt`。
 
-其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；簡報與換日時刻相同時統計剛結束的完整額度日，否則顯示發送當下用量。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
+管理操作在 Bot 私聊進行：輸入用戶 ID 查詢詳情，或輸入 `ID 額度` 並確認修改。`-1` 為封鎖，`0` 為未授權的初始化狀態，正數為每日額度。只有所有者能授予不限額的管理員權限，也只有所有者能使用高級選項與用戶控制。輸入 `/cancel` 可取消。
 
-列表預設顯示全部用戶，欄位為 ID、已用/總量、語言代碼（CNS 簡體、CNT 繁體、JA 日語、EN 英語）及縮略名稱；ID 可複製，有 @帳號時名稱連結至該帳號。下方兩行按鈕篩選角色，✅ 標記目前選項，翻頁保留篩選；「管理員」包含所有者，但不改變權限。名稱寬度上限為 10（含省略號），ASCII 英數及空格計 1，其他字元計 2；完整名稱和可點擊的 @帳號保留在 ID 查詢詳情。完整日簡報在 ACL 保留最多三日彙總；首次遷移不補發不完整的舊日統計，不更動用戶額度。
+「預設額度」只影響之後新授權的普通用戶。「批量修改」輸入 `A B`（例如 `50 100`），確認後將現有額度為 A 的已授權普通用戶改為 B，不改預設額度或當日用量。A、B 須為不同的 1–100000 整數；初始化、待審、封鎖、所有者及管理員不參與。列表以 CNS／CNT／JA／EN 顯示語言，完整用戶資料可用 ID 查詢。
 
-管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
+內聯分享須在 BotFather 開啟 Inline Mode。Cookies 可由所有者匯入，普通用戶是否使用則由所有者開關控制。只在需要時匯入，建議使用獨立帳號；Cookies 是登入憑證，不要提交或轉傳。
 
-影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
+圖片會附上原始檔，影片受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
 
-所有角色共用簡潔使用說明；管理提示只在功能頁顯示。高級選項與用戶控制僅所有者可用。用量總覽位於用戶管理，先顯示當日用量，再列用戶分布；運行狀態顯示服務、運行時間、版本及最近 24 小時的 Bot 收發流量（含下載器）。使用 systemd 的 `IPAccounting=yes`，每分鐘記錄到私有狀態目錄的 `traffic.json`，最多 1440 個分鐘區段，重啟保留；按分鐘估算，未滿一天顯示已記錄時長。同次啟動取樣中斷超過兩分鐘、計數倒退或時鐘倒退則重新記錄。未啟用、不支援或非服務主程序時顯示無法取得，不代用主機流量。媒體原檔命名為 `X_貼文ID_序號.副檔名`，不修改內容。兩欄按鈕統一留白，實際寬度由 Telegram 客戶端決定；返回按鈕只顯示「返回」。`/cancel` 或切換管理畫面會取消輸入；舊審批按鈕不操作重新提交的申請，列表變更須重新確認。
+「運行狀態」顯示 Bot 與下載器最近 24 小時的流量，按分鐘估算，重啟後保留。紀錄不足 24 小時會註明；無法取得時不會用整臺主機的流量代替。此功能需要 systemd 的 `IPAccounting=yes`。
 
-Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
+### 維護與驗證
 
-用戶管理內的「用戶控制」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
+更新前先備份設定與狀態，再於原儲存庫目錄切換至要安裝的發布版本（以實際版本替換 `vX.Y.Z`）：
 
-`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 只在服務完全停止（inactive／failed、MainPID=0）時允許執行，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
+```sh
+git fetch --tags
+git checkout vX.Y.Z
+sudo bash deploy.sh
+```
 
-驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
+不要覆寫已有本機修改。部署會重啟 Bot，但保留原有設定與用戶資料。若版本號相同、檔案卻不同，腳本會拒絕部署；請核對版本標籤，不要強行覆蓋。
 
-自有原始碼 © 2026 kk311intl，以 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）授權。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` 各自遵循上游授權；再分發含依賴的執行包時須另外核對其義務。
+檢查服務與日誌可用 `systemctl status x-tweet-telegram-bot.service` 及 `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`。分享日誌前先遮蔽私人內容。
+
+本儲存庫不含異機備份系統。`export-access` 可不停機匯出權限與預設額度，不含姓名、語言、用量或憑證。`import-access` 只允許在服務完全停止（`inactive` 或 `failed`，且 `MainPID=0`）時匯入，不覆蓋較新資料。
+
+完整復原還需要環境設定與狀態目錄的備份，內容須來自同一時間點，並保留原檔所有權與權限。不要直接覆寫運行中的資料。程式不會為騰出磁碟空間自動刪除憑證、用戶資料或損壞後保留的復原檔。
+
+安裝 `requirements.txt` 中的依賴後，可執行 `python3 -m unittest -q test_bot.py`。部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`，並用 `TEST_URL=https://x.com/example/status/123456789` 指定真實公開且含文字與媒體的貼文，測試下載。測試不使用 Cookies、不發送 Telegram 訊息，結束後會清除暫存。最後仍須在 Telegram 確認文字與媒體接收，自動測試不能代替這一步。
+
+原始碼 © 2026 kk311intl，採 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）。requests、Pillow、yt-dlp、gallery-dl 各自沿用上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
 
 ## 日本語
 
-**AI coding agent に渡す、コードを書かずに導入するための指示**
+プログラミングに慣れていない場合は、ファイルを読んでコマンドを実行できる AI にリポジトリのリンクと次の指示を渡せます。
 
-> まずこの repository の README、`deploy.sh`、`bot.py`、`config_cli.py`、systemd unit、テストを読んでください。そのうえで、Python・systemd・Telegram Bot API を使う X/Twitter 単一投稿メディア Bot を、私の Debian／Ubuntu Linux サーバーへ導入してください。私はプログラミングに詳しくありません。各コマンドの意味と期待結果を説明し、サーバーへのログイン方法、Bot Token、私の Telegram User ID、タイムゾーンなど、本当に不足している値だけを尋ねてください。Bot の作成、ログイン承認、Token の安全な入力、SSH 鍵の確認は私自身が行います。Secret をチャット・issue・Git に貼らせないでください。同名サービスや既存データを先に調べ、確認なしに既存環境を上書き・再起動せず、ユーザーデータ、Webhook、資格情報を初期化しないでください。構成を独断で変えず、各段階を実行して結果を確認し、最後にサービス、Bot の `/start`、公開投稿1件、4言語表示を検証してください。所有者・管理者を含む全ユーザーが個別に言語を選びます。未確認の作業を完了済みと報告しないでください。
+> まず README、VERSION、bot.py、config_cli.py、deploy.sh、systemd のサービスファイル、テストを読んで、README に記載されたリリース版を私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
 
-この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。所有者・管理者を含む全ユーザーが「語言/Language」から简体中文・繁體中文・English・日本語を選べます。初期表示は繁體中文（`zh`）で、端末言語による自動切り替えはありません。選択は ACL に保存され、導入時の言語設定は不要です。
+X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「語言/Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
-必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+、systemd、Telegram Bot Token です。`deploy.sh` は Python 3.12 を再利用または導入し、独立した候補環境で依存関係を導入・テストしてから切り替えます。切り替え後のサービス・設定検査に失敗すればプログラムを戻します。専用ユーザーと `/var/lib/x-tweet-telegram-bot` を準備し、`ffmpeg` がなければ導入します。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
+### 導入
 
-新しいサーバーで repository を clone し、工程ディレクトリで実行します：
+Debian／Ubuntu、systemd、git、Python 3.10+、root または sudo 権限が必要です。サーバーから Telegram とメディア配信元に接続できる必要があります。導入スクリプトは Python 3.12 と不足している ffmpeg を用意し、別の環境でテストしてから切り替えます。サービスや設定の確認に失敗した場合はプログラムを元に戻します。ロングポーリングを使うため、Webhook や受信ポートの開放は不要です。
+
+先に BotFather で Bot を作成します。次のコマンドは、この Bot をまだ導入していないサーバーで実行してください。最後に Token を入力しますが、画面には表示されません。Token をコマンド引数に含めないでください。
 
 ```sh
+git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
+```
+
+Token が未設定の間はサービスが待機します。設定後、Bot に `/id` を送って自分のユーザー ID を確認し、次を実行します。
+
+```sh
 sudo x-tweet-bot-config set-owner YOUR_TELEGRAM_USER_ID
 sudo x-tweet-bot-config status
 systemctl status x-tweet-telegram-bot.service --no-pager
 ```
 
-`set-token` は端末で非表示入力し、Telegram で検証します。Token をコマンド引数に入れないでください。自分の Telegram User ID は `/id` で確認できます。初回起動時に Token がなければ、Bot は設定を待つだけです。設定は root のみが読める `/etc/x-tweet-telegram-bot.env` に保存します。Git に入れないでください。設定変更後は `sudo systemctl restart x-tweet-telegram-bot.service` を実行します。
+### 設定と利用
+
+設定ファイルは `/etc/x-tweet-telegram-bot.env` にあり、root のみ読み取れます。状態データは `/var/lib/x-tweet-telegram-bot` に保存されます。これらのファイルやバックアップを Git に入れないでください。環境設定を変更したら `sudo systemctl restart x-tweet-telegram-bot.service` を実行します。
 
 | 設定 | 初期値 | 用途 |
 | --- | --- | --- |
-| `BOT_TIMEZONE` | `UTC` | `Asia/Tokyo` などの IANA タイムゾーン。日次上限とレポートに適用します。 |
-| `DAILY_RESET_HOUR` | `0` | 日次上限を切り替える現地時刻（0–23 時）。 |
-| `DAILY_REPORT_HOUR` | `22` | その地域の 0–23 時。利用状況と審査待ちを所有者へ通知します。 |
-| `DEFAULT_DAILY_LIMIT` | `50` | Bot で「標準上限」を設定する前の、新規承認ユーザーの日次上限（1–100000）。環境変数の変更だけでは既存の上限を一括変更しません。 |
-| `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先URL（例：`https://example.com/contact`）。空欄なら表示しません。 |
-| `OWNER_CONTACT_LABEL` | 空欄 | リンクの表示名。空欄なら各言語の初期値を使用。`Powered by YOUR_NAME` は名前だけがリンクになります。 |
-| `WORKER_COUNT` | `2` | 投稿処理の並列数。1–8。 |
-| `MIN_FREE_DISK_BYTES` | `1073741824` | 空き容量が 1 GiB 未満なら新規ダウンロードを受け付けません。 |
-| `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | メディア一時ファイルが 1 GiB に達したら新規ダウンロードを停止します。ハード上限ではありません。 |
-| `TEMP_RETENTION_HOURS` | `24` | この時間を超えた未使用の一時ファイルを起動時と1時間ごとに削除します。 |
+| `BOT_TIMEZONE` | UTC | 日次上限・レポート用の IANA タイムゾーン。 |
+| `DAILY_RESET_HOUR` | 0 | 利用日の切り替え時刻、現地の 0–23 時。 |
+| `DAILY_REPORT_HOUR` | 22 | 所有者に使用量と審査待ち申請のレポートを送る時刻、0–23 時。 |
+| `DEFAULT_DAILY_LIMIT` | 50 | 新規承認ユーザーの上限、1–100000。Bot 内の設定が優先し、既存の上限は変えません。 |
+| `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先、例：https://example.com/contact。空欄なら非表示。 |
+| `OWNER_CONTACT_LABEL` | 空欄 | リンクの表示名。空欄は翻訳済みの標準名、`Powered by YOUR_NAME` は名前だけをリンク。 |
+| `WORKER_COUNT` | 2 | 投稿処理の並列数、1–8。 |
+| `MIN_FREE_DISK_BYTES` | 1073741824 | 空き容量が 1 GiB 未満なら新規ダウンロードを停止。 |
+| `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | メディア一時ファイルが 1 GiB に達したら受付停止。ハード上限ではありません。 |
+| `TEMP_RETENTION_HOURS` | 24 | 未使用の古いメディア一時ファイルを起動時と1時間ごとに確認・削除。 |
 
-キャッシュと未完了ファイルは処理終了時に一時ファイルとともに削除します。直リンクの取得中も空き容量と経過時間を確認します。直リンク・代替ダウンローダーの失敗時は取得済みのメディアを送信し、不足分を通知します。取得できなければ別の方法を試しますが、空き容量不足ならダウンローダーを起動しません。ACL、資格情報、破損時の復旧ファイルは自動削除しません。容量設定の有効範囲は `bot.py` を参照してください。この repository に別サーバーへのバックアップ機能は含まれません。
+レポートと利用日の切り替えを同じ時刻にすると、終了した1日分の使用量を報告します。それ以外は送信時点の使用量です。両方を 0 にすると、午前0時に前日分を報告します。使用量は上限から差し引いた回数で、送信成功数ではありません。その他の上限と設定範囲は `bot.py`、依存パッケージのバージョンは `requirements.txt` を参照してください。
 
-`MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信します。送信と利用日の切り替えが同時なら直前の1日分、それ以外は送信時点の利用量を表示します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
+管理操作は Bot との個別チャットで行います。ユーザー ID を入力すると詳細を表示し、`ID 上限値` を入力すると確認後に変更します。`-1` はブロック、`0` は未承認の初期状態、正の数は1日の上限です。無制限の管理者権限の付与、詳細設定、ユーザー制御は所有者専用です。入力は `/cancel` で中止できます。
 
-一覧は初期状態で全ユーザーを表示し、ID、使用量/上限、言語コード（CNS 簡体字、CNT 繁体字、JA 日本語、EN 英語）、省略した名前を並べます。ID はコピーでき、@ユーザー名がある場合は名前からプロフィールを開けます。下の2行のボタンで絞り込み、選択中は ✅ で示し、ページ移動でも維持します。「管理者」には所有者も含みますが、権限は変わりません。名前の幅は省略記号を含め10まで（ASCII 英数字・空白は1、その他は2）。完全な名前とクリック可能な @ユーザー名は ID の詳細に残します。日次集計は ACL に最大3日分保存します。移行前の不完全な集計は送らず、利用上限も変更しません。
+「標準上限」は今後承認する一般ユーザーだけに適用されます。「一括変更」では `A B`（例：`50 100`）を入力し、確認後に上限が A の承認済み一般ユーザーを B に変更します。標準上限や本日の使用量は変わりません。A と B は異なる 1–100000 の整数で、初期状態・審査待ち・ブロック・所有者・管理者は対象外です。一覧では CNS／CNT／JA／EN で言語を表示し、詳しいユーザー情報は ID で検索できます。
 
-管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
+インライン共有には BotFather で Inline Mode を有効にしてください。Cookies は所有者が取り込み、一般ユーザーに使わせるかどうかも所有者が設定します。必要な場合だけ取り込み、専用アカウントの使用をお勧めします。Cookies はログインの認証情報なので、Git に入れたり他人に転送したりしないでください。
 
-動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
+画像には元ファイルを添付し、動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
 
-使い方は全ユーザー共通で、管理操作の案内は該当画面に表示します。詳細設定とユーザー制御は所有者のみ利用できます。ユーザー管理の利用状況には本日の使用量とユーザー数を、稼働状況にはサービスの状態・稼働時間・バージョンと直近24時間の Bot 送受信量（ダウンローダーを含む）を表示します。systemd の `IPAccounting=yes` を使い、専用状態ディレクトリの `traffic.json` に毎分記録し、最大1440区間を保持します。再起動後も保持する分単位の概算で、24時間未満は記録時間を表示します。同じ起動中の記録が2分を超えて途切れた場合や、カウンター・時計の逆行では記録を再開します。無効・未対応・主プロセス以外では取得不可と表示し、ホスト全体の数値は代用しません。元ファイルは `X_投稿ID_連番.拡張子` として送信し、内容は変更しません。2列ボタンの余白を揃えますが、実際の幅は Telegram クライアントが決めます。戻るボタンは「戻る」のみです。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
+「稼働状況」の通信量は Bot とダウンローダーの直近24時間分を、分単位で概算したものです。再起動後も記録を保持し、24時間分に満たない場合はその旨を表示します。取得できない場合にサーバー全体の通信量で代用することはありません。systemd の `IPAccounting=yes` が必要です。
 
-Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
+### 保守と検証
 
-ユーザー管理の「ユーザー制御」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
+更新前に設定と状態データをバックアップし、元のリポジトリのディレクトリで導入するリリース版に切り替えます。`vX.Y.Z` は実際のバージョンに置き換えてください。
 
-`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` はサービス停止（inactive／failed、MainPID=0）を確認してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
+```sh
+git fetch --tags
+git checkout vX.Y.Z
+sudo bash deploy.sh
+```
 
-テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
+ローカル変更を上書きしないでください。導入時に Bot は再起動しますが、既存の設定とユーザーデータは保持されます。バージョンが同じなのにファイルが異なる場合は導入を拒否します。リリースのタグを確認し、無理に上書きしないでください。
 
-自作コードは © 2026 kk311intl、[GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）で公開します。`requests`、`Pillow`、`yt-dlp`、`gallery-dl` は各自の上流ライセンスに従います。依存関係を含む実行形式を再配布する場合は、その義務も確認してください。
+サービスとログは `systemctl status x-tweet-telegram-bot.service` と `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager` で確認できます。ログを共有する前に個人情報や認証情報を伏せてください。
+
+このリポジトリには、別サーバーへのバックアップ機能は含まれていません。`export-access` は稼働中でも権限と標準上限を出力できますが、名前・言語・使用量・認証情報は含みません。`import-access` はサービスが完全に停止している場合（`inactive` または `failed` で `MainPID=0`）だけ利用でき、新しいデータは上書きしません。
+
+完全な復元には、同じ時点の設定ファイルと状態データのバックアップが必要です。元のファイル所有者と権限も保持してください。稼働中のデータを直接置き換えないでください。容量確保のために認証情報、ユーザーデータ、破損後に残した復旧ファイルを自動削除することはありません。
+
+`requirements.txt` の依存パッケージをインストールすると、`python3 -m unittest -q test_bot.py` を実行できます。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` で確認し、必要なら `TEST_URL=https://x.com/example/status/123456789` に本文とメディアを含む実際の公開投稿を指定して、ダウンロードを試せます。Cookies は使わず、Telegram にメッセージを送ることもありません。一時ファイルは終了後に削除されます。最後に Telegram で本文とメディアの受信を確認してください。自動テストではこの確認を代替できません。
+
+ソースコード © 2026 kk311intl のライセンスは [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）です。requests、Pillow、yt-dlp、gallery-dl はそれぞれ元のライセンスに従います。依存パッケージを含めて再配布する場合は、それらのライセンス要件も確認してください。
 
 ## English
 
-**No-code deployment prompt for an AI coding agent**
+If you do not write code, give the repository link and this prompt to an AI that can read files and run commands:
 
-> Read this repository's README, `deploy.sh`, `bot.py`, `config_cli.py`, systemd unit, and tests first. Then help me deploy this Python/systemd X/Twitter single-post media bot, which uses the Telegram Bot API, on my own Debian or Ubuntu Linux server. I am not a programmer: explain each command and its expected result, and ask only for missing values such as server access, Bot Token, my Telegram User ID, and time zone. I must personally create the bot, approve logins, enter the Token securely, and confirm SSH keys. Do not ask me to paste secrets into chat, issues, or Git. Check for existing services and data before acting; do not overwrite or restart an existing installation without confirmation, and do not reset users, Webhooks, or credentials. Follow the current project without redesigning it. Execute and check each step, troubleshoot failures, and finally verify the service, `/start`, one public post, and all four interface languages (every role chooses individually). Mark any step you could not actually verify instead of claiming success.
+> First read the README, VERSION, bot.py, config_cli.py, deploy.sh, systemd service file and tests, then walk me through installing the release listed in the README on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
 
-Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Every user, including the owner and administrators, can choose 简体中文, 繁體中文, English, or 日本語 from 語言/Language. The default is Traditional Chinese (`zh`), not the client's language. Preferences are saved in the ACL; no deployment language setting is needed.
+Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in 語言/Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
-You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+, systemd, and a Telegram Bot Token. `deploy.sh` reuses or installs Python 3.12, installs and tests packages in a separate candidate environment before switching, and creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. After switching, failed service/config checks roll back the program. It installs `ffmpeg` if missing. The bot uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
+### Deploy
 
-Clone this repository onto a fresh server and run from its directory:
+You need Debian/Ubuntu, systemd, git, Python 3.10+ and root or sudo access. The server must be able to connect to Telegram and the media sources. The deployment script prepares Python 3.12 and any missing ffmpeg installation, tests in a separate environment before switching, and restores the previous code if service or configuration checks fail. The bot uses long polling, so no webhook or inbound port is needed.
+
+Create the bot in BotFather first. Run these commands on a server where this bot is not already installed. The last command prompts for the token without showing it on screen; never put it in command arguments.
 
 ```sh
+git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
+```
+
+The service waits until a token is configured. Then send `/id` to the bot to find your user ID and run:
+
+```sh
 sudo x-tweet-bot-config set-owner YOUR_TELEGRAM_USER_ID
 sudo x-tweet-bot-config status
 systemctl status x-tweet-telegram-bot.service --no-pager
 ```
 
-`set-token` accepts hidden terminal input and validates the Token with Telegram; never put it in command arguments. Send `/id` to the bot to find your Telegram User ID. Before the Token is configured, the first service start just waits. The settings file is `/etc/x-tweet-telegram-bot.env`, readable only by root; never commit it. After editing settings, run `sudo systemctl restart x-tweet-telegram-bot.service`.
+### Configure and use
+
+Settings are in `/etc/x-tweet-telegram-bot.env`, readable only by root. State is stored in `/var/lib/x-tweet-telegram-bot`. Do not put these files or their backups in Git. After changing environment settings, run `sudo systemctl restart x-tweet-telegram-bot.service`.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `BOT_TIMEZONE` | `UTC` | IANA zone such as `Asia/Tokyo`, used for daily limits and reports. |
-| `DAILY_RESET_HOUR` | `0` | Local hour when the daily usage period rolls over, 0–23. |
-| `DAILY_REPORT_HOUR` | `22` | Hour 0–23 in that zone for the owner's usage/pending report. |
-| `DEFAULT_DAILY_LIMIT` | `50` | Daily quota for newly approved regular users before a default is set in the bot, 1–100000; editing this environment value does not bulk-update existing quotas. |
-| `OWNER_CONTACT_URL` | empty | Optional help-page contact link, e.g. `https://example.com/contact`; omitted when empty. |
-| `OWNER_CONTACT_LABEL` | empty | Link text; defaults to a translated label. With `Powered by YOUR_NAME`, only the name is linked. |
-| `WORKER_COUNT` | `2` | Concurrent post jobs, from 1 to 8. |
-| `MIN_FREE_DISK_BYTES` | `1073741824` | Stop accepting downloads below 1 GiB of free space. |
-| `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | Stop accepting downloads when media temporary files reach 1 GiB; not a hard quota. |
-| `TEMP_RETENTION_HOURS` | `24` | Remove unused media temporary files older than this at startup and hourly. |
+| `BOT_TIMEZONE` | UTC | IANA time zone for daily limits and reports. |
+| `DAILY_RESET_HOUR` | 0 | Local hour when the usage day rolls over, 0–23. |
+| `DAILY_REPORT_HOUR` | 22 | Local hour for sending the owner a report of usage and pending requests, 0–23. |
+| `DEFAULT_DAILY_LIMIT` | 50 | Quota for newly approved regular users, 1–100000; the in-bot default takes priority and existing quotas stay unchanged. |
+| `OWNER_CONTACT_URL` | empty | Optional help-page contact URL, e.g. https://example.com/contact; omitted when empty. |
+| `OWNER_CONTACT_LABEL` | empty | Custom link text; empty uses the translated label, while `Powered by YOUR_NAME` links only the name. |
+| `WORKER_COUNT` | 2 | Concurrent post jobs, 1–8. |
+| `MIN_FREE_DISK_BYTES` | 1073741824 | Stop accepting downloads below 1 GiB free. |
+| `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | Stop accepting downloads at 1 GiB of media temporary files; not a hard quota. |
+| `TEMP_RETENTION_HOURS` | 24 | Check and remove expired, unused media temporary files at startup and hourly. |
 
-Caches and incomplete files are removed with each job's temporary files. Direct downloads check free space and elapsed time. Direct or extractor failures retain completed media and report missing items; when none were obtained, another method is tried. Extractors are not started when disk space is low. ACL data, credentials, and corrupt-state recovery files are never automatically deleted. See `bot.py` for configurable disk bounds. This repository does not include cross-server backups.
+When the report and reset hours match, the report covers the completed usage day. Otherwise it shows usage at send time. Set both to 0 to report the full previous day at midnight. Usage counts quota deductions, not successful deliveries. See `bot.py` for other limits and configuration ranges, and `requirements.txt` for dependency versions.
 
-You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_VIDEO_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; matching report and reset hours report the completed usage day; otherwise it shows usage at send time. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
+Manage users in a private chat with the bot. Enter a user ID to view details, or `ID quota` to change access after confirmation. `-1` blocks the user, `0` means initialized but unapproved, and positive numbers set the daily quota. Granting unlimited administrator access, Advanced settings and User controls are owner-only. Enter `/cancel` to cancel input.
 
-The list defaults to all users and shows ID, used/total, language code (CNS Simplified Chinese, CNT Traditional Chinese, JA Japanese, EN English) and a shortened name. IDs can be copied; names link to profiles when a @username is available. Two rows of role buttons filter results, ✅ marks the selection, and pagination keeps the filter. Administrators includes the owner without changing permissions. Names use at most 10 width units including the ellipsis: ASCII letters, digits and spaces count as one; other characters count as two. Full names and linked @usernames remain in ID details. Keep at most three daily aggregates in the ACL; do not send incomplete pre-migration reports or change user quotas.
+Default limit applies only to regular users approved afterwards. In Bulk change, enter `A B` (e.g. `50 100`) and confirm to change approved regular users whose quota is A to B. The default and today's usage stay unchanged. A and B must be different integers from 1 to 100000; initialized, pending, blocked, owner and administrator accounts are excluded. The list shows languages as CNS/CNT/JA/EN; search by ID for full user details.
 
-Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
+Enable Inline Mode in BotFather for inline sharing. The owner can import cookies and control whether regular users may use them. Import them only when needed, preferably from a dedicated account. Cookies are login credentials: do not commit them or share them with others.
 
-Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
+Images include the original files; videos are subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
 
-All roles share brief help; management guidance appears in the relevant screens. Advanced settings and User controls are owner-only. Usage overview under User management shows today's usage followed by user counts. Runtime status shows service state, uptime, version, and Bot traffic over the last 24 hours, including downloaders. With systemd's `IPAccounting=yes`, it records every minute in the private state directory's `traffic.json`, keeps at most 1440 minute buckets, and preserves history across restarts. This is a minute-resolution estimate; partial history shows its recorded duration. A sampling gap exceeding two minutes within the same run, a counter decrease, or a backward clock jump starts a new record. Disabled, unsupported, or non-main-process runs show unavailable, never host-wide traffic. Original media use `X_POSTID_SEQUENCE.extension` filenames without changing their contents. Two-column buttons have balanced padding; Telegram controls their actual widths. Back buttons say only “Back”. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
+Runtime status shows traffic for the bot and its downloaders over the last 24 hours, estimated by minute and retained across restarts. It indicates when less than 24 hours of data are available. If counters are unavailable, it does not substitute server-wide traffic. This requires systemd's `IPAccounting=yes`.
 
-Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
+### Maintain and verify
 
-The User controls menu under User management groups user access, auto-approval, and Quota management. Quota management has Default limit and Bulk change. The default applies only to regular users approved afterwards; existing users are unchanged. It is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`. For Bulk change, enter `A B` (e.g. `50 100`) and confirm to change only approved regular users whose current limit is A to B, without changing the default. A and B must be different integers from 1 to 100000. Initialized, pending, blocked, owner, and administrator accounts are excluded; today's usage stays unchanged. Set up the operation again if the target users or limits change before confirmation.
+Back up settings and state before updating, then switch to the release you want to install in the existing repository directory. Replace `vX.Y.Z` with the actual version:
 
-`status` shows the effective limit and its source. `export-access` includes the default and its update time; `import-access` requires an inactive/failed service with MainPID=0 and does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries. Inline requests for the same URL are charged once per five-minute window, but are charged again after the configured daily reset.
+```sh
+git fetch --tags
+git checkout vX.Y.Z
+sudo bash deploy.sh
+```
 
-For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
+Do not overwrite local changes. Deployment restarts the bot but keeps existing settings and user data. If files differ but the version number is unchanged, the script rejects the deployment. Check the release tag rather than forcing an overwrite.
 
-Project source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). `requests`, `Pillow`, `yt-dlp`, and `gallery-dl` retain their upstream licenses; check their obligations separately if you redistribute a bundled build.
+Check the service and logs with `systemctl status x-tweet-telegram-bot.service` and `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`. Redact private information before sharing logs.
+
+This repository does not include cross-server backups. `export-access` can export permissions and the default quota without stopping the bot, but does not include names, languages, usage or credentials. `import-access` requires the service to be fully stopped (`inactive` or `failed`, with `MainPID=0`) and will not overwrite newer data.
+
+For full recovery, back up environment settings and state from the same point in time, preserving file ownership and permissions. Never overwrite data while the bot is running. Credentials, user data and recovery files kept after corruption are not automatically deleted to reclaim disk space.
+
+Install the dependencies in `requirements.txt`, then run `python3 -m unittest -q test_bot.py`. After deployment, run `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`. You can set `TEST_URL=https://x.com/example/status/123456789` to a real public post with text and media to test downloading. The check uses no cookies, sends no Telegram messages and removes its temporary files afterwards. Finally, confirm text and media reception in Telegram; automated checks do not replace this step.
+
+Source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). requests, Pillow, yt-dlp and gallery-dl retain their upstream licenses. Check their license requirements when redistributing a bundled build.
