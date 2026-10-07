@@ -17,6 +17,7 @@ acl.json.corrupt-*
 update-offset.json
 cookies.txt
 cookie-alert.json
+traffic.json
 private-backups/
 *.tar.gz
 *.sqlite*

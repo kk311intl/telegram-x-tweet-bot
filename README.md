@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.6.3
+# Telegram X／Twitter 貼文媒體 Bot · v3.7.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -49,7 +49,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
 
-所有角色共用簡潔使用說明；管理提示只在功能頁顯示。高級選項與用戶控制僅所有者可用。用量總覽位於用戶管理，先顯示當日用量，再列用戶分布；運行狀態顯示服務、運行時間、版本及本次啟動的 Bot 收發流量（含下載器）。流量使用 systemd 的 `IPAccounting=yes`；未啟用、不支援或非服務主程序時顯示無法取得，不代用主機流量。返回按鈕只顯示「返回」。`/cancel` 或切換管理畫面會取消輸入；舊審批按鈕不操作重新提交的申請，列表變更須重新確認。
+所有角色共用簡潔使用說明；管理提示只在功能頁顯示。高級選項與用戶控制僅所有者可用。用量總覽位於用戶管理，先顯示當日用量，再列用戶分布；運行狀態顯示服務、運行時間、版本及最近 24 小時的 Bot 收發流量（含下載器）。使用 systemd 的 `IPAccounting=yes`，每分鐘記錄到私有狀態目錄的 `traffic.json`，最多 1440 個分鐘區段，重啟保留；按分鐘估算，未滿一天顯示已記錄時長。同次啟動取樣中斷超過兩分鐘、計數倒退或時鐘倒退則重新記錄。未啟用、不支援或非服務主程序時顯示無法取得，不代用主機流量。媒體原檔命名為 `X_貼文ID_序號.副檔名`，不修改內容。兩欄按鈕統一留白，實際寬度由 Telegram 客戶端決定；返回按鈕只顯示「返回」。`/cancel` 或切換管理畫面會取消輸入；舊審批按鈕不操作重新提交的申請，列表變更須重新確認。
 
 Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
 
@@ -106,7 +106,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
 
-使い方は全ユーザー共通で、管理操作の案内は該当画面に表示します。詳細設定とユーザー制御は所有者のみ利用できます。ユーザー管理の利用状況には本日の使用量とユーザー数を、稼働状況にはサービスの状態・稼働時間・バージョンと今回の起動からの Bot 送受信量（ダウンローダーを含む）を表示します。通信量は systemd の `IPAccounting=yes` を使い、無効・未対応・サービスの主プロセス以外では取得不可と表示し、ホスト全体の数値は代用しません。戻るボタンは「戻る」のみです。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
+使い方は全ユーザー共通で、管理操作の案内は該当画面に表示します。詳細設定とユーザー制御は所有者のみ利用できます。ユーザー管理の利用状況には本日の使用量とユーザー数を、稼働状況にはサービスの状態・稼働時間・バージョンと直近24時間の Bot 送受信量（ダウンローダーを含む）を表示します。systemd の `IPAccounting=yes` を使い、専用状態ディレクトリの `traffic.json` に毎分記録し、最大1440区間を保持します。再起動後も保持する分単位の概算で、24時間未満は記録時間を表示します。同じ起動中の記録が2分を超えて途切れた場合や、カウンター・時計の逆行では記録を再開します。無効・未対応・主プロセス以外では取得不可と表示し、ホスト全体の数値は代用しません。元ファイルは `X_投稿ID_連番.拡張子` として送信し、内容は変更しません。2列ボタンの余白を揃えますが、実際の幅は Telegram クライアントが決めます。戻るボタンは「戻る」のみです。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
 Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
@@ -163,7 +163,7 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 
 Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
 
-All roles share brief help; management guidance appears in the relevant screens. Advanced settings and User controls are owner-only. Usage overview under User management shows today's usage followed by user counts. Runtime status shows service state, uptime, version, and Bot traffic since service startup, including downloaders. Traffic uses systemd's `IPAccounting=yes`; disabled, unsupported, or non-main-process runs show unavailable, never host-wide traffic. Back buttons say only “Back”. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
+All roles share brief help; management guidance appears in the relevant screens. Advanced settings and User controls are owner-only. Usage overview under User management shows today's usage followed by user counts. Runtime status shows service state, uptime, version, and Bot traffic over the last 24 hours, including downloaders. With systemd's `IPAccounting=yes`, it records every minute in the private state directory's `traffic.json`, keeps at most 1440 minute buckets, and preserves history across restarts. This is a minute-resolution estimate; partial history shows its recorded duration. A sampling gap exceeding two minutes within the same run, a counter decrease, or a backward clock jump starts a new record. Disabled, unsupported, or non-main-process runs show unavailable, never host-wide traffic. Original media use `X_POSTID_SEQUENCE.extension` filenames without changing their contents. Two-column buttons have balanced padding; Telegram controls their actual widths. Back buttons say only “Back”. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
 Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 

@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.6.3"
+APP_VERSION = "3.7.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -427,11 +427,12 @@ ADMIN_TEXT = {
     "status": ("運行狀態", "Runtime status", "稼働状況", "运行状态"),
     "usage_overview": ("用量總覽", "Usage overview", "利用状況", "用量总览"),
     "status_technical": (
-        "版本：{version}\n\nBot 流量（本次啟動）\n接收：{received}\n傳送：{sent}",
-        "Version: {version}\n\nBot traffic (this run)\nReceived: {received}\nSent: {sent}",
-        "バージョン：{version}\n\nBot 通信量（今回の起動）\n受信：{received}\n送信：{sent}",
-        "版本：{version}\n\nBot 流量（本次启动）\n接收：{received}\n发送：{sent}",
+        "版本：{version}\n\nBot 流量（最近 24 小時）\n接收：{received}\n傳送：{sent}",
+        "Version: {version}\n\nBot traffic (last 24 hours)\nReceived: {received}\nSent: {sent}",
+        "バージョン：{version}\n\nBot 通信量（直近24時間）\n受信：{received}\n送信：{sent}",
+        "版本：{version}\n\nBot 流量（最近 24 小时）\n接收：{received}\n发送：{sent}",
     ),
+    "traffic_partial": ("已記錄：{duration}", "Recorded: {duration}", "記録済み：{duration}", "已记录：{duration}"),
     "unavailable": ("無法取得", "Unavailable", "取得できません", "无法获取"),
     "status_runtime": (
         "服務：{service}\n運行時間：{uptime}\n\n",
@@ -590,7 +591,7 @@ def admin_text(key: str) -> str:
     return ADMIN_TEXT[key][{"zh": 0, "en": 1, "ja": 2, "zh-cn": 3}[ui_language()]]
 
 URL_RE = re.compile(
-    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/(\d+)(?:[^\s]*)?",
+    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/([0-9]+)(?:[^\s]*)?",
     re.IGNORECASE,
 )
 
@@ -1358,8 +1359,8 @@ def normalize_status_url(text: str) -> str | None:
     host = parsed.hostname.lower() if parsed.hostname else ""
     if host not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}:
         return None
-    path_match = re.search(r"/([A-Za-z0-9_]+)/status/(\d+)", parsed.path)
-    if not path_match:
+    path_match = re.search(r"/([A-Za-z0-9_]+)/status/([0-9]+)", parsed.path)
+    if not path_match or len(path_match.group(2)) > 25:
         return None
     return f"https://x.com/{path_match.group(1)}/status/{path_match.group(2)}"
 
@@ -1423,6 +1424,22 @@ def cookie_menu_keyboard(
 
 def remove_keyboard() -> dict[str, bool]:
     return {"remove_keyboard": True}
+
+
+def keyboard_json(markup: dict[str, Any]) -> str:
+    # Telegram controls pixel widths; balance two-column labels without changing actions.
+    if "inline_keyboard" in markup:
+        rows = []
+        for row in markup["inline_keyboard"]:
+            if len(row) == 2:
+                labels = [button["text"].strip() for button in row]
+                widths = [sum(1 if char.isascii() else 2 for char in label if char not in "\ufe0f\u200d") for label in labels]
+                target = max(20, max(widths) + 4)
+                row = [{**button, "text": "\u2002" * ((target - width) // 2) + label + "\u2002" * ((target - width + 1) // 2)}
+                       for button, label, width in zip(row, labels, widths)]
+            rows.append(row)
+        markup = {**markup, "inline_keyboard": rows}
+    return json.dumps(markup, ensure_ascii=False)
 
 
 def user_name(record: dict[str, Any], max_width: int | None = None) -> str:
@@ -1656,7 +1673,7 @@ def service_traffic() -> tuple[int | None, int | None]:
     if result.returncode:
         return None, None
     values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-    if (values.get("MainPID") != str(os.getpid()) or values.get("ActiveState") != "active"
+    if (values.get("MainPID") != str(os.getpid()) or values.get("ActiveState") not in {"active", "deactivating"}
             or values.get("IPAccounting") != "yes"):
         return None, None
     counters = []
@@ -1665,6 +1682,91 @@ def service_traffic() -> tuple[int | None, int | None]:
         counter = int(value) if re.fullmatch(r"[0-9]{1,20}", value) else None
         counters.append(counter if counter is not None and counter < (1 << 64) - 1 else None)
     return counters[0], counters[1]
+
+
+class TrafficWindow:
+    """Minute-resolution Bot-only accounting, bounded to one rolling day."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.run_id = os.environ.get("INVOCATION_ID") or str(time.time_ns())
+        self.last_run = ""
+        self.last: list[int] | None = None
+        self.samples: list[list[int]] = []
+        self.since = int(time.time())
+        self.available = False
+        try:
+            with path.open(encoding="utf-8") as handle:
+                content = handle.read(128 * 1024 + 1)
+            if len(content) > 128 * 1024:
+                raise ValueError("traffic state too large")
+            data = json.loads(content)
+            if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1:
+                raise ValueError("invalid traffic state")
+            samples, last, since, run_id = (data.get(key) for key in ("samples", "last", "since", "run"))
+            def valid_row(row: Any) -> bool:
+                return (isinstance(row, list) and len(row) == 3
+                        and all(type(value) is int and 0 <= value < (1 << 64) - 1 for value in row))
+            if (not isinstance(samples, list) or len(samples) > 1440
+                    or not all(valid_row(row) for row in samples) or not valid_row(last)
+                    or type(since) is not int or not 0 <= since <= last[0] <= self.since
+                    or not isinstance(run_id, str) or not 1 <= len(run_id) <= 128
+                    or any(not since // 60 <= row[0] <= last[0] // 60 for row in samples)
+                    or any(a[0] >= b[0] for a, b in zip(samples, samples[1:]))):
+                raise ValueError("invalid traffic history")
+            self.samples, self.last, self.since, self.last_run = samples, last, since, run_id
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError, RecursionError):
+            LOG.warning("Traffic history unavailable; starting a new record")
+
+    def sample(self) -> None:
+        with self.lock:
+            received, sent = service_traffic()
+            self.available = received is not None and sent is not None
+            if not self.available:
+                return
+            now = int(time.time())
+            minute = now // 60
+            delta = [0, 0]
+            if self.last is not None:
+                gap = now - self.last[0]
+                same_run = self.last_run == self.run_id
+                if gap < 0 or (same_run and (gap > 120 or received < self.last[1] or sent < self.last[2])):
+                    # An unobserved interval cannot be assigned to the 24-hour window.
+                    self.samples = []
+                    self.since = now
+                elif same_run:
+                    delta = [received - self.last[1], sent - self.last[2]]
+            else:
+                self.since = now
+            self.samples = [row for row in self.samples if row[0] > minute - 1440]
+            if self.samples and self.samples[-1][0] == minute:
+                self.samples[-1][1] += delta[0]
+                self.samples[-1][2] += delta[1]
+            else:
+                self.samples.append([minute, *delta])
+            self.last, self.last_run = [now, received, sent], self.run_id
+            try:
+                atomic_write_text(self.path, json.dumps({
+                    "version": 1, "run": self.last_run, "last": self.last,
+                    "since": self.since, "samples": self.samples,
+                }, separators=(",", ":")))
+            except OSError:
+                LOG.warning("Could not save traffic history; keeping in-memory counters")
+
+    def totals(self) -> tuple[int | None, int | None, int]:
+        with self.lock:
+            now = int(time.time())
+            if not self.available or self.last is None or not 0 <= now - self.last[0] <= 120:
+                return None, None, 0
+            rows = [row for row in self.samples if row[0] > now // 60 - 1440]
+            return sum(row[1] for row in rows), sum(row[2] for row in rows), min(86400, max(0, now - self.since))
+
+    def record(self, stop_event: threading.Event) -> None:
+        while not stop_event.wait(60):
+            self.sample()
 
 
 def format_traffic_bytes(value: int | None) -> str:
@@ -1986,7 +2088,7 @@ class TelegramAPI:
                 "message_id": reply_to, "allow_sending_without_reply": True,
             })
         if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+            data["reply_markup"] = keyboard_json(reply_markup)
         if parse_mode:
             data["parse_mode"] = parse_mode
         return self.call("sendMessage", data)
@@ -2017,7 +2119,7 @@ class TelegramAPI:
             "disable_web_page_preview": "true",
         }
         if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+            data["reply_markup"] = keyboard_json(reply_markup)
         if parse_mode:
             data["parse_mode"] = parse_mode
         try:
@@ -2239,20 +2341,24 @@ class TelegramAPI:
             )
             return result if isinstance(result, list) else []
 
-    def send_document(self, chat_id: int, path: Path, caption: str = "") -> None:
+    def send_document(self, chat_id: int, path: Path, caption: str = "", *, filename: str | None = None) -> None:
         with path.open("rb") as handle:
             self.call(
                 "sendDocument",
                 {"chat_id": chat_id, "caption": caption[:1024]},
-                {"document": (path.name, handle)},
+                {"document": (filename or path.name, handle)},
                 timeout=(15, 180),
             )
 
-    def send_documents(self, chat_id: int, paths: list[Path]) -> None:
+    def send_documents(self, chat_id: int, paths: list[Path], *, tweet_id: str | None = None) -> None:
         if not paths:
             return
+        if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
+            raise ValueError("invalid post ID for media filename")
+        filenames = [f"X_{tweet_id}_{index + 1:02d}{path.suffix.lower()}" if tweet_id else path.name
+                     for index, path in enumerate(paths[:10])]
         if len(paths) == 1:
-            self.send_document(chat_id, paths[0])
+            self.send_document(chat_id, paths[0], filename=filenames[0])
             return
         with ExitStack() as stack:
             files: dict[str, Any] = {}
@@ -2264,7 +2370,7 @@ class TelegramAPI:
                     "media": f"attach://{name}",
                 }
                 handle = stack.enter_context(path.open("rb"))
-                files[name] = (path.name, handle)
+                files[name] = (filenames[index], handle)
                 media.append(item)
             self.call(
                 "sendMediaGroup",
@@ -2466,14 +2572,13 @@ def fxtwitter_tweet_url(tweet: dict[str, Any]) -> str | None:
     if candidate:
         return candidate
     tweet_id = str(tweet.get("id") or "").strip()
-    if not tweet_id.isdigit():
+    if not re.fullmatch(r"[0-9]{1,25}", tweet_id):
         return None
     author = tweet.get("author") or {}
     username = ""
     if isinstance(author, dict):
-        username = str(
-            author.get("screen_name") or author.get("username") or ""
-        ).strip().lstrip("@")
+        profile = author_profile_url(author.get("screen_name") or author.get("username"))
+        username = profile.rsplit("/", 1)[-1] if profile else ""
     return f"https://x.com/{username or 'i'}/status/{tweet_id}"
 
 
@@ -3081,6 +3186,9 @@ class Bot:
         self.inline_usage: dict[tuple[int, str, str], float] = {}
         self.started_at = time.time()
         self.last_disk_cleanup = 0.0
+        self.traffic = TrafficWindow(self.acl.path.parent / "traffic.json")
+        self.traffic_worker = threading.Thread(target=self.traffic.record, args=(self.stop_event,),
+                                               daemon=True, name="traffic-recorder")
 
     def clear_pending_input(self, user_id: int) -> None:
         self.pending_cookie_uploads.discard(user_id)
@@ -3105,6 +3213,8 @@ class Bot:
         return user_id == chat_id
 
     def start(self) -> None:
+        self.traffic.sample()
+        self.traffic_worker.start()
         cleanup_stale_media()
         self.last_disk_cleanup = time.monotonic()
         try:
@@ -3822,10 +3932,13 @@ class Bot:
             service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
             uptime=format_duration(time.time() - self.started_at),
         )
-        received, sent = service_traffic()
+        self.traffic.sample()
+        received, sent, recorded = self.traffic.totals()
         text += admin_text("status_technical").format(
             version=APP_VERSION, received=format_traffic_bytes(received), sent=format_traffic_bytes(sent)
         )
+        if received is not None and recorded < 86400:
+            text += "\n" + admin_text("traffic_partial").format(duration=format_duration(recorded))
         return text.rstrip()
 
     def usage_overview_text(self, viewer_id: int) -> str:
@@ -4898,7 +5011,7 @@ class Bot:
             if not self.can_process(user_id):
                 return
             try:
-                self.api.send_documents(chat_id, original_files)
+                self.api.send_documents(chat_id, original_files, tweet_id=effective_url.rsplit("/", 1)[-1])
             except (OSError, requests.RequestException, RuntimeError):
                 LOG.exception("Could not send original media files")
                 if not self.can_process(user_id):
@@ -4943,11 +5056,18 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
-    bot.start()
-    bot.inline_executor.shutdown(wait=False, cancel_futures=True)
-    deadline = time.monotonic() + 20
-    for worker in bot.workers:
-        worker.join(timeout=max(0, deadline - time.monotonic()))
+    try:
+        bot.start()
+    finally:
+        bot.stop()
+        bot.inline_executor.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + 20
+        for worker in bot.workers:
+            if worker.ident is not None:
+                worker.join(timeout=max(0, deadline - time.monotonic()))
+        if bot.traffic_worker.ident is not None:
+            bot.traffic_worker.join(timeout=3)
+        bot.traffic.sample()
     return 0
 
 

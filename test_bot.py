@@ -15,6 +15,203 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_post_ids_and_metadata_profiles_are_safe_for_original_filenames(self):
+        for value in ("９９", "1" * 26, "123\r\nHeader"):
+            with self.subTest(value=value):
+                self.assertIsNone(bot.fxtwitter_tweet_url({"id": value}))
+        for value in ("９９", "1" * 26):
+            self.assertIsNone(bot.normalize_status_url(f"https://x.com/example/status/{value}"))
+        self.assertEqual(bot.fxtwitter_tweet_url({"id": "123", "author": {"screen_name": "invalid/name"}}),
+                         "https://x.com/i/status/123")
+        self.assertEqual(bot.fxtwitter_tweet_url({"id": "123", "author": {"screen_name": "@example"}}),
+                         "https://x.com/example/status/123")
+
+    def test_cli_rejects_malformed_user_and_owner_state_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "acl.json"
+            for state in ([], True, {"owner_id": True}, {"users": []}, {"users": None}, {"users": [1]},
+                          {"users": {"100": []}}, {"users": {"100": {"quota": True}}}, {"pending_applications": [1]}):
+                with self.subTest(state=state):
+                    path.write_text(json.dumps(state), encoding="utf-8")
+                    before = path.read_bytes()
+                    with patch.object(config_cli.os, "geteuid", return_value=0, create=True), \
+                         patch.object(config_cli.sys, "argv", ["config", "status"]), \
+                         patch.object(config_cli, "load_env", return_value={}), \
+                         patch.object(config_cli, "STATE_PATH", path), patch("builtins.print") as output:
+                        self.assertEqual(config_cli.main(), 1)
+                        output.assert_any_call("state=invalid")
+                    self.assertEqual(path.read_bytes(), before)
+            for state in ([], {"owner_id": True}, {"owner_id": "100"}, {"owner_id": -1}):
+                path.write_text(json.dumps(state), encoding="utf-8")
+                before = path.read_bytes()
+                with self.assertRaisesRegex(SystemExit, "Could not validate"):
+                    config_cli.validate_owner_assignment(path, 100)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_traffic_window_keeps_only_24_hours_and_bounded_private_state(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot.time, "time") as clock, \
+             patch.object(bot, "service_traffic") as counters, patch.object(bot, "atomic_write_text") as save:
+            clock.return_value = 0
+            window = bot.TrafficWindow(Path(directory) / "traffic.json")
+            for minute in range(1501):
+                clock.return_value = minute * 60
+                counters.return_value = (100 + minute * 10, 200 + minute * 20)
+                window.sample()
+            self.assertEqual(window.totals(), (14400, 28800, 86400))
+            self.assertEqual(len(window.samples), 1440)
+            self.assertLess(len(save.call_args.args[1]), 128 * 1024)
+            self.assertNotIn("users", save.call_args.args[1])
+            clock.return_value += 121
+            self.assertEqual(window.totals(), (None, None, 0))
+
+    def test_traffic_history_survives_restart_without_counting_the_previous_run_twice(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot.time, "time") as clock, \
+             patch.object(bot, "service_traffic") as counters:
+            path = Path(directory) / "traffic.json"
+            clock.return_value, counters.return_value = 1000, (100, 200)
+            window = bot.TrafficWindow(path)
+            window.run_id = "first"
+            window.sample()
+            clock.return_value, counters.return_value = 1060, (130, 240)
+            window.sample()
+            clock.return_value, counters.return_value = 1080, (5, 10)
+            restarted = bot.TrafficWindow(path)
+            restarted.run_id = "second"
+            restarted.sample()
+            self.assertEqual(restarted.totals(), (30, 40, 80))
+            clock.return_value, counters.return_value = 1140, (20, 35)
+            restarted.sample()
+            self.assertEqual(restarted.totals(), (45, 65, 140))
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_traffic_history_preserves_recent_data_after_extended_downtime(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot.time, "time") as clock, \
+             patch.object(bot, "service_traffic") as counters:
+            path = Path(directory) / "traffic.json"
+            clock.return_value, counters.return_value = 1000, (100, 200)
+            window = bot.TrafficWindow(path)
+            window.run_id = "first"
+            window.sample()
+            clock.return_value, counters.return_value = 1060, (130, 240)
+            window.sample()
+            clock.return_value, counters.return_value = 4600, (5, 10)
+            restarted = bot.TrafficWindow(path)
+            restarted.run_id = "second"
+            restarted.sample()
+            self.assertEqual(restarted.totals(), (30, 40, 3600))
+
+    def test_traffic_window_restarts_partial_coverage_after_gaps_or_counter_resets(self):
+        for now, counters_value in ((1200, (200, 300)), (900, (200, 300)), (1070, (1, 2))):
+            with self.subTest(now=now), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(bot.time, "time") as clock, patch.object(bot, "service_traffic") as counters:
+                clock.return_value, counters.return_value = 1000, (100, 200)
+                window = bot.TrafficWindow(Path(directory) / "traffic.json")
+                window.sample()
+                clock.return_value, counters.return_value = 1060, (130, 240)
+                window.sample()
+                clock.return_value, counters.return_value = now, counters_value
+                window.sample()
+                self.assertEqual(window.totals(), (0, 0, 0))
+
+    def test_unavailable_traffic_and_failed_persistence_do_not_break_bot_or_invent_usage(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot.time, "time") as clock, \
+             patch.object(bot, "service_traffic") as counters:
+            clock.return_value, counters.return_value = 1000, (100, 200)
+            window = bot.TrafficWindow(Path(directory) / "traffic.json")
+            window.sample()
+            clock.return_value, counters.return_value = 1060, (None, None)
+            window.sample()
+            self.assertEqual(window.totals(), (None, None, 0))
+            clock.return_value, counters.return_value = 1120, (130, 240)
+            with patch.object(bot, "atomic_write_text", side_effect=OSError), self.assertLogs(bot.LOG, level="WARNING"):
+                window.sample()
+            self.assertEqual(window.totals(), (30, 40, 120))
+
+    def test_traffic_window_rejects_invalid_history_without_touching_user_data(self):
+        valid = {"version": 1, "run": "test", "last": [1000, 100, 200], "since": 900,
+                 "samples": [[16, 10, 20]]}
+        bad_states = ("invalid", "[]", "x" * (128 * 1024 + 1), *(
+            json.dumps({**valid, **changes}) for changes in (
+                {"version": True}, {"since": False}, {"last": [1000, -1, 10]},
+                {"last": [1000, 10, True]}, {"samples": [[16, 10, 20]] * 1441},
+                {"samples": [[17, 10, 20]]}, {"samples": [[16, 10, 20], [16, 0, 0]]},
+                {"samples": [[16, 1 << 64, 0]]}, {"run": []}, {"since": 1001},
+            )
+        ))
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot.time, "time", return_value=1000):
+            path = Path(directory) / "traffic.json"
+            acl = Path(directory) / "acl.json"
+            acl.write_text("preserved", encoding="utf-8")
+            for content in bad_states:
+                with self.subTest(content=content[:80]), self.assertLogs(bot.LOG, level="WARNING"):
+                    path.write_text(content, encoding="utf-8")
+                    window = bot.TrafficWindow(path)
+                self.assertEqual(window.samples, [])
+                self.assertEqual(window.totals(), (None, None, 0))
+            self.assertEqual(acl.read_text(encoding="utf-8"), "preserved")
+
+    def test_traffic_recorder_samples_independently_until_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = bot.TrafficWindow(Path(directory) / "traffic.json")
+            stop = MagicMock()
+            stop.wait.side_effect = [False, False, True]
+            with patch.object(window, "sample") as sample:
+                window.record(stop)
+            self.assertEqual(sample.call_count, 2)
+            self.assertEqual([call.args for call in stop.wait.call_args_list], [(60,), (60,), (60,)])
+
+    def test_original_media_names_use_post_id_and_preserve_bytes_for_single_and_grouped_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / "fxtwitter_3.JPG", Path(directory) / "downloader.png"
+            first.write_bytes(b"original one")
+            second.write_bytes(b"original two")
+            api = bot.TelegramAPI("YOUR_API_TOKEN")
+            uploads = []
+            def capture(method, data, files, **kwargs):
+                uploads.append((method, [(name, handle.read()) for name, handle in files.values()]))
+            api.call = capture
+            api.send_documents(100, [first], tweet_id="123456789")
+            api.send_documents(100, [first, second], tweet_id="123456789")
+            self.assertEqual(uploads, [
+                ("sendDocument", [("X_123456789_01.jpg", b"original one")]),
+                ("sendMediaGroup", [("X_123456789_01.jpg", b"original one"), ("X_123456789_02.png", b"original two")]),
+            ])
+            self.assertEqual(first.read_bytes(), b"original one")
+            self.assertEqual(second.read_bytes(), b"original two")
+            for invalid_id in ("../secret", "1\r\nHeader", "９９", "1" * 26):
+                with self.assertRaises(ValueError):
+                    api.send_documents(100, [first], tweet_id=invalid_id)
+
+    def test_two_column_buttons_are_balanced_without_mutating_menus_in_four_languages(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), bot.language_scope(language):
+                original = bot.user_menu_keyboard(True)
+                before = json.dumps(original)
+                rows = json.loads(bot.keyboard_json(original))["inline_keyboard"]
+                self.assertEqual([len(row) for row in rows], [2, 2, 2])
+                for row in rows:
+                    widths = [sum(1 if char.isascii() or char == "\u2002" else 2 for char in button["text"] if char not in "\ufe0f\u200d") for button in row]
+                    self.assertEqual(widths[0], widths[1])
+                    self.assertGreaterEqual(widths[0], 20)
+                self.assertEqual(rows[-1][-1]["text"].strip(), f'↩️ {bot.admin_text("back")}')
+                self.assertEqual(json.dumps(original), before)
+                self.assertNotIn("nav:usercontrols", str(bot.user_menu_keyboard(False)))
+                for keyboard in (bot.owner_keyboard(), bot.start_keyboard(language, False, True), bot.cookie_menu_keyboard()):
+                    padded = json.loads(bot.keyboard_json(keyboard))
+                    for source_row, padded_row in zip(keyboard["inline_keyboard"], padded["inline_keyboard"]):
+                        self.assertEqual([button["callback_data"] for button in source_row], [button["callback_data"] for button in padded_row])
+                        if len(source_row) != 2:
+                            self.assertEqual(source_row, padded_row)
+                self.assertEqual(json.loads(bot.keyboard_json(bot.remove_keyboard())), bot.remove_keyboard())
+                api = bot.TelegramAPI("YOUR_API_TOKEN")
+                api.call = MagicMock()
+                api.send_message(100, "menu", reply_markup=original)
+                self.assertEqual(api.call.call_args.args[1]["reply_markup"], bot.keyboard_json(original))
+                api.edit_message(100, 1, "menu", reply_markup=original)
+                self.assertEqual(api.call.call_args.args[1]["reply_markup"], bot.keyboard_json(original))
+
     def test_owner_assignment_clears_only_the_owners_pending_application(self):
         for assignment in ("claim", "environment"):
             with self.subTest(assignment=assignment), tempfile.TemporaryDirectory() as directory:
@@ -180,6 +377,7 @@ class ReliabilityTests(unittest.TestCase):
                 service = bot.Bot(api, store)
                 service.workers = []
                 with patch.object(api, "configure_commands"), patch.object(api, "configure_profile"), \
+                     patch.object(service.traffic, "sample"), \
                      patch.object(bot, "cleanup_stale_media"), patch.object(bot, "load_update_offset", return_value=0), \
                      patch.object(bot, "save_update_offset") as save, \
                      patch.object(bot.time, "sleep", side_effect=lambda _: service.stop()) as sleep, \
@@ -2105,12 +2303,15 @@ class MenuTests(unittest.TestCase):
                 service = bot.Bot(MagicMock(), store)
                 with patch.object(store, "records", side_effect=AssertionError("status must not enumerate users")), \
                      patch.object(bot.shutil, "disk_usage", side_effect=AssertionError("status must not inspect disk")), \
-                     patch.object(bot, "service_traffic", return_value=(5 * 1024 ** 2, 1024 ** 3)):
+                     patch.object(service.traffic, "sample"), \
+                     patch.object(service.traffic, "totals", return_value=(5 * 1024 ** 2, 1024 ** 3, 86400)):
                     text = service.system_status_text(100)
                     self.assertIn(bot.admin_text("status_technical").format(version=bot.APP_VERSION, received="5.0 MiB", sent="1.0 GiB"), text)
                     self.assertNotIn(str(bot.STATE_DIR), text)
-                with patch.object(bot, "service_traffic", return_value=(None, None)):
+                with patch.object(service.traffic, "sample"), patch.object(service.traffic, "totals", return_value=(None, None, 0)):
                     self.assertIn(bot.admin_text("unavailable"), service.system_status_text(100))
+                with patch.object(service.traffic, "sample"), patch.object(service.traffic, "totals", return_value=(10, 20, 180)):
+                    self.assertIn(bot.admin_text("traffic_partial").format(duration=bot.format_duration(180)), service.system_status_text(100))
                 for is_owner in (True, False):
                     keyboard = bot.status_keyboard(is_owner)
                     self.assertNotIn("statusrefresh:", str(keyboard))
@@ -2137,6 +2338,8 @@ class MenuTests(unittest.TestCase):
                 self.assertEqual(bot.service_traffic(), (None, None))
         with patch.object(bot.subprocess, "run", return_value=response(IPIngressBytes="0", IPEgressBytes="0")):
             self.assertEqual(bot.service_traffic(), (0, 0))
+        with patch.object(bot.subprocess, "run", return_value=response(ActiveState="deactivating")):
+            self.assertEqual(bot.service_traffic(), (1048576, 2097152))
         for value in ("", "[no data]", "infinity", "-1", "1.5", "９９", str((1 << 64) - 1), "9" * 21):
             with self.subTest(value=value), patch.object(bot.subprocess, "run", return_value=response(IPIngressBytes=value)):
                 self.assertEqual(bot.service_traffic(), (None, 2097152))
@@ -4217,7 +4420,7 @@ class MediaTests(unittest.TestCase):
             direct.assert_called_once()
             extractor.assert_not_called()
             api.send_previews.assert_called_once()
-            api.send_documents.assert_called_once_with(100, [media])
+            api.send_documents.assert_called_once_with(100, [media], tweet_id="123")
 
     def test_prepare_image_skips_reencoding_when_already_telegram_safe(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4501,7 +4704,7 @@ class MediaTests(unittest.TestCase):
             fallback = api.send_message.call_args.args[1]
             self.assertIn("media preview", fallback.lower())
             self.assertIn("try again later", fallback.lower())
-            api.send_documents.assert_called_once_with(100, [])
+            api.send_documents.assert_called_once_with(100, [], tweet_id="123")
 
     def test_owner_keeps_cookie_access_when_regular_cookie_access_is_off(self):
         tweet = {

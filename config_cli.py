@@ -125,9 +125,12 @@ def validate_owner_assignment(path: Path, requested_owner: int) -> None:
     if not path.exists():
         return
     try:
-        existing_owner = int(
-            (json.loads(path.read_text(encoding="utf-8"))).get("owner_id", 0) or 0
-        )
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("Invalid owner state")
+        existing_owner = state.get("owner_id", 0)
+        if type(existing_owner) is not int or not 0 <= existing_owner < (1 << 52):
+            raise ValueError("Invalid owner ID")
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit("Could not validate the existing Owner") from error
     if existing_owner and existing_owner != requested_owner:
@@ -209,11 +212,13 @@ def main() -> int:
         print(f"cookies={'configured' if COOKIE_PATH.exists() else 'not configured'}")
         if STATE_PATH.exists():
             try:
-                state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                validator = ACLStore.__new__(ACLStore)
+                validator._apply_state(json.loads(STATE_PATH.read_text(encoding="utf-8")), STATE_PATH.stat().st_mtime_ns)
+                state = validator.data
                 limit, source = default_limit_status(values, state)
                 print(f"default_daily_limit={limit} source={source}")
-                users = state.get("users") or {}
-                pending = state.get("pending_applications") or {}
+                users = state["users"]
+                pending = state["pending_applications"]
                 quotas = [record.get("quota", 0) for record in users.values()]
                 print(
                     "owner="
