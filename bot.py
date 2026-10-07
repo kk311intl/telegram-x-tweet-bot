@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.4.1"
+APP_VERSION = "3.5.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -438,6 +438,9 @@ ADMIN_TEXT = {
     "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
     "help": ("使用說明", "Help", "使い方", "使用说明"),
     "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
+    "user_controls": ("用戶控制管理", "User controls", "ユーザー利用設定", "用户控制管理"),
+    "quota_management": ("額度管理", "Quota management", "上限管理", "额度管理"),
+    "bulk_quota": ("批量修改", "Bulk change", "一括変更", "批量修改"),
     "implementation": ("實現方式", "Implementation details", "実装方法", "实现方式"),
     "access_switch": ("使用開關", "User access", "ユーザー利用", "使用开关"),
     "auto_approve": ("自動通過", "Auto-approve", "自動承認", "自动通过"),
@@ -476,16 +479,46 @@ ADMIN_TEXT = {
         "目前预设额度：{limit}。\n请输入新的每日额度（1–100000）。",
     ),
     "default_limit_confirm": (
-        "確認將預設額度改為 {limit}？\n只更新沿用原預設額度的正常普通用戶；其他額度與權限不變。新用戶使用新值，今日用量不變。",
-        "Set the default limit to {limit}?\nOnly approved regular users matching the previous default are updated; other quotas and access stay unchanged. New users use the new value; today's usage stays unchanged.",
-        "標準上限を {limit} に変更しますか？\n変更前の標準上限と同じ上限の承認済み一般ユーザーのみ更新します。他の上限・権限と本日の使用量は変えず、新規ユーザーには新しい値を使います。",
-        "确认将预设额度改为 {limit}？\n只更新沿用原预设额度的正常普通用户；其他额度与权限不变。新用户使用新值，今日用量不变。",
+        "確認將新用戶的預設額度改為 {limit}？\n現有用戶不變。",
+        "Set the default limit for new users to {limit}?\nExisting users are unchanged.",
+        "新規ユーザーの標準上限を {limit} に変更しますか？\n既存ユーザーは変更しません。",
+        "确认将新用户的预设额度改为 {limit}？\n现有用户不变。",
     ),
     "default_limit_changed": (
-        "預設額度已設為 {limit}，已更新 {count} 位普通用戶。",
-        "Default limit set to {limit}; updated {count} regular users.",
-        "標準上限を {limit} に設定し、一般ユーザー {count} 人を更新しました。",
-        "预设额度已设为 {limit}，已更新 {count} 位普通用户。",
+        "新用戶的預設額度已設為 {limit}。",
+        "Default limit for new users set to {limit}.",
+        "新規ユーザーの標準上限を {limit} に設定しました。",
+        "新用户的预设额度已设为 {limit}。",
+    ),
+    "bulk_quota_prompt": (
+        "請輸入原額度與新額度，例如 50 100（1–100000）。",
+        "Enter the current and new limits, e.g. 50 100 (1–100000).",
+        "変更前と変更後の上限を入力してください。例：50 100（1～100000）。",
+        "请输入原额度与新额度，例如 50 100（1–100000）。",
+    ),
+    "bulk_quota_confirm": (
+        "確認將 {count} 位普通用戶的額度由 {source} 改為 {target}？\n預設額度及今日用量不變。",
+        "Change {count} regular users' limits from {source} to {target}?\nThe default limit and today's usage stay unchanged.",
+        "一般ユーザー {count} 人の上限を {source} から {target} に変更しますか？\n標準上限と本日の使用量は変えません。",
+        "确认将 {count} 位普通用户的额度由 {source} 改为 {target}？\n预设额度及今日用量不变。",
+    ),
+    "bulk_quota_changed": (
+        "已將 {count} 位普通用戶的額度由 {source} 改為 {target}。",
+        "Changed {count} regular users' limits from {source} to {target}.",
+        "一般ユーザー {count} 人の上限を {source} から {target} に変更しました。",
+        "已将 {count} 位普通用户的额度由 {source} 改为 {target}。",
+    ),
+    "bulk_quota_range": (
+        "請輸入兩個不同的整數額度（1–100000），例如 50 100。",
+        "Enter two different integer limits (1–100000), e.g. 50 100.",
+        "異なる2つの整数上限（1～100000）を入力してください。例：50 100。",
+        "请输入两个不同的整数额度（1–100000），例如 50 100。",
+    ),
+    "bulk_quota_stale": (
+        "用戶額度已變更，請重新設定批量修改。",
+        "User limits changed. Set up the bulk change again.",
+        "ユーザーの上限が変わりました。一括変更をやり直してください。",
+        "用户额度已变更，请重新设置批量修改。",
     ),
     "default_limit_range": ("預設額度必須是 1 至 100000 的整數。", "The default limit must be an integer from 1 to 100000.", "標準上限は 1～100000 の整数にしてください。", "预设额度必须是 1 至 100000 的整数。"),
     "admin_unlimited": ("不限・管理員", "Unlimited · Administrator", "無制限・管理者", "不限・管理员"),
@@ -906,27 +939,41 @@ class ACLStore:
     def default_daily_limit(self) -> int:
         return self.data.get("default_daily_limit", DEFAULT_DAILY_LIMIT)
 
-    def set_default_daily_limit(self, actor_id: int, limit: int) -> int:
+    def set_default_daily_limit(self, actor_id: int, limit: int) -> None:
         self._require_owner(actor_id)
         if type(limit) is not int or not 1 <= limit <= MAX_DAILY_LIMIT:
             raise ValueError("default daily limit out of range")
         with self.lock:
             previous_limit = self.default_daily_limit
             self.data["default_daily_limit"] = limit
-            changed = 0
             timestamp = self._quota_timestamp()
             if previous_limit != limit or "default_daily_limit_updated_at" not in self.data:
                 self.data["default_daily_limit_updated_at"] = timestamp
-            for key, record in self.data["users"].items():
-                quota = self.quota(int(key))
-                if (quota != previous_limit or quota == limit
-                        or key in self.data["pending_applications"]):
-                    continue
-                record["quota"] = limit
-                record["quota_updated_at"] = timestamp
-                changed += 1
             self._save()
-            return changed
+
+    def bulk_quota_targets(self, source: int) -> dict[str, int]:
+        return {key: record.get("quota_updated_at", 0)
+                for key, record in self.data["users"].items()
+                if self.quota(int(key)) == source and key not in self.data["pending_applications"]}
+
+    def bulk_set_quota(
+        self, actor_id: int, source: int, target: int, expected: dict[str, int]
+    ) -> int:
+        self._require_owner(actor_id)
+        if (any(type(value) is not int or not 1 <= value <= MAX_DAILY_LIMIT
+                for value in (source, target)) or source == target):
+            raise ValueError("bulk daily limits out of range")
+        with self.lock:
+            targets = self.bulk_quota_targets(source)
+            if targets != expected:
+                raise ValueError("bulk quota targets changed")
+            if targets:
+                timestamp = self._quota_timestamp()
+                for key in targets:
+                    self.data["users"][key]["quota"] = target
+                    self.data["users"][key]["quota_updated_at"] = timestamp
+                self._save()
+            return len(targets)
 
     def debug_mode(self, user_id: int) -> bool:
         record = self.data["users"].get(str(user_id)) or {}
@@ -1524,12 +1571,33 @@ def confirm_quota_change_keyboard(user_id: int, quota: int) -> dict[str, Any]:
     ]}
 
 
-def default_limit_keyboard(limit: int | None = None) -> dict[str, Any]:
+def quota_input_keyboard(callback_data: str | None = None) -> dict[str, Any]:
     rows = []
-    if limit is not None:
-        rows.append([{"text": admin_text("confirm_change"), "callback_data": f"defaultquota:{limit}"}])
-    rows.append([{"text": admin_text("cancel"), "callback_data": "nav:advanced"}])
+    if callback_data is not None:
+        rows.append([{"text": admin_text("confirm_change"), "callback_data": callback_data}])
+    rows.append([{"text": admin_text("cancel"), "callback_data": "nav:quotamanagement"}])
     return {"inline_keyboard": rows}
+
+
+def quota_management_keyboard(default_daily_limit: int) -> dict[str, Any]:
+    return {"inline_keyboard": [
+        [{"text": f'🎯 {admin_text("default_limit")}{": " if ui_language() == "en" else "："}{default_daily_limit}', "callback_data": "nav:defaultquota"}],
+        [{"text": f'🔄 {admin_text("bulk_quota")}', "callback_data": "nav:bulkquota"}],
+        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("user_controls")}', "callback_data": "nav:usercontrols"}],
+    ]}
+
+
+def user_controls_keyboard(
+    external_access_enabled: bool, auto_approve_enabled: bool
+) -> dict[str, Any]:
+    external_state = admin_text("open" if external_access_enabled else "paused")
+    auto_approve_state = admin_text("on" if auto_approve_enabled else "off")
+    return {"inline_keyboard": [
+        [{"text": f'🌐 {admin_text("access_switch")}{": " if ui_language() == "en" else "："}{external_state}', "callback_data": "externaltoggle:0"}],
+        [{"text": f'✅ {admin_text("auto_approve")}{": " if ui_language() == "en" else "："}{auto_approve_state}', "callback_data": "autoapprovetoggle:0"}],
+        [{"text": f'🎯 {admin_text("quota_management")}', "callback_data": "nav:quotamanagement"}],
+        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("advanced")}', "callback_data": "nav:advanced"}],
+    ]}
 
 
 def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
@@ -1545,30 +1613,17 @@ def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
 
 def advanced_status_keyboard(
     debug_mode: bool,
-    external_access_enabled: bool = True,
-    auto_approve_enabled: bool = False,
     can_configure: bool = True,
-    default_daily_limit: int = DEFAULT_DAILY_LIMIT,
 ) -> dict[str, Any]:
     debug_state = admin_text("on" if debug_mode else "off")
-    external_state = admin_text("open" if external_access_enabled else "paused")
-    auto_approve_state = admin_text("on" if auto_approve_enabled else "off")
     owner_rows = [
         [{
             "text": f'🍪 {admin_text("cookies")}',
             "callback_data": "nav:cookies",
         }],
         [{
-            "text": f'🌐 {admin_text("access_switch")}{"：" if ui_language() != "en" else ": "}{external_state}',
-            "callback_data": "externaltoggle:0",
-        }],
-        [{
-            "text": f'✅ {admin_text("auto_approve")}{"：" if ui_language() != "en" else ": "}{auto_approve_state}',
-            "callback_data": "autoapprovetoggle:0",
-        }],
-        [{
-            "text": f'🎯 {admin_text("default_limit")}{"：" if ui_language() != "en" else ": "}{default_daily_limit}',
-            "callback_data": "nav:defaultquota",
+            "text": f'🎛️ {admin_text("user_controls")}',
+            "callback_data": "nav:usercontrols",
         }],
     ] if can_configure else []
     if can_configure:
@@ -2980,6 +3035,7 @@ class Bot:
         self.cookie_alert_lock = threading.Lock()
         self.pending_user_searches: set[int] = set()
         self.pending_default_quotas: dict[int, int | None] = {}
+        self.pending_bulk_quotas: dict[int, tuple[int, int, dict[str, int]] | None] = {}
         self.inline_usage_lock = threading.Lock()
         self.inline_usage: dict[tuple[int, str, str], float] = {}
         self.started_at = time.time()
@@ -2989,6 +3045,7 @@ class Bot:
         self.pending_cookie_uploads.discard(user_id)
         self.pending_user_searches.discard(user_id)
         self.pending_default_quotas.pop(user_id, None)
+        self.pending_bulk_quotas.pop(user_id, None)
 
     def target_management_error(self, actor_id: int, target_id: int) -> str | None:
         if not is_telegram_user_id(target_id):
@@ -3132,9 +3189,10 @@ class Bot:
                 if not is_private_chat:
                     self.api.send_message(chat_id, admin_text("private_only"), message_id)
                     return
+                self.pending_default_quotas[user_id] = None
                 if not re.fullmatch(r"[0-9]{1,6}", text) or not 1 <= int(text) <= MAX_DAILY_LIMIT:
                     self.api.send_message(
-                        chat_id, admin_text("default_limit_range"), message_id, default_limit_keyboard()
+                        chat_id, admin_text("default_limit_range"), message_id, quota_input_keyboard()
                     )
                     return
                 limit = int(text)
@@ -3143,7 +3201,33 @@ class Bot:
                     chat_id,
                     admin_text("default_limit_confirm").format(limit=limit),
                     message_id,
-                    default_limit_keyboard(limit),
+                    quota_input_keyboard(f"defaultquota:{limit}"),
+                )
+                return
+
+        if is_owner and user_id in self.pending_bulk_quotas:
+            if command.startswith("/"):
+                self.pending_bulk_quotas.pop(user_id, None)
+            else:
+                if not is_private_chat:
+                    self.api.send_message(chat_id, admin_text("private_only"), message_id)
+                    return
+                self.pending_bulk_quotas[user_id] = None
+                match = re.fullmatch(r"([0-9]{1,6})\s+([0-9]{1,6})", text)
+                source, target = (int(value) for value in match.groups()) if match else (0, 0)
+                if not (1 <= source <= MAX_DAILY_LIMIT and 1 <= target <= MAX_DAILY_LIMIT) or source == target:
+                    self.api.send_message(chat_id, admin_text("bulk_quota_range"), message_id, quota_input_keyboard())
+                    return
+                targets = self.acl.bulk_quota_targets(source)
+                if not targets:
+                    self.pending_bulk_quotas.pop(user_id, None)
+                    self.api.send_message(chat_id, admin_text("no_filtered_users"), message_id,
+                                          quota_management_keyboard(self.acl.default_daily_limit))
+                    return
+                self.pending_bulk_quotas[user_id] = (source, target, targets)
+                self.api.send_message(
+                    chat_id, admin_text("bulk_quota_confirm").format(source=source, target=target, count=len(targets)),
+                    message_id, quota_input_keyboard(f"bulkquota:{source}:{target}"),
                 )
                 return
 
@@ -3901,19 +3985,26 @@ class Bot:
                 text = admin_text("advanced")
                 keyboard = advanced_status_keyboard(
                     self.acl.debug_mode(user_id),
-                    self.acl.external_access_enabled,
-                    self.acl.auto_approve_enabled,
                     is_owner,
-                    self.acl.default_daily_limit,
                 )
-            elif destination == "defaultquota":
+            elif destination in {"usercontrols", "quotamanagement", "defaultquota", "bulkquota"}:
                 if not is_owner:
                     self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
                     return
-                self.pending_cookie_uploads.discard(user_id)
-                self.pending_default_quotas[user_id] = None
-                text = admin_text("default_limit_prompt").format(limit=self.acl.default_daily_limit)
-                keyboard = default_limit_keyboard()
+                if destination == "usercontrols":
+                    text = admin_text("user_controls")
+                    keyboard = user_controls_keyboard(self.acl.external_access_enabled, self.acl.auto_approve_enabled)
+                elif destination == "quotamanagement":
+                    text = admin_text("quota_management")
+                    keyboard = quota_management_keyboard(self.acl.default_daily_limit)
+                elif destination == "defaultquota":
+                    self.pending_default_quotas[user_id] = None
+                    text = admin_text("default_limit_prompt").format(limit=self.acl.default_daily_limit)
+                    keyboard = quota_input_keyboard()
+                else:
+                    self.pending_bulk_quotas[user_id] = None
+                    text = admin_text("bulk_quota_prompt")
+                    keyboard = quota_input_keyboard()
             elif destination == "help":
                 text, keyboard = owner_help_text(is_owner), owner_keyboard()
             elif destination == "userlist":
@@ -3984,20 +4075,36 @@ class Bot:
             if not 1 <= target <= MAX_DAILY_LIMIT:
                 self.api.answer_callback(callback_id, admin_text("default_limit_range"), alert=True)
                 return
-            if self.pending_default_quotas.get(user_id) != target:
+            if extra or self.pending_default_quotas.get(user_id) != target:
                 self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
                 return
-            changed = self.acl.set_default_daily_limit(user_id, target)
+            self.acl.set_default_daily_limit(user_id, target)
             self.pending_default_quotas.pop(user_id, None)
             self.api.edit_message(
                 chat_id, message_id,
-                admin_text("default_limit_changed").format(limit=target, count=changed),
-                advanced_status_keyboard(
-                    self.acl.debug_mode(user_id), self.acl.external_access_enabled,
-                    self.acl.auto_approve_enabled, is_owner, self.acl.default_daily_limit,
-                ),
+                admin_text("default_limit_changed").format(limit=target),
+                quota_management_keyboard(self.acl.default_daily_limit),
             )
             self.api.answer_callback(callback_id, admin_text("permission_changed"))
+            return
+
+        if action == "bulkquota":
+            if not is_owner:
+                self.api.answer_callback(callback_id, admin_text("advanced_owner_only"), alert=True)
+                return
+            pending = self.pending_bulk_quotas.get(user_id)
+            if not pending or len(extra) != 1 or (target, extra[0]) != (pending[0], str(pending[1])):
+                self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
+                return
+            source, limit, targets = pending
+            try:
+                count = self.acl.bulk_set_quota(user_id, source, limit, targets)
+                text = admin_text("bulk_quota_changed").format(source=source, target=limit, count=count)
+            except ValueError:
+                text = admin_text("bulk_quota_stale")
+            self.pending_bulk_quotas.pop(user_id, None)
+            self.api.edit_message(chat_id, message_id, text, quota_management_keyboard(self.acl.default_daily_limit))
+            self.api.answer_callback(callback_id, "")
             return
 
         self.clear_pending_input(user_id)
@@ -4141,14 +4248,10 @@ class Bot:
             self.api.edit_message(
                 chat_id,
                 message_id,
-                admin_text("advanced"),
-                advanced_status_keyboard(
-                    self.acl.debug_mode(user_id),
-                    self.acl.external_access_enabled,
-                    self.acl.auto_approve_enabled,
-                    is_owner,
-                    self.acl.default_daily_limit,
-                ),
+                admin_text("advanced" if action == "debugtoggle" else "user_controls"),
+                advanced_status_keyboard(self.acl.debug_mode(user_id), is_owner)
+                if action == "debugtoggle" else
+                user_controls_keyboard(self.acl.external_access_enabled, self.acl.auto_approve_enabled),
             )
             state_key = ("open" if enabled else "paused") if action == "externaltoggle" else ("on" if enabled else "off")
             state = admin_text(state_key)

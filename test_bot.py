@@ -331,10 +331,10 @@ class ReliabilityTests(unittest.TestCase):
                                     state = bot.admin_text(states[0] if current(store) else states[1])
                                     notice = f"{bot.admin_text(label)}已{state}。" if language == "zh" else f"{bot.admin_text(label)}: {state}"
                                     service.api.answer_callback.assert_called_with("toggle", notice)
-                                    self.assertEqual(service.api.edit_message.call_args.args[3], bot.advanced_status_keyboard(
-                                        store.debug_mode(100), store.external_access_enabled,
-                                        store.auto_approve_enabled, True, store.default_daily_limit,
-                                    ))
+                                    expected_keyboard = (bot.advanced_status_keyboard(store.debug_mode(100))
+                                                         if action == "debugtoggle" else
+                                                         bot.user_controls_keyboard(store.external_access_enabled, store.auto_approve_enabled))
+                                    self.assertEqual(service.api.edit_message.call_args.args[3], expected_keyboard)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
 
@@ -560,6 +560,7 @@ class ReliabilityTests(unittest.TestCase):
                     service.pending_cookie_uploads.add(actor)
                     service.pending_user_searches.add(actor)
                     service.pending_default_quotas[actor] = None
+                    service.pending_bulk_quotas[actor] = None
                     if transition.startswith("/"):
                         service.handle_update({"message": {"message_id": 1, "chat": {"id": actor},
                                                            "from": {"id": actor}, "text": transition}})
@@ -569,6 +570,7 @@ class ReliabilityTests(unittest.TestCase):
                     self.assertNotIn(actor, service.pending_cookie_uploads)
                     self.assertNotIn(actor, service.pending_user_searches)
                     self.assertNotIn(actor, service.pending_default_quotas)
+                    self.assertNotIn(actor, service.pending_bulk_quotas)
                     self.assertIsNone(store.quota(200))
                     self.assertEqual(store.owner_id, 100)
                     service.stop()
@@ -1103,7 +1105,7 @@ class ACLTests(unittest.TestCase):
                 store.observe({"id": 200})
             self.assertEqual(store.backup_path.read_bytes(), good)
 
-    def test_default_limit_updates_matching_regular_users_persists_and_applies_to_new_users(self):
+    def test_default_limit_preserves_existing_users_and_applies_to_new_users(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "acl.json"
             store = bot.ACLStore(path, 100)
@@ -1113,16 +1115,14 @@ class ACLTests(unittest.TestCase):
             store.request_access(600)
             store.consume(200)
             before = json.loads(json.dumps(store.data))
-            self.assertEqual(store.set_default_daily_limit(100, 100), 1)
-            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 202)], [100, 100, 1500])
-            for user_id in (100, 201, 202, 300, 400, 500, 600):
-                self.assertEqual(store.data["users"][str(user_id)], before["users"][str(user_id)])
+            store.set_default_daily_limit(100, 100)
+            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 202)], [50, 100, 1500])
+            self.assertEqual(store.data["users"], before["users"])
             self.assertEqual(store.data["pending_applications"], before["pending_applications"])
             for field in ("usage_date", "usage_count"):
                 self.assertEqual(store.data["users"]["200"][field], before["users"]["200"][field])
             for field in ("external_access_enabled", "ordinary_user_cookies_enabled", "auto_approve_enabled", "pending_jobs", "last_daily_report_date"):
                 self.assertEqual(store.data[field], before[field])
-            self.assertGreater(store.data["users"]["200"]["quota_updated_at"], before["users"]["200"]["quota_updated_at"])
             with patch.object(bot, "DEFAULT_DAILY_LIMIT", 75):
                 store = bot.ACLStore(path, 100)
                 self.assertEqual(store.default_daily_limit, 100)
@@ -1137,13 +1137,73 @@ class ACLTests(unittest.TestCase):
             self.assertEqual(store.export_access()["default_daily_limit"], 100)
             self.assertEqual(set(store.export_access()), {"version", "users", "default_daily_limit", "default_daily_limit_updated_at"})
             store.set_quota(250, 50)
-            self.assertEqual(store.set_default_daily_limit(100, 200), 6)
-            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 600, 700, 800, 900)], [200] * 6)
+            store.set_default_daily_limit(100, 200)
+            self.assertEqual([store.quota(user_id) for user_id in (200, 201, 600, 700, 800, 900)], [50, 100, 100, 100, 100, 100])
             self.assertEqual([store.quota(user_id) for user_id in (202, 250)], [1500, 50])
             before_repeat = json.loads(json.dumps(store.data))
-            self.assertEqual(store.set_default_daily_limit(100, 200), 0)
+            store.set_default_daily_limit(100, 200)
             self.assertEqual(store.data, before_repeat)
             self.assertEqual(bot.ACLStore(path, 100).default_daily_limit, 200)
+
+    def test_bulk_quota_updates_only_matching_regular_users_and_preserves_other_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            for user_id, quota in ((200, 50), (201, 50), (202, 1500), (300, None), (400, 0), (500, -1)):
+                store.set_quota(user_id, quota)
+            store.request_access(600)
+            store.observe({"id": 200, "first_name": "Example", "username": "example_user"})
+            store.set_language(200, "ja")
+            store.consume(200)
+            store.set_default_daily_limit(100, 777)
+            before = json.loads(json.dumps(store.data))
+            targets = store.bulk_quota_targets(50)
+            self.assertEqual(set(targets), {"200", "201"})
+            self.assertEqual(store.bulk_set_quota(100, 50, 100, targets), 2)
+            for key, record in before["users"].items():
+                actual = store.data["users"][key]
+                if key in targets:
+                    self.assertEqual(actual, {**record, "quota": 100, "quota_updated_at": actual["quota_updated_at"]})
+                    self.assertGreater(actual["quota_updated_at"], record["quota_updated_at"])
+                else:
+                    self.assertEqual(actual, record)
+            for key in before.keys() - {"users"}:
+                self.assertEqual(store.data[key], before[key])
+            reloaded = bot.ACLStore(path, 100)
+            normalized = json.loads(json.dumps(store.data))
+            normalized["users"]["100"].setdefault("debug_mode", False)
+            self.assertEqual(reloaded.data, normalized)
+            reloaded.add(700)
+            self.assertEqual(reloaded.quota(700), 777)
+            self.assertEqual(reloaded.export_access()["default_daily_limit"], 777)
+
+    def test_bulk_quota_rejects_invalid_values_unauthorized_and_changed_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, 50)
+            store.set_quota(300, None)
+            expected = store.bulk_quota_targets(50)
+            before = store.path.read_bytes()
+            cases = ((300, 50, 100), (400, 50, 100), (100, 0, 100), (100, -1, 100),
+                     (100, 50, 0), (100, 50, -1), (100, 100001, 100), (100, 50, 100001),
+                     (100, True, 100), (100, 50, True), (100, "50", 100), (100, 50, "100"), (100, 50, 50))
+            for actor, source, target in cases:
+                with self.subTest(actor=actor, source=source, target=target), self.assertRaises(ValueError):
+                    store.bulk_set_quota(actor, source, target, expected)
+                self.assertEqual(store.path.read_bytes(), before)
+            self.assertEqual(store.bulk_set_quota(100, 999, bot.MAX_DAILY_LIMIT, {}), 0)
+            self.assertEqual(store.path.read_bytes(), before)
+        for change in ("added", "different", "renewed", "blocked", "administrator"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_quota(200, 50)
+                expected = store.bulk_quota_targets(50)
+                store.set_quota(201 if change == "added" else 200,
+                                {"added": 50, "different": 75, "renewed": 50, "blocked": -1, "administrator": None}[change])
+                before = store.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    store.bulk_set_quota(100, 50, 100, expected)
+                self.assertEqual(store.path.read_bytes(), before)
 
     def test_default_limit_rejects_invalid_values_and_non_owner_without_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1156,7 +1216,7 @@ class ACLTests(unittest.TestCase):
                     store.set_default_daily_limit(actor, value)
                 self.assertEqual(path.read_bytes(), before)
                 self.assertEqual(store.default_daily_limit, bot.DEFAULT_DAILY_LIMIT)
-            self.assertEqual(store.set_default_daily_limit(100, bot.MAX_DAILY_LIMIT), 0)
+            store.set_default_daily_limit(100, bot.MAX_DAILY_LIMIT)
             self.assertEqual(bot.ACLStore(path, 100).default_daily_limit, bot.MAX_DAILY_LIMIT)
 
     def test_default_limit_falls_back_to_environment_and_preserves_usage_when_lowered(self):
@@ -1173,6 +1233,8 @@ class ACLTests(unittest.TestCase):
                 store.consume(200)
             before = dict(store.data["users"]["200"])
             store.set_default_daily_limit(100, 1)
+            self.assertEqual(store.data["users"]["200"], before)
+            store.bulk_set_quota(100, 75, 1, store.bulk_quota_targets(75))
             self.assertEqual(store.consume(200), (False, 3, 1))
             self.assertEqual(store.data["users"]["200"], {**before, "quota": 1, "quota_updated_at": store.data["users"]["200"]["quota_updated_at"]})
 
@@ -1797,7 +1859,7 @@ class MenuTests(unittest.TestCase):
                     self.assertNotIn(" | ", line)
                 for detail in ("Cookies", bot.admin_text("access_switch"), bot.admin_text("auto_approve"), bot.admin_text("implementation")):
                     self.assertNotIn(detail, status)
-                for action in ("nav:advanced", "debugtoggle:0", "externaltoggle:0", "autoapprovetoggle:0", "nav:cookies", "nav:cookiehelp", "nav:defaultquota"):
+                for action in ("nav:advanced", "debugtoggle:0", "externaltoggle:0", "autoapprovetoggle:0", "nav:cookies", "nav:cookiehelp", "nav:usercontrols", "nav:quotamanagement", "nav:defaultquota", "nav:bulkquota"):
                     api.reset_mock()
                     service.handle_callback({
                         "id": "page", "data": action, "from": {"id": 100},
@@ -1806,9 +1868,12 @@ class MenuTests(unittest.TestCase):
                     text = api.edit_message.call_args.args[2]
                     for line in counts:
                         self.assertNotIn(line, text)
-                    if action == "nav:advanced" or action.endswith("toggle:0"):
+                    if action in {"nav:advanced", "debugtoggle:0"}:
                         self.assertEqual(text, bot.admin_text("advanced"))
                         self.assertIn("nav:status", str(api.edit_message.call_args.args[3]))
+                    elif action in {"nav:usercontrols", "externaltoggle:0", "autoapprovetoggle:0"}:
+                        self.assertEqual(text, bot.admin_text("user_controls"))
+                        self.assertIn("nav:advanced", str(api.edit_message.call_args.args[3]))
                 service.handle_callback({
                     "id": "back", "data": "nav:status", "from": {"id": 100},
                     "message": {"message_id": 1, "chat": {"id": 100}},
@@ -1845,7 +1910,7 @@ class MenuTests(unittest.TestCase):
     def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
         for language in ("zh-cn", "zh", "en", "ja"):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
-                self.assertTrue(bot.advanced_status_keyboard(False)["inline_keyboard"][3][0]["text"].startswith("🎯 "))
+                self.assertTrue(bot.quota_management_keyboard(50)["inline_keyboard"][0][0]["text"].startswith("🎯 "))
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
                 store.set_language(100, language)
                 store.add(200)
@@ -1877,8 +1942,8 @@ class MenuTests(unittest.TestCase):
                 message("100")
                 callback("defaultquota:100")
                 self.assertEqual(store.default_daily_limit, 100)
-                self.assertEqual(store.quota(200), 100)
-                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("default_limit_changed").format(limit=100, count=1))
+                self.assertEqual(store.quota(200), 50)
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("default_limit_changed").format(limit=100))
                 self.assertIn("nav:defaultquota", str(api.edit_message.call_args.args[3]))
                 self.assertIn("quota:200:100", str(service.user_search_result(200, 100)[1]))
                 callback("defaultquota:100")
@@ -1887,6 +1952,100 @@ class MenuTests(unittest.TestCase):
                 message("/start")
                 self.assertNotIn(100, service.pending_default_quotas)
                 service.stop()
+
+    def test_quota_management_and_bulk_flow_are_localized_confirmed_and_cancellable(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
+                for user_id, quota in ((200, 50), (201, 50), (202, 1500)):
+                    store.set_quota(user_id, quota)
+                store.consume(200)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                def callback(data, chat_id=100):
+                    service.handle_callback({"id": data, "data": data, "from": {"id": 100},
+                                             "message": {"message_id": 1, "chat": {"id": chat_id}}})
+                def message(text):
+                    service.handle_update({"message": {"message_id": 2, "from": {"id": 100},
+                                                       "chat": {"id": 100}, "text": text}})
+                callback("nav:advanced")
+                self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
+                                 ["nav:cookies", "nav:usercontrols", "debugtoggle:0", "nav:status"])
+                callback("nav:usercontrols")
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("user_controls"))
+                self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
+                                 ["externaltoggle:0", "autoapprovetoggle:0", "nav:quotamanagement", "nav:advanced"])
+                callback("nav:quotamanagement")
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("quota_management"))
+                self.assertEqual([row[0]["callback_data"] for row in api.edit_message.call_args.args[3]["inline_keyboard"]],
+                                 ["nav:defaultquota", "nav:bulkquota", "nav:usercontrols"])
+                callback("nav:bulkquota")
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("bulk_quota_prompt"))
+                for invalid in ("50", "50 50", "0 100", "50 -1", "50 100001", "1.5 100", "５０ 100"):
+                    message(invalid)
+                    self.assertEqual(api.send_message.call_args.args[1], bot.admin_text("bulk_quota_range"))
+                    self.assertEqual(store.quota(200), 50)
+                message("50 100")
+                self.assertEqual(api.send_message.call_args.args[1], bot.admin_text("bulk_quota_confirm").format(source=50, target=100, count=2))
+                for invalid in ("bulkquota:50:101", "bulkquota:50", "bulkquota:50:100:extra"):
+                    callback(invalid)
+                    self.assertTrue(api.answer_callback.call_args.kwargs["alert"])
+                    self.assertEqual(store.quota(200), 50)
+                callback("bulkquota:50:100", -100)
+                self.assertEqual(store.quota(200), 50)
+                callback("nav:quotamanagement")
+                callback("bulkquota:50:100")
+                self.assertEqual(store.quota(200), 50)
+                callback("nav:bulkquota")
+                message("50 100")
+                callback("bulkquota:50:100")
+                self.assertEqual([store.quota(user_id) for user_id in (200, 201, 202)], [100, 100, 1500])
+                self.assertEqual(store.default_daily_limit, 50)
+                self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("bulk_quota_changed").format(source=50, target=100, count=2))
+                self.assertNotIn(100, service.pending_bulk_quotas)
+                store.add(900)
+                self.assertEqual(store.quota(900), 50)
+                callback("bulkquota:50:100")
+                self.assertTrue(api.answer_callback.call_args.kwargs["alert"])
+                callback("nav:bulkquota")
+                message("55 100")
+                self.assertEqual(api.send_message.call_args.args[1], bot.admin_text("no_filtered_users"))
+                self.assertNotIn(100, service.pending_bulk_quotas)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_bulk_confirmation_rejects_changed_preview_and_invalid_replacement_input(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                store.set_language(100, language)
+                store.set_quota(200, 50)
+                store.set_quota(201, 50)
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                def callback(data):
+                    service.handle_callback({"id": data, "data": data, "from": {"id": 100},
+                                             "message": {"message_id": 1, "chat": {"id": 100}}})
+                def message(text):
+                    service.handle_update({"message": {"message_id": 2, "from": {"id": 100},
+                                                       "chat": {"id": 100}, "text": text}})
+                callback("nav:bulkquota")
+                message("50 100")
+                store.set_quota(200, 75)
+                before = store.path.read_bytes()
+                callback("bulkquota:50:100")
+                self.assertEqual(store.path.read_bytes(), before)
+                self.assertEqual(api.edit_message.call_args.args[2], bot.admin_text("bulk_quota_stale"))
+                callback("nav:bulkquota")
+                message("50 100")
+                message("bad input")
+                callback("bulkquota:50:100")
+                self.assertEqual(store.quota(201), 50)
+                self.assertTrue(api.answer_callback.call_args.kwargs["alert"])
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
 
     def test_start_keyboard_localizes_access_and_language_selection(self):
         keyboard = bot.start_keyboard("ja", False, False)["inline_keyboard"]
@@ -2509,20 +2668,22 @@ class MenuTests(unittest.TestCase):
             )
             self.assertEqual(
                 advanced[1][0]["text"],
-                "🌐 使用開關：開放",
+                "🎛️ 用戶控制管理",
             )
             self.assertEqual(
                 advanced[2][0]["text"],
-                "✅ 自動通過：關閉",
-            )
-            self.assertEqual(
-                advanced[3][0]["text"],
-                "🎯 預設額度：50",
-            )
-            self.assertEqual(
-                advanced[4][0]["text"],
                 "🐞 實現方式：關閉",
             )
+            controls = bot.user_controls_keyboard(True, False)["inline_keyboard"]
+            self.assertEqual(
+                controls[0][0]["text"],
+                "🌐 使用開關：開放",
+            )
+            self.assertEqual(
+                controls[1][0]["text"],
+                "✅ 自動通過：關閉",
+            )
+            self.assertEqual(controls[2][0]["text"], "🎯 額度管理")
             cookies = bot.cookie_menu_keyboard(True)["inline_keyboard"]
             self.assertEqual(
                 cookies[1][0]["text"], "🍪 Cookies 使用：開啟"
@@ -2581,7 +2742,7 @@ class MenuTests(unittest.TestCase):
             for language, implementation in (("zh-cn", "实现方式"), ("zh", "實現方式"), ("ja", "実装方法"), ("en", "Implementation details")):
                 store.set_language(200, language)
                 with bot.language_scope(language):
-                    for data in ("nav:advanced", "debugtoggle:0", "nav:defaultquota", "defaultquota:100"):
+                    for data in ("nav:advanced", "debugtoggle:0", "nav:usercontrols", "nav:quotamanagement", "nav:defaultquota", "nav:bulkquota", "defaultquota:100", "bulkquota:50:100"):
                         with self.subTest(language=language, data=data):
                             api.reset_mock()
                             service.handle_callback({
@@ -4841,10 +5002,12 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             service = bot.Bot(api, store)
             for data in ("public:language", "lang:zh-cn"):
                 service.pending_default_quotas[100] = 100
+                service.pending_bulk_quotas[100] = None
                 service.pending_user_searches.add(100)
                 service.handle_callback({"id": "language", "data": data, "from": {"id": 100},
                                          "message": {"message_id": 1, "chat": {"id": 100}}})
                 self.assertNotIn(100, service.pending_default_quotas)
+                self.assertNotIn(100, service.pending_bulk_quotas)
                 self.assertNotIn(100, service.pending_user_searches)
                 self.assertEqual(store.default_daily_limit, 50)
             service.stop()
