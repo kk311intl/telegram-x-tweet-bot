@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.7.1"
+APP_VERSION = "3.7.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -1427,18 +1427,6 @@ def remove_keyboard() -> dict[str, bool]:
 
 
 def keyboard_json(markup: dict[str, Any]) -> str:
-    # Telegram controls pixel widths; balance two-column labels without changing actions.
-    if "inline_keyboard" in markup:
-        rows = []
-        for row in markup["inline_keyboard"]:
-            if len(row) == 2:
-                labels = [button["text"].strip() for button in row]
-                widths = [sum(1 if char.isascii() else 2 for char in label if char not in "\ufe0f\u200d") for label in labels]
-                target = max(20, max(widths) + 4)
-                row = [{**button, "text": "\u2002" * ((target - width) // 2) + label + "\u2002" * ((target - width + 1) // 2)}
-                       for button, label, width in zip(row, labels, widths)]
-            rows.append(row)
-        markup = {**markup, "inline_keyboard": rows}
     return json.dumps(markup, ensure_ascii=False)
 
 

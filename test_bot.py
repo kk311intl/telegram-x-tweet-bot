@@ -263,26 +263,23 @@ trap rollback_deploy ERR
                 with self.assertRaises(ValueError):
                     api.send_documents(100, [first], tweet_id=invalid_id)
 
-    def test_two_column_buttons_are_balanced_without_mutating_menus_in_four_languages(self):
+    def test_keyboard_json_preserves_unpadded_menus_in_four_languages(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), bot.language_scope(language):
                 original = bot.user_menu_keyboard(True)
                 before = json.dumps(original)
                 rows = json.loads(bot.keyboard_json(original))["inline_keyboard"]
                 self.assertEqual([len(row) for row in rows], [2, 2, 2])
+                self.assertEqual(rows, original["inline_keyboard"])
                 for row in rows:
-                    widths = [sum(1 if char.isascii() or char == "\u2002" else 2 for char in button["text"] if char not in "\ufe0f\u200d") for button in row]
-                    self.assertEqual(widths[0], widths[1])
-                    self.assertGreaterEqual(widths[0], 20)
-                self.assertEqual(rows[-1][-1]["text"].strip(), f'↩️ {bot.admin_text("back")}')
+                    for button in row:
+                        self.assertEqual(button["text"], button["text"].strip())
+                        self.assertNotIn("\u2002", button["text"])
+                self.assertEqual(rows[-1][-1]["text"], f'↩️ {bot.admin_text("back")}')
                 self.assertEqual(json.dumps(original), before)
                 self.assertNotIn("nav:usercontrols", str(bot.user_menu_keyboard(False)))
                 for keyboard in (bot.owner_keyboard(), bot.start_keyboard(language, False, True), bot.cookie_menu_keyboard()):
-                    padded = json.loads(bot.keyboard_json(keyboard))
-                    for source_row, padded_row in zip(keyboard["inline_keyboard"], padded["inline_keyboard"]):
-                        self.assertEqual([button["callback_data"] for button in source_row], [button["callback_data"] for button in padded_row])
-                        if len(source_row) != 2:
-                            self.assertEqual(source_row, padded_row)
+                    self.assertEqual(json.loads(bot.keyboard_json(keyboard)), keyboard)
                 self.assertEqual(json.loads(bot.keyboard_json(bot.remove_keyboard())), bot.remove_keyboard())
                 api = bot.TelegramAPI("YOUR_API_TOKEN")
                 api.call = MagicMock()

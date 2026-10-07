@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.7.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.7.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -19,7 +19,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 先在 BotFather 建立 Bot。以下指令用於尚未安裝本 Bot 的主機，最後一步會在終端隱藏輸入 Token；不要把 Token 放進命令引數。
 
 ```sh
-git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone --branch v3.7.2 https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
@@ -99,7 +99,7 @@ Debian／Ubuntu、systemd、git、Python 3.10+、root または sudo 権限が�
 先に BotFather で Bot を作成します。次のコマンドは、この Bot をまだ導入していないサーバーで実行してください。最後に Token を入力しますが、画面には表示されません。Token をコマンド引数に含めないでください。
 
 ```sh
-git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone --branch v3.7.2 https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
@@ -179,7 +179,7 @@ You need Debian/Ubuntu, systemd, git, Python 3.10+ and root or sudo access. The 
 Create the bot in BotFather first. Run these commands on a server where this bot is not already installed. The last command prompts for the token without showing it on screen; never put it in command arguments.
 
 ```sh
-git clone --branch v3.7.1 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone --branch v3.7.2 https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
