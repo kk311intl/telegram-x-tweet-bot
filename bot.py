@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.4.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -99,7 +99,7 @@ MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
 LANGUAGE_CODES = {"zh-cn": "CNS", "zh": "CNT", "ja": "JA", "en": "EN"}
 USER_LIST_NAME_WIDTH = 10
-USER_ROLE_FILTERS = ("all", "ordinary", "owner", "admin", "pending", "initialized", "blocked")
+USER_ROLE_FILTERS = ("all", "ordinary", "admin", "pending", "blocked", "initialized")
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
@@ -1368,7 +1368,7 @@ def user_name(record: dict[str, Any], max_width: int | None = None) -> str:
 
 def user_role(record: dict[str, Any], owner_id: int) -> str:
     if record["user_id"] == owner_id:
-        return "owner"
+        return "admin"
     quota = record.get("quota", 0)
     if quota is None:
         return "admin"
@@ -1467,18 +1467,19 @@ def pending_keyboard(
     return {"inline_keyboard": rows}
 
 
-def users_page_keyboard(page: int, total: int, role: str = "ordinary") -> dict[str, Any]:
+def users_page_keyboard(page: int, total: int, role: str = "all") -> dict[str, Any]:
     navigation = pagination_row("userspage", page, total)
     for button in navigation:
         if button["callback_data"].startswith("userspage:"):
             button["callback_data"] += f":{role}"
-    rows = [navigation]
-    for choices in (USER_ROLE_FILTERS[:2], USER_ROLE_FILTERS[2:4], USER_ROLE_FILTERS[4:]):
+    rows = []
+    for choices in (USER_ROLE_FILTERS[:3], USER_ROLE_FILTERS[3:]):
         rows.append([{
-            "text": ("✓ " if choice == role else "") + admin_text(choice),
+            "text": ("✅ " if choice == role else "") + admin_text(choice),
             "callback_data": f"userspage:0:{choice}",
         } for choice in choices])
-    rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
+    rows.append(navigation)
+    rows.append([{"text": f'⬅️ {admin_text("users")}', "callback_data": "nav:users"}])
     return {"inline_keyboard": rows}
 
 
@@ -3548,7 +3549,7 @@ class Bot:
         self.acl.mark_daily_report(now)
 
     def users_page(
-        self, records: list[dict[str, Any]], page: int, role: str = "ordinary"
+        self, records: list[dict[str, Any]], page: int, role: str = "all"
     ) -> tuple[str, dict[str, Any], int]:
         if role not in USER_ROLE_FILTERS:
             raise ValueError("invalid user role filter")
@@ -3575,6 +3576,9 @@ class Bot:
             language_code = LANGUAGE_CODES[self.acl.language(user_id)]
             usage = int(record.get("usage_count", 0) or 0)
             name = html.escape(user_name(record, USER_LIST_NAME_WIDTH))
+            username = telegram_username(record)
+            if username:
+                name = f'<a href="https://t.me/{username}">{name}</a>'
             lines.append(
                 f"<code>{user_id}</code>｜{usage}/{quota_text}｜{language_code}｜{name}"
             )
@@ -4022,7 +4026,9 @@ class Bot:
             if target < 0:
                 self.api.answer_callback(callback_id, admin_text("menu_invalid_page"), alert=True)
                 return
-            role = extra[0] if extra else "all"  # Old list buttons showed every role.
+            role = extra[0] if extra else "all"
+            if role == "owner":  # Keep previously sent list buttons usable.
+                role = "admin"
             if len(extra) > 1 or role not in USER_ROLE_FILTERS:
                 self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
                 return

@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.4.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.4.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -43,7 +43,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 其他可調參數有 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS`；預設值與安全範圍見 `deploy.sh`、`bot.py`。每日簡報按當地曆日只發一次；簡報與換日時刻相同時統計剛結束的完整額度日，否則顯示發送當下用量。所有者可在私聊管理授權、Cookies、普通用戶開關及自動通過。Cookies 是登入憑證，只在需要登入型媒體時匯入，建議用獨立帳號；原始檔不要提交或轉傳。普通用戶的語言按鈕、申請流程及每日額度由程式管理；自動通過的狀態不會透露給未授權用戶。內聯分享須先在 BotFather 開啟 Inline Mode。
 
-列表預設顯示普通用戶，欄位為 ID、已用/總量、語言代碼（CNS 簡體、CNT 繁體、JA 日語、EN 英語）及縮略名稱；下方按鈕篩選角色，翻頁保留篩選。名稱寬度上限為 10（含省略號），ASCII 英數及空格計 1，其他字元計 2；完整名稱和可點擊的 @帳號保留在 ID 查詢詳情。完整日簡報在 ACL 保留最多三日彙總；首次遷移不補發不完整的舊日統計，不更動用戶額度。
+列表預設顯示全部用戶，欄位為 ID、已用/總量、語言代碼（CNS 簡體、CNT 繁體、JA 日語、EN 英語）及縮略名稱；ID 可複製，有 @帳號時名稱連結至該帳號。下方兩行按鈕篩選角色，✅ 標記目前選項，翻頁保留篩選；「管理員」包含所有者，但不改變權限。名稱寬度上限為 10（含省略號），ASCII 英數及空格計 1，其他字元計 2；完整名稱和可點擊的 @帳號保留在 ID 查詢詳情。完整日簡報在 ACL 保留最多三日彙總；首次遷移不補發不完整的舊日統計，不更動用戶額度。
 
 管理介面只在 Bot 私聊使用：傳送 User ID 查找，或傳送「User ID 額度」並確認修改；-1 封鎖、0 初始化、正數為每日上限，只有所有者能授予不限額的管理員權限。圖片會附原始檔，影片上限 50 MB；引用貼文不會遞迴擷取。媒體先嘗試 FxTwitter／twimg 直連，再依序使用 gallery-dl、yt-dlp 的匿名或 Cookies 模式；普通用戶的 Cookies 階段受所有者開關控制。
 
@@ -100,7 +100,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 `MAX_QUEUE`、`MAX_MEDIA_BYTES`、`MAX_VIDEO_BYTES`、`MAX_TOTAL_BYTES`、`INLINE_WORKER_COUNT`、`INLINE_MAX_PENDING`、`INLINE_CACHE_SECONDS` も調整できます。初期値と有効範囲は `deploy.sh` と `bot.py` を参照してください。レポートは現地の暦日ごとに1回送信します。送信と利用日の切り替えが同時なら直前の1日分、それ以外は送信時点の利用量を表示します。所有者は個別チャットで権限、Cookies、一般ユーザーの利用、自動承認を管理できます。Cookies はログイン資格情報です。必要な場合だけ、専用アカウントを使って取り込み、元ファイルを Git に入れたり転送したりしないでください。一般ユーザーは個別に言語を選び、利用申請と上限を利用できます。自動承認の状態は未承認ユーザーへ表示されません。インライン共有には BotFather で Inline Mode を有効にしてください。
 
-一覧は初期状態で一般ユーザーを表示し、ID、使用量/上限、言語コード（CNS 簡体字、CNT 繁体字、JA 日本語、EN 英語）、省略した名前を並べます。下のボタンで役割を絞り込み、ページ移動でも維持します。名前の幅は省略記号を含め10まで（ASCII 英数字・空白は1、その他は2）。完全な名前とクリック可能な @ユーザー名は ID の詳細に残します。日次集計は ACL に最大3日分保存します。移行前の不完全な集計は送らず、利用上限も変更しません。
+一覧は初期状態で全ユーザーを表示し、ID、使用量/上限、言語コード（CNS 簡体字、CNT 繁体字、JA 日本語、EN 英語）、省略した名前を並べます。ID はコピーでき、@ユーザー名がある場合は名前からプロフィールを開けます。下の2行のボタンで絞り込み、選択中は ✅ で示し、ページ移動でも維持します。「管理者」には所有者も含みますが、権限は変わりません。名前の幅は省略記号を含め10まで（ASCII 英数字・空白は1、その他は2）。完全な名前とクリック可能な @ユーザー名は ID の詳細に残します。日次集計は ACL に最大3日分保存します。移行前の不完全な集計は送らず、利用上限も変更しません。
 
 管理操作は Bot との個別チャットのみで行います。User ID で検索し、「User ID 上限値」で変更して確認します。-1 はブロック、0 は初期化、正の数は1日の上限で、無制限の管理者権限を付与できるのは所有者だけです。画像には元ファイルを添付し、動画は 50 MB まで。引用先はたどりません。メディアは FxTwitter／twimg の直リンクを優先し、次に gallery-dl、yt-dlp の匿名・Cookies モードを試します。一般ユーザーの Cookies 使用は所有者の設定に従います。
 
@@ -157,7 +157,7 @@ Caches and incomplete files are removed with each job's temporary files. Direct 
 
 You can also tune `MAX_QUEUE`, `MAX_MEDIA_BYTES`, `MAX_VIDEO_BYTES`, `MAX_TOTAL_BYTES`, `INLINE_WORKER_COUNT`, `INLINE_MAX_PENDING`, and `INLINE_CACHE_SECONDS`; see `deploy.sh` and `bot.py` for defaults and bounds. The report is sent once per local calendar day; matching report and reset hours report the completed usage day; otherwise it shows usage at send time. The owner can manage access, Cookies, regular-user availability, and auto-approval in a private chat. Cookies are login credentials: import them only when needed, preferably from a dedicated account, and never commit or forward the file. Regular users keep their own language selection, access requests, and daily limits. Unapproved users are not told whether auto-approval is enabled. Enable Inline Mode in BotFather if you want inline sharing.
 
-The list defaults to regular users and shows ID, used/total, language code (CNS Simplified Chinese, CNT Traditional Chinese, JA Japanese, EN English) and a shortened name. Role buttons below the list filter results; pagination keeps the filter. Names use at most 10 width units including the ellipsis: ASCII letters, digits and spaces count as one; other characters count as two. Full names and linked @usernames remain in ID details. Keep at most three daily aggregates in the ACL; do not send incomplete pre-migration reports or change user quotas.
+The list defaults to all users and shows ID, used/total, language code (CNS Simplified Chinese, CNT Traditional Chinese, JA Japanese, EN English) and a shortened name. IDs can be copied; names link to profiles when a @username is available. Two rows of role buttons filter results, ✅ marks the selection, and pagination keeps the filter. Administrators includes the owner without changing permissions. Names use at most 10 width units including the ellipsis: ASCII letters, digits and spaces count as one; other characters count as two. Full names and linked @usernames remain in ID details. Keep at most three daily aggregates in the ACL; do not send incomplete pre-migration reports or change user quotas.
 
 Management works only in a private chat with the bot. Send a User ID to search, or a User ID and quota to change access and confirm it: -1 blocks, 0 initializes, and a positive number sets the daily limit. Only the owner can grant unlimited administrator access. Images include original files; videos are capped at 50 MB, and quoted posts are not followed. Media retrieval prefers FxTwitter/twimg direct links, then gallery-dl and yt-dlp anonymously or with Cookies; the owner's switch controls Cookie use for regular users.
 

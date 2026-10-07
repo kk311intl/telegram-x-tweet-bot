@@ -2072,10 +2072,10 @@ class MenuTests(unittest.TestCase):
             [button["callback_data"] for button in navigation],
             ["requestspage:0", "noop:0", "requestspage:2"],
         )
-        user_navigation = bot.users_page_keyboard(1, 45)["inline_keyboard"][0]
+        user_navigation = bot.users_page_keyboard(1, 45)["inline_keyboard"][-2]
         self.assertEqual(
             [button["callback_data"] for button in user_navigation],
-            ["userspage:0:ordinary", "noop:0", "userspage:2:ordinary"],
+            ["userspage:0:all", "noop:0", "userspage:2:all"],
         )
 
     def test_user_list_copies_id_and_shows_fraction_language_and_name_without_status(self):
@@ -2092,12 +2092,12 @@ class MenuTests(unittest.TestCase):
             user_line = next(line for line in text.splitlines() if "<code>200</code>" in line)
             self.assertEqual(
                 user_line,
-                '<code>200</code>｜0/50｜CNT｜Example',
+                '<code>200</code>｜0/50｜CNT｜<a href="https://t.me/example_user">Example</a>',
             )
             self.assertNotIn("@example_user", user_line)
             self.assertNotIn("狀態", text.splitlines()[1])
-            self.assertNotIn("https://t.me/", text)
-            self.assertEqual(len(keyboard["inline_keyboard"]), 5)
+            self.assertEqual(len(keyboard["inline_keyboard"]), 4)
+            self.assertEqual([len(row) for row in keyboard["inline_keyboard"]], [3, 3, 1, 1])
 
     def test_user_list_copies_id_when_username_is_missing(self):
         records = [{
@@ -2138,7 +2138,8 @@ class MenuTests(unittest.TestCase):
             self.assertNotIn('https://t.me/old_user', text)
             self.assertEqual(store.data["users"]["200"]["profile_checked_date"], bot.bot_date(186_400))
             page = service.users_page(store.records(), 0)[0]
-            self.assertIn('<code>200</code>｜0/50｜CNT｜New Name', page)
+            self.assertIn('<code>200</code>｜0/50｜CNT｜<a href="https://t.me/new_user">New Name</a>', page)
+            self.assertNotIn("https://t.me/old_user", page)
 
     def test_user_label_without_name_does_not_repeat_user_id(self):
         record = {"user_id": 987654321, "quota": 0}
@@ -2165,6 +2166,7 @@ class MenuTests(unittest.TestCase):
             text, _ = service.user_search_result(200, 100)
             self.assertIn("&lt;b&gt;Not markup&lt;/b&gt;", text)
             self.assertNotIn("https://t.me/", text)
+            self.assertNotIn("https://t.me/", service.users_page([record], 0)[0])
             record["username"] = "valid_user"
             linked_text, _ = service.user_search_result(200, 100)
             self.assertIn('<a href="https://t.me/valid_user">@valid_user</a>', linked_text)
@@ -2189,13 +2191,14 @@ class MenuTests(unittest.TestCase):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
                 store.set_quota(200, 100)
                 store.set_language(200, language)
+                store.observe({"id": 200, "first_name": "Example", "username": "example_user"})
                 for _ in range(8):
                     store.consume(200)
                 service = bot.Bot(MagicMock(), store)
                 text, _, _ = service.users_page(store.records(), 0)
-                self.assertIn(f'<code>200</code>｜8/100｜{code}｜—', text)
-                self.assertNotIn('<code>100</code>', text)
-                self.assertIn('0/∞', service.users_page(store.records(), 0, "owner")[0])
+                self.assertIn(f'<code>200</code>｜8/100｜{code}｜<a href="https://t.me/example_user">Example</a>', text)
+                self.assertIn('<code>100</code>', text)
+                self.assertIn('0/∞', service.users_page(store.records(), 0, "admin")[0])
                 self.assertEqual(len(text.splitlines()[-1].split("｜")), 4)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
@@ -2210,17 +2213,19 @@ class MenuTests(unittest.TestCase):
                 for _ in range(count):
                     store.consume(user_id)
             service = bot.Bot(MagicMock(), store)
-            expected = {"all": {100, 101, 200, 201, 202, 203, 204, 205}, "owner": {100}, "admin": {101},
+            expected = {"all": {100, 101, 200, 201, 202, 203, 204, 205}, "admin": {100, 101},
                         "ordinary": {200, 201, 202}, "initialized": {203}, "pending": {204}, "blocked": {205}}
             import re
             for role in bot.USER_ROLE_FILTERS:
                 text, keyboard, _ = service.users_page(store.records(), 0, role)
                 ids = {int(value) for value in re.findall(r"<code>(\d+)</code>", text)}
                 self.assertEqual(ids, expected[role])
-                selected = [button for row in keyboard["inline_keyboard"][1:-1] for button in row if button["text"].startswith("✓ ")]
+                selected = [button for row in keyboard["inline_keyboard"][:2] for button in row if button["text"].startswith("✅ ")]
                 self.assertEqual([button["callback_data"] for button in selected], [f"userspage:0:{role}"])
             text = service.users_page(store.records(), 0)[0]
-            self.assertEqual(re.findall(r"<code>(\d+)</code>", text), ["202", "201", "200"])
+            self.assertEqual({int(value) for value in re.findall(r"<code>(\d+)</code>", text)}, expected["all"])
+            ordinary_text = service.users_page(store.records(), 0, "ordinary")[0]
+            self.assertEqual(re.findall(r"<code>(\d+)</code>", ordinary_text), ["202", "201", "200"])
             self.assertNotIn("狀態", text.splitlines()[1])
             service.stop()
             service.inline_executor.shutdown(wait=True)
@@ -2236,16 +2241,16 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(api, store)
             text, keyboard, page = service.users_page(store.records(), 99, "admin")
             self.assertEqual(page, 1)
-            self.assertIn("第 2/2 頁，共 25 位", text)
-            self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "userspage:0:admin")
-            for action, expected_role in (("userspage:1:ordinary", "ordinary"), ("userspage:0:admin", "admin"), ("userspage:0", "all")):
+            self.assertIn("第 2/2 頁，共 26 位", text)
+            self.assertEqual(keyboard["inline_keyboard"][-2][0]["callback_data"], "userspage:0:admin")
+            for action, expected_role in (("userspage:1:ordinary", "ordinary"), ("userspage:0:admin", "admin"), ("userspage:0:owner", "admin"), ("userspage:0", "all")):
                 api.reset_mock()
                 service.handle_callback({"id": "callback", "data": action, "from": {"id": 100},
                                          "message": {"message_id": 1, "chat": {"id": 100}}})
                 self.assertEqual(api.edit_message.call_args.kwargs["parse_mode"], "HTML")
                 keyboard = api.edit_message.call_args.args[3]
-                selected = [button["callback_data"] for row in keyboard["inline_keyboard"][1:-1]
-                            for button in row if button["text"].startswith("✓ ")]
+                selected = [button["callback_data"] for row in keyboard["inline_keyboard"][:2]
+                            for button in row if button["text"].startswith("✅ ")]
                 self.assertEqual(selected, [f"userspage:0:{expected_role}"])
             for invalid in ("userspage:0:unknown", "userspage:0:ordinary:owner", "userspage:-1:ordinary"):
                 api.reset_mock()
@@ -2256,7 +2261,7 @@ class MenuTests(unittest.TestCase):
             service.stop()
             service.inline_executor.shutdown(wait=True)
 
-    def test_user_list_command_and_menu_default_to_regular_users_for_admins(self):
+    def test_user_list_command_and_menu_default_to_all_users_for_admins(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.set_quota(101, None)
@@ -2275,8 +2280,8 @@ class MenuTests(unittest.TestCase):
                 menu_page = api.edit_message.call_args.args[2]
                 for text in (command_page, menu_page):
                     self.assertIn("<code>200</code>", text)
-                    for excluded in (100, 101, 300):
-                        self.assertNotIn(f"<code>{excluded}</code>", text)
+                    for included in (100, 101, 300):
+                        self.assertIn(f"<code>{included}</code>", text)
             service.stop()
             service.inline_executor.shutdown(wait=True)
 
@@ -2288,11 +2293,11 @@ class MenuTests(unittest.TestCase):
                 text, keyboard, page = service.users_page(store.records(), 99, "blocked")
                 self.assertEqual(page, 0)
                 self.assertIn(bot.admin_text("no_filtered_users"), text)
-                self.assertEqual(keyboard["inline_keyboard"][0], [{"text": "1/1", "callback_data": "noop:0"}])
-                buttons = [button for row in keyboard["inline_keyboard"][1:-1] for button in row]
+                self.assertEqual(keyboard["inline_keyboard"][-2], [{"text": "1/1", "callback_data": "noop:0"}])
+                buttons = [button for row in keyboard["inline_keyboard"][:2] for button in row]
                 self.assertEqual([button["callback_data"] for button in buttons], [f"userspage:0:{role}" for role in bot.USER_ROLE_FILTERS])
                 for role, button in zip(bot.USER_ROLE_FILTERS, buttons):
-                    self.assertEqual(button["text"], ("✓ " if role == "blocked" else "") + bot.admin_text(role))
+                    self.assertEqual(button["text"], ("✅ " if role == "blocked" else "") + bot.admin_text(role))
                     self.assertLessEqual(len(button["callback_data"].encode()), 64)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
@@ -2331,7 +2336,7 @@ class MenuTests(unittest.TestCase):
             self.assertIn("&lt;b&gt;", row)
             self.assertNotIn("<b>", row)
             self.assertEqual(len(row.split("｜")), 4)
-            name = bot.html.unescape(row.split("｜")[-1])
+            name = bot.html.unescape(bot.re.sub(r"<[^>]+>", "", row.split("｜")[-1]))
             width = sum(1 if char.isascii() and (char.isalnum() or char == " ") else 2 for char in name)
             self.assertLessEqual(width, bot.USER_LIST_NAME_WIDTH)
             details = service.user_search_result(200, 100)[0]
