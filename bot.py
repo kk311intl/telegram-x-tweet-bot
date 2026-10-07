@@ -1079,14 +1079,14 @@ class ACLStore:
             return 0
 
     def is_admin(self, user_id: int) -> bool:
-        return user_id == self.owner_id or self.quota(user_id) is None
+        return self.quota(user_id) is None
 
     def is_allowed(self, user_id: int) -> bool:
         quota = self.quota(user_id)
-        return user_id == self.owner_id or quota is None or quota > 0
+        return quota is None or quota > 0
 
     def is_banned(self, user_id: int) -> bool:
-        return user_id != self.owner_id and self.quota(user_id) == -1
+        return self.quota(user_id) == -1
 
     def language(self, user_id: int) -> str:
         record = self.data["users"].get(str(user_id)) or {}
@@ -1303,7 +1303,7 @@ class ACLStore:
             if job is not None and f"{job[0]}:{job[1]}" in self.data["pending_jobs"]:
                 return False, int(record.get("usage_count", 0)), limit
             used = int(record.get("usage_count", 0) or 0) if record.get("usage_date") == usage_date else 0
-            if quota is not None and quota > 0 and used >= quota:
+            if quota is not None and used >= quota:
                 return False, used, limit
             counts = self._remember_usage_day(usage_date)
             counts["active"] += int(used == 0)
@@ -1777,7 +1777,6 @@ def format_traffic_bytes(value: int | None) -> str:
         if amount < 1024 or unit == "EiB":
             return f"{value} B" if unit == "B" else f"{amount:.1f} {unit}"
         amount /= 1024
-    raise AssertionError("unreachable byte unit")
 
 
 def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
@@ -2068,7 +2067,6 @@ class TelegramAPI:
             ):
                 raise RuntimeError("Telegram getUpdates returned invalid updates")
             return result
-        raise RuntimeError(f"Telegram {method} retry limit reached")
 
     def send_message(
         self,
@@ -3333,7 +3331,7 @@ class Bot:
         command = command.split("@", 1)[0].lower()
         argument = argument.strip()
 
-        if is_owner and is_admin and user_id in self.pending_default_quotas:
+        if is_owner and user_id in self.pending_default_quotas:
             if command.startswith("/"):
                 self.pending_default_quotas.pop(user_id, None)
             else:
@@ -3682,7 +3680,7 @@ class Bot:
             self.inline_slots.release()
             self.api.answer_inline_query(query_id, [])
             return
-        debug = privileged_mode and self.acl.debug_mode(user_id)
+        debug = self.acl.debug_mode(user_id)
         try:
             future = self.inline_executor.submit(
                 self._process_inline_query, query_id, url, debug, user_id
@@ -4894,11 +4892,8 @@ class Bot:
         root_tweet = fetch_fxtwitter(url)
         effective_url = fxtwitter_tweet_url(root_tweet) if root_tweet else None
         effective_url = effective_url or url
-        if root_tweet:
-            text, author, author_url = fxtwitter_text_author(root_tweet)
-            if not text:
-                text, author, author_url = fetch_tweet_text(effective_url)
-        else:
+        text, author, author_url = fxtwitter_text_author(root_tweet) if root_tweet else ("", "", "")
+        if not text:
             text, author, author_url = fetch_tweet_text(effective_url)
         with media_temporary_directory() as directory:
             files: list[Path] = []
