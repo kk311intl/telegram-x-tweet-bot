@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.5.2"
+APP_VERSION = "3.6.3"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -235,11 +235,13 @@ def media_temporary_directory():
 OWNER_BUTTONS = {
     "👤 用戶管理": "/usermenu",
     "🍪 Cookies 管理": "/cookiemenu",
-    "📊 系統狀態": "/status",
+    "📊 運行狀態": "/status",
+    "📊 系統狀態": "/status",  # Previously sent reply keyboards.
     "ℹ️ 使用說明": "/help",
     "👥 用戶列表": "/users",
     "📝 申請審批": "/requests",
-    "🔐 用戶權限修改": "/finduser",
+    "🔐 權限修改": "/finduser",
+    "🔐 用戶權限修改": "/finduser",  # Previously sent reply keyboards.
     "🍪 匯入 Cookies": "/cookies",
     "📖 Cookies 說明": "/cookiehelp",
     "🗑 清除 Cookies": "/clearcookies",
@@ -406,7 +408,8 @@ def public_help_text(language: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return help_text
     label = OWNER_CONTACT_LABEL or {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner", "zh-cn": ("联络管理员")}[language]
-    return help_text + "\n\n" + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{html.escape(label)}</a>'
+    prefix = "Powered by " if label.startswith("Powered by ") else ""
+    return help_text + "\n\n" + prefix + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{html.escape(label.removeprefix(prefix))}</a>'
 
 
 # Every account keeps its own language; request-local context isolates workers.
@@ -416,18 +419,18 @@ ADMIN_TEXT = {
     "users": ("用戶管理", "User management", "ユーザー管理", "用户管理"),
     "user_list": ("用戶列表", "Users", "ユーザー一覧", "用户列表"),
     "requests": ("申請審批", "Access requests", "利用申請", "申请审批"),
-    "permissions": ("用戶權限修改", "Change access", "権限を変更", "用户权限修改"),
+    "permissions": ("權限修改", "Change access", "権限変更", "权限修改"),
     "cookies": ("Cookies 管理", "Cookies management", "Cookies 管理", "Cookies 管理"),
     "cookie_import": ("匯入 Cookies", "Import Cookies", "Cookies を取り込む", "导入 Cookies"),
     "cookie_help": ("Cookies 說明", "Cookies guide", "Cookies の説明", "Cookies 说明"),
     "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
-    "status": ("系統狀態", "System status", "システム状態", "系统状态"),
+    "status": ("運行狀態", "Runtime status", "稼働状況", "运行状态"),
     "usage_overview": ("用量總覽", "Usage overview", "利用状況", "用量总览"),
     "status_technical": (
-        "版本：{version}\n可用磁碟：{disk}",
-        "Version: {version}\nFree disk: {disk}",
-        "バージョン：{version}\nディスク空き容量：{disk}",
-        "版本：{version}\n可用磁盘：{disk}",
+        "版本：{version}\n\nBot 流量（本次啟動）\n接收：{received}\n傳送：{sent}",
+        "Version: {version}\n\nBot traffic (this run)\nReceived: {received}\nSent: {sent}",
+        "バージョン：{version}\n\nBot 通信量（今回の起動）\n受信：{received}\n送信：{sent}",
+        "版本：{version}\n\nBot 流量（本次启动）\n接收：{received}\n发送：{sent}",
     ),
     "unavailable": ("無法取得", "Unavailable", "取得できません", "无法获取"),
     "status_runtime": (
@@ -437,16 +440,16 @@ ADMIN_TEXT = {
         "服务：{service}\n运行时间：{uptime}\n\n",
     ),
     "status_users": (
-        "用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n今日活躍：{active_today}\n今日用量：{interactions}\n已達額度：{exhausted}\n",
-        "Users\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\nActive today: {active_today}\nUsage today: {interactions}\nAt quota: {exhausted}\n",
-        "ユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n本日の利用者：{active_today}\n本日の使用量：{interactions}\n上限到達：{exhausted}\n",
-        "用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n今日活跃：{active_today}\n今日用量：{interactions}\n已达额度：{exhausted}\n",
+        "今日活躍：{active_today}\n今日用量：{interactions}\n已達額度：{exhausted}\n\n用戶\n總記錄：{total}\n普通：{ordinary}\n管理員：{administrators}\n初始化：{initialized}\n待審批：{pending}\n封鎖：{banned}\n",
+        "Active today: {active_today}\nUsage today: {interactions}\nAt quota: {exhausted}\n\nUsers\nRecords: {total}\nRegular: {ordinary}\nAdministrators: {administrators}\nInitialized: {initialized}\nPending: {pending}\nBlocked: {banned}\n",
+        "本日の利用者：{active_today}\n本日の使用量：{interactions}\n上限到達：{exhausted}\n\nユーザー\n記録：{total}\n一般：{ordinary}\n管理者：{administrators}\n初期化：{initialized}\n審査待ち：{pending}\nブロック：{banned}\n",
+        "今日活跃：{active_today}\n今日用量：{interactions}\n已达额度：{exhausted}\n\n用户\n总记录：{total}\n普通：{ordinary}\n管理员：{administrators}\n初始化：{initialized}\n待审批：{pending}\n封禁：{banned}\n",
     ),
     "running": ("正常", "Running", "稼働中", "正常"),
     "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
     "help": ("使用說明", "Help", "使い方", "使用说明"),
     "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
-    "user_controls": ("用戶控制管理", "User controls", "ユーザー利用設定", "用户控制管理"),
+    "user_controls": ("用戶控制", "User controls", "ユーザー制御", "用户控制"),
     "quota_management": ("額度管理", "Quota management", "上限管理", "额度管理"),
     "bulk_quota": ("批量修改", "Bulk change", "一括変更", "批量修改"),
     "implementation": ("實現方式", "Implementation details", "実装方法", "实现方式"),
@@ -565,6 +568,12 @@ ADMIN_TEXT = {
     "auto_owner_only": ("自動通過只允許所有者切換。", "Only the owner can change auto-approval.", "自動承認の切り替えは所有者のみ可能です。", "自动通过只允许所有者切换。"),
     "cookie_owner_only": ("Cookies 開關只允許所有者切換。", "Only the owner can change the Cookies setting.", "Cookies 設定の切り替えは所有者のみ可能です。", "Cookies 开关只允许所有者切换。"),
     "cookie_cleared": ("X/Twitter Cookies 已清除。", "X/Twitter Cookies cleared.", "X/Twitter の Cookies を削除しました。", "X/Twitter Cookies 已清除。"),
+    "cookie_import_failed": ("匯入失敗：{reason}", "Import failed: {reason}", "取り込み失敗：{reason}", "导入失败：{reason}"),
+    "cookie_invalid": ("Cookies 檔案無效或下載失敗。", "Invalid Cookies file or download failed.", "Cookies ファイルが無効か、ダウンロードに失敗しました。", "Cookies 文件无效或下载失败。"),
+    "cookie_too_large": ("Cookies 檔案必須小於 1 MB。", "Cookies file must be under 1 MB.", "Cookies ファイルは 1 MB 未満にしてください。", "Cookies 文件必须小于 1 MB。"),
+    "cookie_utf8": ("Cookies 檔案必須是 UTF-8 文字格式。", "Cookies file must be UTF-8 text.", "Cookies ファイルは UTF-8 テキストにしてください。", "Cookies 文件必须是 UTF-8 文本。"),
+    "cookie_netscape": ("只接受 Netscape 格式的 cookies.txt。", "Only Netscape-format cookies.txt is accepted.", "Netscape 形式の cookies.txt のみ受け付けます。", "只接受 Netscape 格式的 cookies.txt。"),
+    "cookie_no_x": ("檔案中找不到 X/Twitter 的有效 Cookie 記錄。", "No valid X/Twitter Cookie entry was found.", "有効な X/Twitter の Cookie が見つかりません。", "文件中没有有效的 X/Twitter Cookie。"),
     "approve_missing": ("申請不存在或用戶已被封鎖。", "Request not found or user blocked.", "申請がないか、ユーザーがブロックされています。", "申请不存在或用户已被封禁。"),
     "choose_access": ("選擇用戶權限。", "Choose access.", "権限を選択してください。", "选择用户权限。"),
     "owner_cannot_ban": ("不能封鎖所有者。", "The owner cannot be blocked.", "所有者はブロックできません。", "不能封禁所有者。"),
@@ -573,7 +582,7 @@ ADMIN_TEXT = {
     "admin_cannot_admin": ("管理員不能修改其他管理員。", "Administrators cannot change other administrators.", "管理者は他の管理者を変更できません。", "管理员不能修改其他管理员。"),
     "owner_only_admin": ("只有所有者可以新增管理員。", "Only the owner can add administrators.", "管理者の追加は所有者のみ可能です。", "只有所有者可以新增管理员。"),
     "advanced_owner_only": ("高級選項只允許所有者使用。", "Only the owner can use Advanced settings.", "詳細設定を使用できるのは所有者のみです。", "高级选项只允许所有者使用。"),
-    "user_controls_owner_only": ("用戶控制管理只允許所有者使用。", "Only the owner can use User controls.", "ユーザー利用設定を使用できるのは所有者のみです。", "用户控制管理只允许所有者使用。"),
+    "user_controls_owner_only": ("用戶控制只允許所有者使用。", "Only the owner can use User controls.", "ユーザー制御を使用できるのは所有者のみです。", "用户控制只允许所有者使用。"),
 }
 
 
@@ -620,11 +629,8 @@ class TextExtractor(HTMLParser):
             self.in_paragraph = False
 
     def handle_data(self, data: str) -> None:
-        if not self.in_paragraph:
-            return
-        value = data.strip()
-        if value:
-            self.parts.append(value)
+        if self.in_paragraph:
+            self.parts.append(data)
 
 
 class ACLStore:
@@ -728,6 +734,10 @@ class ACLStore:
             data["default_daily_limit_updated_at"] = updated_at
         elif "default_daily_limit_updated_at" in raw:
             raise ValueError("default daily limit timestamp without a limit")
+        for field in ("allowed_user_ids", "banned_user_ids"):
+            values = raw.get(field, [])
+            if not isinstance(values, list) or any(type(value) not in (int, str) for value in values):
+                raise ValueError("invalid legacy ACL user list")
         legacy_allowed = {int(value) for value in raw.get("allowed_user_ids", [])}
         legacy_banned = {int(value) for value in raw.get("banned_user_ids", [])}
         known_ids = (
@@ -754,9 +764,14 @@ class ACLStore:
                 if user_id in legacy_banned:
                     record["quota"] = -1
                 elif user_id in legacy_allowed:
-                    legacy_limit = int(
-                        record.get("daily_limit", DEFAULT_DAILY_LIMIT) or 0
-                    )
+                    legacy_value = record.get("daily_limit", DEFAULT_DAILY_LIMIT)
+                    if legacy_value is None:
+                        legacy_value = 0
+                    if type(legacy_value) not in (int, str):
+                        raise ValueError("invalid legacy daily limit")
+                    legacy_limit = int(legacy_value)
+                    if not 0 <= legacy_limit <= MAX_DAILY_LIMIT:
+                        raise ValueError("legacy daily limit out of range")
                     record["quota"] = None if legacy_limit == 0 else legacy_limit
                 else:
                     record["quota"] = 0
@@ -820,6 +835,7 @@ class ACLStore:
         raise RuntimeError("ACL state and backup are invalid; refusing to overwrite them") from main_error
 
     def _save(self) -> None:
+        self.data["pending_applications"].pop(str(self.owner_id), None)
         if self.path.exists():
             try:
                 current = self.path.read_text(encoding="utf-8")
@@ -1375,10 +1391,12 @@ def user_menu_keyboard(is_owner: bool = False) -> dict[str, Any]:
             ],
             [
                 {"text": f'🔐 {admin_text("permissions")}', "callback_data": "nav:finduser"},
-                {"text": f'📊 {admin_text("usage_overview")}', "callback_data": "nav:usageoverview"},
+                *([{"text": f'🎛️ {admin_text("user_controls")}', "callback_data": "nav:usercontrols"}] if is_owner else []),
             ],
-            *([[{"text": f'🎛️ {admin_text("user_controls")}', "callback_data": "nav:usercontrols"}]] if is_owner else []),
-            [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("menu")}', "callback_data": "nav:main"}],
+            [
+                {"text": f'📊 {admin_text("usage_overview")}', "callback_data": "nav:usageoverview"},
+                {"text": f'↩️ {admin_text("back")}', "callback_data": "nav:main"},
+            ],
         ],
     }
 
@@ -1398,7 +1416,7 @@ def cookie_menu_keyboard(
                 "callback_data": "ordinarycookiestoggle:0",
             }],
             [{"text": f'🗑 {admin_text("cookie_clear")}', "callback_data": "nav:clearcookies"}],
-            [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("advanced")}', "callback_data": "nav:advanced"}],
+            [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:advanced"}],
         ],
     }
 
@@ -1529,7 +1547,7 @@ def pending_keyboard(
         "callback_data": f"approvepage:{page}:{pending_page_fingerprint(records, page)}",
     }])
     rows.append(pagination_row("requestspage", page, len(records)))
-    rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
+    rows.append([{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}])
     return {"inline_keyboard": rows}
 
 
@@ -1545,7 +1563,7 @@ def users_page_keyboard(page: int, total: int, role: str = "all") -> dict[str, A
             "callback_data": f"userspage:0:{choice}",
         } for choice in choices])
     rows.append(navigation)
-    rows.append([{"text": f'⬅️ {admin_text("users")}', "callback_data": "nav:users"}])
+    rows.append([{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}])
     return {"inline_keyboard": rows}
 
 
@@ -1560,13 +1578,13 @@ def searched_user_keyboard(
     if user_id == owner_id:
         return {"inline_keyboard": [
             [{"text": admin_text("owner_account"), "callback_data": "noop:0"}],
-            [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
+            [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}],
         ]}
     if can_modify:
         return quota_choices_keyboard(user_id, allow_admin=allow_admin, default_daily_limit=default_daily_limit)
     return {"inline_keyboard": [
         [{"text": admin_text("admin_read_only"), "callback_data": "noop:0"}],
-        [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
+        [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}],
     ]}
 
 
@@ -1602,7 +1620,7 @@ def quota_management_keyboard(default_daily_limit: int) -> dict[str, Any]:
     return {"inline_keyboard": [
         [{"text": f'🎯 {admin_text("default_limit")}{": " if ui_language() == "en" else "："}{default_daily_limit}', "callback_data": "nav:defaultquota"}],
         [{"text": f'🔄 {admin_text("bulk_quota")}', "callback_data": "nav:bulkquota"}],
-        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("user_controls")}', "callback_data": "nav:usercontrols"}],
+        [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:usercontrols"}],
     ]}
 
 
@@ -1615,25 +1633,59 @@ def user_controls_keyboard(
         [{"text": f'🌐 {admin_text("access_switch")}{": " if ui_language() == "en" else "："}{external_state}', "callback_data": "externaltoggle:0"}],
         [{"text": f'✅ {admin_text("auto_approve")}{": " if ui_language() == "en" else "："}{auto_approve_state}', "callback_data": "autoapprovetoggle:0"}],
         [{"text": f'🎯 {admin_text("quota_management")}', "callback_data": "nav:quotamanagement"}],
-        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("users")}', "callback_data": "nav:users"}],
+        [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}],
     ]}
 
 
 def usage_overview_keyboard() -> dict[str, Any]:
     return {"inline_keyboard": [
         [{"text": f'🔄 {admin_text("refresh")}', "callback_data": "nav:usageoverview"}],
-        [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
+        [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}],
     ]}
 
 
+def service_traffic() -> tuple[int | None, int | None]:
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", f"{APP_NAME}.service", "--no-pager",
+             "--property=MainPID,ActiveState,IPAccounting,IPIngressBytes,IPEgressBytes"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None, None
+    if result.returncode:
+        return None, None
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    if (values.get("MainPID") != str(os.getpid()) or values.get("ActiveState") != "active"
+            or values.get("IPAccounting") != "yes"):
+        return None, None
+    counters = []
+    for key in ("IPIngressBytes", "IPEgressBytes"):
+        value = values.get(key, "")
+        counter = int(value) if re.fullmatch(r"[0-9]{1,20}", value) else None
+        counters.append(counter if counter is not None and counter < (1 << 64) - 1 else None)
+    return counters[0], counters[1]
+
+
+def format_traffic_bytes(value: int | None) -> str:
+    if value is None:
+        return admin_text("unavailable")
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"):
+        if amount < 1024 or unit == "EiB":
+            return f"{value} B" if unit == "B" else f"{amount:.1f} {unit}"
+        amount /= 1024
+    raise AssertionError("unreachable byte unit")
+
+
 def status_keyboard(is_owner: bool = True) -> dict[str, Any]:
-    rows = [[{"text": f'🔄 {admin_text("refresh")}', "callback_data": "statusrefresh:0"}]]
+    rows = []
     if is_owner:
         rows.append([{
             "text": f'⚙️ {admin_text("advanced")}',
             "callback_data": "nav:advanced",
         }])
-    rows.append([{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("menu")}', "callback_data": "nav:main"}])
+    rows.append([{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:main"}])
     return {"inline_keyboard": rows}
 
 
@@ -1655,7 +1707,7 @@ def advanced_status_keyboard(
         }])
     return {"inline_keyboard": [
         *owner_rows,
-        [{"text": f'↩️ {admin_text("back")}{": " if ui_language() == "en" else "："}{admin_text("status")}', "callback_data": "nav:status"}],
+        [{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:status"}],
     ]}
 
 
@@ -1689,7 +1741,7 @@ def quota_choices_keyboard(
         rows.append([
             {"text": admin_text("admin_unlimited"), "callback_data": f"quota:{user_id}:unlimited"},
         ])
-    rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
+    rows.append([{"text": f'↩️ {admin_text("back")}', "callback_data": "nav:users"}])
     return {"inline_keyboard": rows}
 
 
@@ -1793,8 +1845,12 @@ def cookie_alert_due(path: Path = COOKIE_ALERT_PATH, now: float | None = None) -
     current = time.time() if now is None else now
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid Cookie alert state")
         last_sent = float(payload.get("last_sent", 0) or 0)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        if not math.isfinite(last_sent) or last_sent < 0:
+            raise ValueError("invalid Cookie alert timestamp")
+    except (OSError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
         last_sent = 0
     return current - last_sent >= COOKIE_ALERT_INTERVAL
 
@@ -2041,8 +2097,8 @@ class TelegramAPI:
 
     def download_file(self, file_id: str, maximum_bytes: int) -> bytes:
         result = self.call("getFile", {"file_id": file_id})
-        file_path = str((result or {}).get("file_path", ""))
-        if not file_path:
+        file_path = result.get("file_path") if isinstance(result, dict) else None
+        if not isinstance(file_path, str) or not file_path:
             raise RuntimeError("Telegram did not return a file path")
         try:
             with self.session().get(
@@ -2359,10 +2415,10 @@ def fetch_tweet_text(url: str) -> tuple[str, str, str]:
             return "", "", ""
         parser = TextExtractor()
         parser.feed(payload.get("html", ""))
-        text = " ".join(parser.parts).replace(" \n ", "\n")
+        text = "".join(parser.parts)
         text = re.sub(r"(?:https?://)?pic\.twitter\.com/\S+", "", text).strip()
         return (
-            html.unescape(text).strip(),
+            text,
             str(payload.get("author_name", "")).strip(),
             normalize_author_url(str(payload.get("author_url", ""))),
         )
@@ -3234,7 +3290,7 @@ class Bot:
             except ValueError:
                 self.api.send_message(
                     chat_id,
-                    {"zh": "User ID 必須是 1 至 2^52-1 的正整數。請重新點選「用戶權限修改」。", "en": "User ID must be between 1 and 2^52-1. Select Change access again.", "ja": "User ID は 1～2^52-1 の整数にしてください。権限を変更をもう一度選んでください。", "zh-cn": ("User ID 必须是 1 至 2^52-1 的正整数。请重新点选「用户权限修改」。")}[ui_language()],
+                    {"zh": "User ID 必須是 1 至 2^52-1 的正整數。請重新點選「權限修改」。", "en": "User ID must be between 1 and 2^52-1. Select Change access again.", "ja": "User ID は 1～2^52-1 の整数にしてください。「権限変更」をもう一度選んでください。", "zh-cn": ("User ID 必须是 1 至 2^52-1 的正整数。请重新点选「权限修改」。")}[ui_language()],
                     message_id,
                     user_menu_keyboard(is_owner),
                 )
@@ -3766,11 +3822,10 @@ class Bot:
             service=admin_text("running" if any(worker.is_alive() for worker in self.workers) else "worker_stopped"),
             uptime=format_duration(time.time() - self.started_at),
         )
-        try:
-            disk = f"{shutil.disk_usage(STATE_DIR).free / 1024 ** 3:.1f} GiB"
-        except OSError:
-            disk = admin_text("unavailable")
-        text += admin_text("status_technical").format(version=APP_VERSION, disk=disk)
+        received, sent = service_traffic()
+        text += admin_text("status_technical").format(
+            version=APP_VERSION, received=format_traffic_bytes(received), sent=format_traffic_bytes(sent)
+        )
         return text.rstrip()
 
     def usage_overview_text(self, viewer_id: int) -> str:
@@ -3814,7 +3869,7 @@ class Bot:
             and int(item.get("usage_count", 0) or 0)
             >= int(item.get("quota", 0))
         )
-        text = admin_text("usage_overview") + "\n\n"
+        text = admin_text("usage_overview") + "\n"
         text += admin_text("status_users").format(
             total=len(records), ordinary=ordinary, administrators=administrators,
             initialized=initialized, pending=pending, banned=banned,
@@ -4447,30 +4502,16 @@ class Bot:
             cookie_text = validate_cookie_file(content)
             save_cookie_file(cookie_text)
         except (OSError, ValueError, requests.RequestException, RuntimeError) as error:
-            LOG.warning("Cookie import rejected: %s", error)
+            LOG.warning("Cookie import rejected: %s", type(error).__name__)
+            error_key = {
+                "Cookies 檔案必須小於 1 MB。": "cookie_too_large",
+                "Cookies 檔案必須是 UTF-8 文字格式。": "cookie_utf8",
+                "只接受 Netscape 格式的 cookies.txt。": "cookie_netscape",
+                "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "cookie_no_x",
+            }.get(str(error), "cookie_invalid")
             self.api.send_message(
                 chat_id,
-                {
-                    "zh": f"匯入失敗：{error}",
-                    "en": "Import failed: " + {
-                        "Cookies 檔案必須小於 1 MB。": "Cookies file must be under 1 MB.",
-                        "Cookies 檔案必須是 UTF-8 文字格式。": "Cookies file must be UTF-8 text.",
-                        "只接受 Netscape 格式的 cookies.txt。": "Only Netscape-format cookies.txt is accepted.",
-                        "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "No valid X/Twitter Cookie entry was found.",
-                    }.get(str(error), "Invalid Cookies file or download failed."),
-                    "ja": "取り込み失敗：" + {
-                        "Cookies 檔案必須小於 1 MB。": "Cookies ファイルは 1 MB 未満にしてください。",
-                        "Cookies 檔案必須是 UTF-8 文字格式。": "Cookies ファイルは UTF-8 テキストにしてください。",
-                        "只接受 Netscape 格式的 cookies.txt。": "Netscape 形式の cookies.txt のみ受け付けます。",
-                        "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "有効な X/Twitter の Cookie が見つかりません。",
-                    }.get(str(error), "Cookies ファイルが無効か、ダウンロードに失敗しました。"),
-                    "zh-cn": "导入失败：" + {
-                        "Cookies 檔案必須小於 1 MB。": "Cookies 文件必须小于 1 MB。",
-                        "Cookies 檔案必須是 UTF-8 文字格式。": "Cookies 文件必须是 UTF-8 文本。",
-                        "只接受 Netscape 格式的 cookies.txt。": "只接受 Netscape 格式的 cookies.txt。",
-                        "檔案中找不到 X/Twitter 的有效 Cookie 記錄。": "文件中没有有效的 X/Twitter Cookie。",
-                    }.get(str(error), "Cookies 文件无效或下载失败。"),
-                }[ui_language()],
+                admin_text("cookie_import_failed").format(reason=admin_text(error_key)),
                 message_id,
                 cookie_menu_keyboard(self.acl.ordinary_user_cookies_enabled),
             )
@@ -4748,19 +4789,18 @@ class Bot:
             text, author, author_url = fetch_tweet_text(effective_url)
         with media_temporary_directory() as directory:
             files: list[Path] = []
-            extractor_log = ""
             method = ""
             cookie_invalid = False
             fallback_oversized_videos = 0
             fallback_skipped_media = False
             if root_tweet and fxtwitter_media(root_tweet):
-                files, extractor_log, fallback_oversized_videos = (
+                files, _, fallback_oversized_videos = (
                     download_fxtwitter_media(root_tweet, directory)
                 )
                 if files:
                     method = "FxTwitter 直連"
             if not files:
-                files, extractor_log, method, cookie_invalid = download_media(
+                files, _, method, cookie_invalid = download_media(
                     effective_url,
                     directory,
                     allow_cookies=(
@@ -4789,7 +4829,7 @@ class Bot:
             if fallback_tweet and not text:
                 text, author, author_url = fxtwitter_text_author(fallback_tweet)
             if fallback_tweet and not files and fallback_tweet is not root_tweet:
-                files, extractor_log, fallback_oversized_videos = download_fxtwitter_media(
+                files, _, fallback_oversized_videos = download_fxtwitter_media(
                     fallback_tweet, directory
                 )
                 if files:
@@ -4802,7 +4842,7 @@ class Bot:
                 < len(fxtwitter_media(fallback_tweet or {}))
             )
             if not files and not text and not rejected and not fallback_oversized_videos:
-                LOG.warning("Post text and media unavailable after extraction: %s: %s", effective_url, extractor_log)
+                LOG.warning("Post text and media unavailable after extraction: %s", effective_url)
                 if self.can_process(user_id):
                     self.api.send_message(
                         chat_id,

@@ -17,6 +17,7 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes
+IPAccounting=yes
 ProtectClock=yes
 ProtectControlGroups=yes
 ProtectHome=yes

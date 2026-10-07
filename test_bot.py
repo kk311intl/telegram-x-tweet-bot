@@ -15,6 +15,117 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_owner_assignment_clears_only_the_owners_pending_application(self):
+        for assignment in ("claim", "environment"):
+            with self.subTest(assignment=assignment), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "acl.json"
+                store = bot.ACLStore(path)
+                store.request_access(100, now=1)
+                store.request_access(200, now=2)
+                store.set_language(100, "ja")
+                with patch.object(bot, "BOOTSTRAP_CODE", "YOUR_CLAIM_CODE"):
+                    if assignment == "claim":
+                        self.assertTrue(store.claim(100, "YOUR_CLAIM_CODE"))
+                    else:
+                        store = bot.ACLStore(path, 100)
+                self.assertEqual(store.owner_id, 100)
+                self.assertEqual([row["user_id"] for row in store.pending()], [200])
+                self.assertEqual(store.language(100), "ja")
+                self.assertEqual(bot.ACLStore(path).pending(), store.pending())
+
+    def test_legacy_acl_user_lists_reject_implicit_id_coercion(self):
+        for field in ("allowed_user_ids", "banned_user_ids"):
+            for values in ("123", {"200": True}, [True], [200.5], [{}]):
+                with self.subTest(field=field, values=values), self.assertRaises(ValueError):
+                    store = bot.ACLStore.__new__(bot.ACLStore)
+                    store._apply_state({field: values}, 1)
+        store = bot.ACLStore.__new__(bot.ACLStore)
+        store._apply_state({"allowed_user_ids": [200, "201"], "banned_user_ids": ["300"]}, 1)
+        self.assertEqual((store.quota(200), store.quota(201), store.quota(300)),
+                         (bot.DEFAULT_DAILY_LIMIT, bot.DEFAULT_DAILY_LIMIT, -1))
+
+    def test_legacy_daily_limits_are_validated_before_state_is_applied(self):
+        for limit in (False, True, 50.5, -1, bot.MAX_DAILY_LIMIT + 1, "", "invalid"):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                store = bot.ACLStore.__new__(bot.ACLStore)
+                store._apply_state({"allowed_user_ids": [200], "users": {"200": {"daily_limit": limit}}}, 1)
+        for limit, expected in ((None, None), (0, None), ("0", None), (50, 50), ("50", 50)):
+            with self.subTest(limit=limit):
+                store = bot.ACLStore.__new__(bot.ACLStore)
+                store._apply_state({"allowed_user_ids": [200], "users": {"200": {"daily_limit": limit}}}, 1)
+                self.assertEqual(store.quota(200), expected)
+
+    def test_help_credit_links_only_the_name_in_every_language(self):
+        with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"), \
+             patch.object(bot, "OWNER_CONTACT_LABEL", "Powered by Example <name>"):
+            for language in bot.PUBLIC_TEXT:
+                text = bot.public_help_text(language)
+                self.assertTrue(text.endswith('Powered by <a href="https://example.com/contact">Example &lt;name&gt;</a>'))
+                self.assertNotIn('>Powered by', text)
+
+    def test_cookie_download_rejects_malformed_file_metadata_before_http(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        for metadata in (None, [], ["invalid"], "invalid", {},
+                         {"file_path": None}, {"file_path": []}, {"file_path": 123}):
+            with self.subTest(metadata=metadata), patch.object(api, "call", return_value=metadata), \
+                 patch.object(api, "session") as session:
+                with self.assertRaises(RuntimeError):
+                    api.download_file("example", bot.MAX_COOKIE_BYTES)
+                session.assert_not_called()
+
+    def test_oembed_preserves_literal_entities_spaces_and_link_punctuation(self):
+        cases = (
+            ("<p>&amp;lt;b&amp;gt; &amp;amp; &#x1F642;</p>", "&lt;b&gt; &amp; 🙂"),
+            ("<p>Hello <a>world</a>!<br>  indented</p>", "Hello world!\n  indented"),
+            ("<p>left  right &amp; center</p>", "left  right & center"),
+        )
+        for markup, expected in cases:
+            response = MagicMock()
+            response.json.return_value = {"html": markup}
+            with self.subTest(markup=markup), patch.object(bot, "http_session") as session:
+                session.return_value.get.return_value = response
+                self.assertEqual(bot.fetch_tweet_text("https://x.com/example/status/123")[0], expected)
+
+    def test_corrupt_cookie_alert_state_does_not_suppress_notifications(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cookie-alert.json"
+            for payload in ([], None, "invalid", {"last_sent": float("nan")},
+                            {"last_sent": float("inf")}, {"last_sent": -1}, {"last_sent": 10 ** 400}):
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    self.assertTrue(bot.cookie_alert_due(path, now=100_000))
+
+    def test_unavailable_post_does_not_log_raw_extractor_output(self):
+        marker = "PRIVATE_COOKIE_VALUE"
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot, "TMP_DIR", Path(directory)), \
+             patch.object(bot, "fetch_fxtwitter", return_value=None), \
+             patch.object(bot, "fetch_tweet_text", return_value=("", "", "")), \
+             patch.object(bot, "download_media", return_value=([], "auth_token=" + marker, "", False)):
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            service = bot.Bot(MagicMock(), store)
+            with self.assertLogs(bot.LOG, level="WARNING") as logs:
+                service.process_url(100, 1, 100, "https://x.com/example/status/123")
+            self.assertNotIn(marker, " ".join(logs.output))
+            self.assertEqual(service.api.send_message.call_args.args[1], bot.public_text("zh", "post_unavailable"))
+            service.inline_executor.shutdown(wait=True)
+
+    def test_unknown_cookie_import_errors_do_not_expose_raw_details(self):
+        marker = "PRIVATE_COOKIE_VALUE"
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as directory, bot.language_scope(language):
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                service = bot.Bot(MagicMock(), store)
+                service.pending_cookie_uploads.add(100)
+                service.api.download_file.side_effect = RuntimeError(marker)
+                with self.assertLogs(bot.LOG, level="WARNING") as logs:
+                    service.handle_document(100, 1, 100, {"file_id": "example", "file_size": 4})
+                self.assertNotIn(marker, " ".join(logs.output))
+                message = service.api.send_message.call_args.args[1]
+                self.assertNotIn(marker, message)
+                self.assertEqual(message, bot.admin_text("cookie_import_failed").format(reason=bot.admin_text("cookie_invalid")))
+                self.assertIn(100, service.pending_cookie_uploads)
+                service.inline_executor.shutdown(wait=True)
+
     def test_telegram_malformed_responses_fail_safely_without_leaking_payloads(self):
         cases = [
             (502, None), (502, []), (200, "YOUR_API_TOKEN"),
@@ -493,8 +604,7 @@ class ReliabilityTests(unittest.TestCase):
                 with bot.language_scope(language):
                     cookie_rows = bot.cookie_menu_keyboard()["inline_keyboard"]
                     self.assertTrue(cookie_rows[1][0]["text"].startswith("🍪 "))
-                    separator = ": " if language == "en" else "："
-                    self.assertIn(bot.admin_text("back") + separator, cookie_rows[-1][0]["text"])
+                    self.assertEqual(cookie_rows[-1][0]["text"], f'↩️ {bot.admin_text("back")}')
                     self.assertIn(bot.admin_text("default_limit"), bot.admin_text("default_quota"))
                     if language in ("zh", "zh-cn"):
                         self.assertNotIn("Owner", bot.public_help_text(language))
@@ -1834,6 +1944,31 @@ class CookieTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
+    def test_back_buttons_are_brief_localized_and_keep_their_destinations(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), bot.language_scope(language):
+                menus = (
+                    (bot.user_menu_keyboard(True), "nav:main"),
+                    (bot.user_menu_keyboard(False), "nav:main"),
+                    (bot.cookie_menu_keyboard(), "nav:advanced"),
+                    (bot.pending_keyboard([{"user_id": 300, "requested_at": 1}]), "nav:users"),
+                    (bot.users_page_keyboard(1, 40), "nav:users"),
+                    (bot.searched_user_keyboard({"user_id": 100}, 100), "nav:users"),
+                    (bot.searched_user_keyboard({"user_id": 300}, 100, False), "nav:users"),
+                    (bot.quota_choices_keyboard(300), "nav:users"),
+                    (bot.quota_management_keyboard(100), "nav:usercontrols"),
+                    (bot.user_controls_keyboard(True, False), "nav:users"),
+                    (bot.usage_overview_keyboard(), "nav:users"),
+                    (bot.status_keyboard(True), "nav:main"),
+                    (bot.status_keyboard(False), "nav:main"),
+                    (bot.advanced_status_keyboard(False), "nav:status"),
+                    (bot.advanced_status_keyboard(False, False), "nav:status"),
+                )
+                expected = bot.public_text(language, "back")
+                for menu, destination in menus:
+                    back = menu["inline_keyboard"][-1][-1]
+                    self.assertEqual(back, {"text": expected, "callback_data": destination})
+
     def test_status_counts_are_separate_and_advanced_pages_do_not_repeat_statistics(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), tempfile.TemporaryDirectory() as directory, bot.language_scope(language):
@@ -1848,10 +1983,20 @@ class MenuTests(unittest.TestCase):
                 self.assertNotIn("22:00", status)
                 for label in ("處理佇列", "Queue:", "待機列", "处理队列"):
                     self.assertNotIn(label, status)
-                counts = bot.admin_text("status_users").format(
+                formatted = bot.admin_text("status_users").format(
                     total=2, ordinary=1, administrators=0, initialized=0, pending=0,
                     banned=0, active_today=0, interactions=0, exhausted=0,
-                ).splitlines()[1:]
+                )
+                expected_today = {
+                    "zh": ["今日活躍：0", "今日用量：0", "已達額度：0"],
+                    "zh-cn": ["今日活跃：0", "今日用量：0", "已达额度：0"],
+                    "en": ["Active today: 0", "Usage today: 0", "At quota: 0"],
+                    "ja": ["本日の利用者：0", "本日の使用量：0", "上限到達：0"],
+                }[language]
+                overview_lines = service.usage_overview_text(100).splitlines()
+                self.assertEqual(overview_lines[:5], [bot.admin_text("usage_overview"), *expected_today, ""])
+                self.assertEqual(overview_lines[1:], formatted.splitlines())
+                counts = [line for line in formatted.splitlines() if "：" in line or ": " in line]
                 self.assertEqual(len(counts), 9)
                 for line in counts:
                     self.assertIn(line, service.usage_overview_text(100).splitlines())
@@ -1932,10 +2077,10 @@ class MenuTests(unittest.TestCase):
                     service.handle_callback({"id": "users", "data": "nav:users", "from": {"id": actor},
                                              "message": {"message_id": 1, "chat": {"id": actor}}})
                     rows = api.edit_message.call_args.args[3]["inline_keyboard"]
-                    self.assertEqual([button["callback_data"] for button in rows[1]], ["nav:finduser", "nav:usageoverview"])
+                    self.assertEqual([button["callback_data"] for button in rows[1]], ["nav:finduser", "nav:usercontrols"] if actor == 100 else ["nav:finduser"])
                     self.assertEqual("nav:usercontrols" in str(rows), actor == 100)
-                    if actor == 100:
-                        self.assertEqual(rows[2][0]["callback_data"], "nav:usercontrols")
+                    self.assertEqual(len(rows), 3)
+                    self.assertEqual([button["callback_data"] for button in rows[2]], ["nav:usageoverview", "nav:main"])
                     self.assertEqual(service.pending_page([], 0, actor == 100)[1], bot.user_menu_keyboard(actor == 100))
                     for _ in range(2):
                         service.handle_callback({"id": "overview", "data": "nav:usageoverview", "from": {"id": actor},
@@ -1952,21 +2097,64 @@ class MenuTests(unittest.TestCase):
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
 
-    def test_system_status_uses_only_runtime_and_safe_disk_information(self):
+    def test_system_status_uses_only_runtime_and_bot_traffic_information(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
                 store = bot.ACLStore(Path(temporary) / "acl.json", 100)
                 store.set_language(100, language)
                 service = bot.Bot(MagicMock(), store)
                 with patch.object(store, "records", side_effect=AssertionError("status must not enumerate users")), \
-                     patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=5 * 1024 ** 3)):
+                     patch.object(bot.shutil, "disk_usage", side_effect=AssertionError("status must not inspect disk")), \
+                     patch.object(bot, "service_traffic", return_value=(5 * 1024 ** 2, 1024 ** 3)):
                     text = service.system_status_text(100)
-                    self.assertIn(bot.admin_text("status_technical").format(version=bot.APP_VERSION, disk="5.0 GiB"), text)
+                    self.assertIn(bot.admin_text("status_technical").format(version=bot.APP_VERSION, received="5.0 MiB", sent="1.0 GiB"), text)
                     self.assertNotIn(str(bot.STATE_DIR), text)
-                with patch.object(bot.shutil, "disk_usage", side_effect=OSError):
+                with patch.object(bot, "service_traffic", return_value=(None, None)):
                     self.assertIn(bot.admin_text("unavailable"), service.system_status_text(100))
+                for is_owner in (True, False):
+                    keyboard = bot.status_keyboard(is_owner)
+                    self.assertNotIn("statusrefresh:", str(keyboard))
+                    self.assertNotIn(bot.admin_text("refresh"), str(keyboard))
+                    self.assertEqual("nav:advanced" in str(keyboard), is_owner)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
+
+    def test_service_traffic_counts_only_this_active_bot_unit(self):
+        def response(**changes):
+            fields = {"MainPID": str(os.getpid()), "ActiveState": "active", "IPAccounting": "yes",
+                      "IPIngressBytes": "1048576", "IPEgressBytes": "2097152", **changes}
+            return MagicMock(returncode=0, stdout="\n".join(f"{key}={value}" for key, value in fields.items()))
+        with patch.object(bot.subprocess, "run", return_value=response()) as run:
+            self.assertEqual(bot.service_traffic(), (1048576, 2097152))
+            arguments = run.call_args.args[0]
+            self.assertIn(f"{bot.APP_NAME}.service", arguments)
+            self.assertIn("--property=MainPID,ActiveState,IPAccounting,IPIngressBytes,IPEgressBytes", arguments)
+            self.assertEqual(run.call_args.kwargs["timeout"], 2)
+            self.assertIs(run.call_args.kwargs["stderr"], bot.subprocess.DEVNULL)
+            self.assertNotIn("shell", run.call_args.kwargs)
+        for changes in ({"MainPID": "0"}, {"MainPID": str(os.getpid() + 1)}, {"ActiveState": "inactive"}, {"IPAccounting": "no"}):
+            with self.subTest(changes=changes), patch.object(bot.subprocess, "run", return_value=response(**changes)):
+                self.assertEqual(bot.service_traffic(), (None, None))
+        with patch.object(bot.subprocess, "run", return_value=response(IPIngressBytes="0", IPEgressBytes="0")):
+            self.assertEqual(bot.service_traffic(), (0, 0))
+        for value in ("", "[no data]", "infinity", "-1", "1.5", "９９", str((1 << 64) - 1), "9" * 21):
+            with self.subTest(value=value), patch.object(bot.subprocess, "run", return_value=response(IPIngressBytes=value)):
+                self.assertEqual(bot.service_traffic(), (None, 2097152))
+        for error in (FileNotFoundError(), PermissionError(), bot.subprocess.TimeoutExpired("systemctl", 2), UnicodeError()):
+            with self.subTest(error=type(error).__name__), patch.object(bot.subprocess, "run", side_effect=error):
+                self.assertEqual(bot.service_traffic(), (None, None))
+        for result in (MagicMock(returncode=1, stdout=""), MagicMock(returncode=0, stdout="")):
+            with patch.object(bot.subprocess, "run", return_value=result):
+                self.assertEqual(bot.service_traffic(), (None, None))
+        self.assertIn("IPAccounting=yes", Path(bot.__file__).with_name("x-tweet-telegram-bot.service").read_text())
+
+    def test_traffic_byte_units_and_unavailable_are_localized(self):
+        for value, expected in ((0, "0 B"), (1023, "1023 B"), (1024, "1.0 KiB"),
+                                (5 * 1024 ** 2, "5.0 MiB"), (1024 ** 3, "1.0 GiB"), (1024 ** 6, "1.0 EiB")):
+            self.assertEqual(bot.format_traffic_bytes(value), expected)
+        for language in bot.PUBLIC_TEXT:
+            with bot.language_scope(language):
+                self.assertEqual(bot.format_traffic_bytes(None), bot.admin_text("unavailable"))
 
     def test_owner_default_limit_flow_is_localized_confirmed_and_cancellable(self):
         for language in ("zh-cn", "zh", "en", "ja"):
@@ -2268,11 +2456,11 @@ class MenuTests(unittest.TestCase):
         self.assertIn("nav:userlist", str(users))
         self.assertIn("nav:requests", str(users))
         self.assertIn("nav:finduser", str(users))
-        self.assertIn("用戶權限修改", str(users))
+        self.assertIn("權限修改", str(users))
         self.assertIn("nav:cookieupload", str(cookies))
         self.assertIn("nav:cookiehelp", str(cookies))
         self.assertIn("ordinarycookiestoggle:0", str(cookies))
-        self.assertEqual(users[-1][0]["callback_data"], "nav:main")
+        self.assertEqual(users[-1][1]["callback_data"], "nav:main")
         self.assertEqual(cookies[-1][0]["callback_data"], "nav:advanced")
 
     def test_user_and_request_lists_paginate_by_twenty(self):
@@ -2715,10 +2903,10 @@ class MenuTests(unittest.TestCase):
                 self.assertNotIn(line, status)
             self.assertEqual(
                 bot.status_keyboard()["inline_keyboard"][0][0]["callback_data"],
-                "statusrefresh:0",
+                "nav:advanced",
             )
             self.assertEqual(
-                bot.status_keyboard()["inline_keyboard"][1][0]["text"],
+                bot.status_keyboard()["inline_keyboard"][0][0]["text"],
                 "⚙️ 高級選項",
             )
             self.assertNotIn("nav:advanced", str(bot.status_keyboard(False)))
@@ -2732,7 +2920,7 @@ class MenuTests(unittest.TestCase):
                 "🐞 實現方式：關閉",
             )
             self.assertNotIn("nav:usercontrols", str(advanced))
-            self.assertEqual(bot.user_menu_keyboard(True)["inline_keyboard"][2][0]["text"], "🎛️ 用戶控制管理")
+            self.assertEqual(bot.user_menu_keyboard(True)["inline_keyboard"][1][1]["text"], "🎛️ 用戶控制")
             controls = bot.user_controls_keyboard(True, False)["inline_keyboard"]
             self.assertEqual(
                 controls[0][0]["text"],
@@ -5008,8 +5196,8 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             store.set_language(200, "en")
             api = MagicMock()
             service = bot.Bot(api, store)
-            for language, status, report in (("zh-cn", "系统状态", "每日使用简报"), ("zh", "系統狀態", "每日使用簡報"),
-                                               ("en", "System status", "Daily usage report"), ("ja", "システム状態", "日次利用レポート")):
+            for language, status, report in (("zh-cn", "运行状态", "每日使用简报"), ("zh", "運行狀態", "每日使用簡報"),
+                                               ("en", "Runtime status", "Daily usage report"), ("ja", "稼働状況", "日次利用レポート")):
                 store.set_language(100, language)
                 service.handle_update({"message": {"message_id": 1, "chat": {"id": 100}, "from": {"id": 100}, "text": "/start"}})
                 self.assertEqual(api.send_message.call_args.args[1], bot.public_text(language, "start_owner"))
@@ -5019,7 +5207,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                 with bot.language_scope(language):
                     self.assertEqual(api.send_message.call_args.args[1], bot.public_help_text(language))
                 service.handle_owner_command(200, 2, 200, "/status", "")
-                self.assertIn("System status", api.send_message.call_args.args[1])
+                self.assertIn("Runtime status", api.send_message.call_args.args[1])
                 service.maybe_send_daily_report(force=True)
                 self.assertIn(report, api.send_message.call_args.args[1])
                 self.assertEqual(bot.ui_language(), "zh")

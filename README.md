@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.5.2
+# Telegram X／Twitter 貼文媒體 Bot · v3.6.3
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -33,7 +33,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DAILY_REPORT_HOUR` | `22` | 該時區 0–23 點，向所有者發送每日用量與待審摘要。 |
 | `DEFAULT_DAILY_LIMIT` | `50` | 未在 Bot 設定「預設額度」時，新獲授權普通用戶的每日額度，1–100000；修改此環境值不會批次改動既有額度。 |
 | `OWNER_CONTACT_URL` | 空白 | 可選的使用說明聯絡連結，如 `https://example.com/contact`；空白則不顯示。 |
-| `OWNER_CONTACT_LABEL` | 空白 | 可選的聯絡連結文字；空白時使用對應語言的預設文字。 |
+| `OWNER_CONTACT_LABEL` | 空白 | 聯絡連結文字；空白時使用翻譯文字。設為 `Powered by YOUR_NAME` 時只連結名字。 |
 | `WORKER_COUNT` | `2` | 貼文處理並行數，範圍 1–8。 |
 | `MIN_FREE_DISK_BYTES` | `1073741824` | 可用空間低於 1 GiB 時暫停接受新下載。 |
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | 媒體暫存達到 1 GiB 時暫停接受新下載；不是硬配額。 |
@@ -49,11 +49,11 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 影片超限提示只在未能取得符合大小限制的影片時顯示；`MAX_VIDEO_BYTES` 可降低上限（1 MiB–50 MB），此時不歸因於 Telegram 的 50 MB 限制。累計媒體上限等其他原因使用一般略過提示。純文字或只有原始檔的貼文採 4096 字訊息上限，媒體說明採 1024 字；較長內容節錄並保留原文連結。
 
-所有角色共用簡潔的使用說明，管理提示只在對應功能頁顯示。高級選項（含「實現方式」）與用戶控制管理僅供所有者使用；管理員可管理普通用戶及查看用量總覽、系統狀態。用量總覽在用戶管理內顯示用戶分布與今日用量；系統狀態只顯示服務、運行時間、版本與可用磁碟。`/cancel` 或切換管理畫面會取消輸入。舊審批按鈕不會操作重新提交的申請；列表變更時須重新確認。
+所有角色共用簡潔使用說明；管理提示只在功能頁顯示。高級選項與用戶控制僅所有者可用。用量總覽位於用戶管理，先顯示當日用量，再列用戶分布；運行狀態顯示服務、運行時間、版本及本次啟動的 Bot 收發流量（含下載器）。流量使用 systemd 的 `IPAccounting=yes`；未啟用、不支援或非服務主程序時顯示無法取得，不代用主機流量。返回按鈕只顯示「返回」。`/cancel` 或切換管理畫面會取消輸入；舊審批按鈕不操作重新提交的申請，列表變更須重新確認。
 
 Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁體，`zh` 為簡體，另有日本語與 English。Bot API 只支援兩字母語言碼，無法分別設定簡繁中文；這不影響 Bot 內的四語選擇。
 
-用戶管理內的「用戶控制管理」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
+用戶管理內的「用戶控制」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
 
 `status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
 
@@ -90,7 +90,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DAILY_REPORT_HOUR` | `22` | その地域の 0–23 時。利用状況と審査待ちを所有者へ通知します。 |
 | `DEFAULT_DAILY_LIMIT` | `50` | Bot で「標準上限」を設定する前の、新規承認ユーザーの日次上限（1–100000）。環境変数の変更だけでは既存の上限を一括変更しません。 |
 | `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先URL（例：`https://example.com/contact`）。空欄なら表示しません。 |
-| `OWNER_CONTACT_LABEL` | 空欄 | 任意の連絡先リンク表示名。空欄なら各言語の初期表示名を使います。 |
+| `OWNER_CONTACT_LABEL` | 空欄 | リンクの表示名。空欄なら各言語の初期値を使用。`Powered by YOUR_NAME` は名前だけがリンクになります。 |
 | `WORKER_COUNT` | `2` | 投稿処理の並列数。1–8。 |
 | `MIN_FREE_DISK_BYTES` | `1073741824` | 空き容量が 1 GiB 未満なら新規ダウンロードを受け付けません。 |
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | メディア一時ファイルが 1 GiB に達したら新規ダウンロードを停止します。ハード上限ではありません。 |
@@ -106,11 +106,11 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 動画のサイズ超過は、制限内の動画を取得できなかった場合のみ通知します。`MAX_VIDEO_BYTES` で上限を下げられます（1 MiB～50 MB）。その場合は Telegram の 50 MB 制限とは区別します。メディア合計上限など、ほかの理由は一般的なスキップ通知です。本文のみ・原ファイルのみの投稿は4096文字、メディアの説明は1024文字まで。長文は抜粋し、原文リンクを残します。
 
-使い方は全ユーザー共通の簡潔な説明とし、管理操作の案内は該当画面に表示します。詳細設定（「実装方法」を含む）とユーザー利用設定は所有者のみ利用できます。管理者は一般ユーザーを管理し、利用状況とシステム状態を確認できます。ユーザー管理の利用状況にはユーザー数と本日の使用量、システム状態には稼働状況・時間・バージョン・ディスク空き容量のみ表示します。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
+使い方は全ユーザー共通で、管理操作の案内は該当画面に表示します。詳細設定とユーザー制御は所有者のみ利用できます。ユーザー管理の利用状況には本日の使用量とユーザー数を、稼働状況にはサービスの状態・稼働時間・バージョンと今回の起動からの Bot 送受信量（ダウンローダーを含む）を表示します。通信量は systemd の `IPAccounting=yes` を使い、無効・未対応・サービスの主プロセス以外では取得不可と表示し、ホスト全体の数値は代用しません。戻るボタンは「戻る」のみです。`/cancel` または管理画面の切り替えで入力を中止します。古い審査ボタンでは再申請を操作できず、一覧が変わった場合は再確認が必要です。
 
 Telegram のコマンドメニューと紹介文は端末言語に対応します。既定は繁體中文、`zh` は简体中文、ほかに日本語・English を用意しています。Bot API は2文字の言語コードのみ受け付けるため、簡体・繁体を分けられません。Bot 内の4言語選択には影響しません。
 
-ユーザー管理の「ユーザー利用設定」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
+ユーザー管理の「ユーザー制御」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
 
 `status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
 
@@ -147,7 +147,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DAILY_REPORT_HOUR` | `22` | Hour 0–23 in that zone for the owner's usage/pending report. |
 | `DEFAULT_DAILY_LIMIT` | `50` | Daily quota for newly approved regular users before a default is set in the bot, 1–100000; editing this environment value does not bulk-update existing quotas. |
 | `OWNER_CONTACT_URL` | empty | Optional help-page contact link, e.g. `https://example.com/contact`; omitted when empty. |
-| `OWNER_CONTACT_LABEL` | empty | Optional contact-link text; defaults to a translated label. |
+| `OWNER_CONTACT_LABEL` | empty | Link text; defaults to a translated label. With `Powered by YOUR_NAME`, only the name is linked. |
 | `WORKER_COUNT` | `2` | Concurrent post jobs, from 1 to 8. |
 | `MIN_FREE_DISK_BYTES` | `1073741824` | Stop accepting downloads below 1 GiB of free space. |
 | `TEMP_SOFT_LIMIT_BYTES` | `1073741824` | Stop accepting downloads when media temporary files reach 1 GiB; not a hard quota. |
@@ -163,7 +163,7 @@ Management works only in a private chat with the bot. Send a User ID to search, 
 
 Video-size notices appear only when no suitable smaller video was recovered. `MAX_VIDEO_BYTES` can lower the cap (1 MiB–50 MB); this uses a separate notice rather than blaming Telegram's 50 MB limit. Other reasons, such as the total media cap, use a general skip notice. Text-only and document-only posts use a 4096-character message limit; media captions use 1024. Longer content is excerpted with a link to the original.
 
-All roles share the same brief help page; management guidance appears only in the relevant screens. Advanced settings, including Implementation details, and User controls are owner-only. Administrators can manage regular users and view Usage overview and system status. Usage overview under User management shows user counts and today's usage; system status shows only service state, uptime, version, and free disk space. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
+All roles share brief help; management guidance appears in the relevant screens. Advanced settings and User controls are owner-only. Usage overview under User management shows today's usage followed by user counts. Runtime status shows service state, uptime, version, and Bot traffic since service startup, including downloaders. Traffic uses systemd's `IPAccounting=yes`; disabled, unsupported, or non-main-process runs show unavailable, never host-wide traffic. Back buttons say only “Back”. `/cancel` or switching management screens cancels input. Old approval buttons cannot act on resubmitted requests; review the updated list when it changes.
 
 Telegram's command menu and short/full descriptions follow the client's language: the fallback is Traditional Chinese, `zh` is Simplified Chinese, with Japanese and English also available. The Bot API accepts only two-letter language codes, so these cannot distinguish the two Chinese scripts. In-bot language selection still supports all four languages.
 
