@@ -2075,10 +2075,10 @@ class MenuTests(unittest.TestCase):
         user_navigation = bot.users_page_keyboard(1, 45)["inline_keyboard"][0]
         self.assertEqual(
             [button["callback_data"] for button in user_navigation],
-            ["userspage:0", "noop:0", "userspage:2"],
+            ["userspage:0:ordinary", "noop:0", "userspage:2:ordinary"],
         )
 
-    def test_user_list_copies_id_and_only_shows_quota_fraction_and_language(self):
+    def test_user_list_copies_id_and_shows_fraction_language_and_name_without_status(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.observe({
@@ -2092,12 +2092,12 @@ class MenuTests(unittest.TestCase):
             user_line = next(line for line in text.splitlines() if "<code>200</code>" in line)
             self.assertEqual(
                 user_line,
-                '<code>200</code>｜普通｜0/50｜CNT',
+                '<code>200</code>｜0/50｜CNT｜Example',
             )
             self.assertNotIn("@example_user", user_line)
-            self.assertNotIn("Example", text)
+            self.assertNotIn("狀態", text.splitlines()[1])
             self.assertNotIn("https://t.me/", text)
-            self.assertEqual(len(keyboard["inline_keyboard"]), 2)
+            self.assertEqual(len(keyboard["inline_keyboard"]), 5)
 
     def test_user_list_copies_id_when_username_is_missing(self):
         records = [{
@@ -2110,10 +2110,10 @@ class MenuTests(unittest.TestCase):
             service = bot.Bot(MagicMock(), store)
             text, _, _ = service.users_page(records, 0)
         self.assertIn(
-            "<code>9876543210123456</code>｜普通｜0/50｜CNT",
+            "<code>9876543210123456</code>｜0/50｜CNT｜ABCDEFGHIJ",
             text,
         )
-        self.assertNotIn("ABCDEFGHIJ", text)
+        self.assertNotIn("https://t.me/", text)
 
     def test_user_details_use_profile_refreshed_on_next_day(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2137,16 +2137,18 @@ class MenuTests(unittest.TestCase):
             )
             self.assertNotIn('https://t.me/old_user', text)
             self.assertEqual(store.data["users"]["200"]["profile_checked_date"], bot.bot_date(186_400))
+            page = service.users_page(store.records(), 0)[0]
+            self.assertIn('<code>200</code>｜0/50｜CNT｜New Name', page)
 
     def test_user_label_without_name_does_not_repeat_user_id(self):
         record = {"user_id": 987654321, "quota": 0}
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             service = bot.Bot(MagicMock(), store)
-            text, _, _ = service.users_page([record], 0)
+            text, _, _ = service.users_page([record], 0, "initialized")
         user_line = text.splitlines()[-1]
         self.assertNotIn("（未提供名稱）", user_line)
-        self.assertTrue(user_line.endswith("｜0/0｜CNT"))
+        self.assertTrue(user_line.endswith("｜0/0｜CNT｜—"))
         self.assertEqual(user_line.count("987654321"), 1)
 
     def test_user_details_escape_names_and_reject_invalid_username_links(self):
@@ -2191,11 +2193,152 @@ class MenuTests(unittest.TestCase):
                     store.consume(200)
                 service = bot.Bot(MagicMock(), store)
                 text, _, _ = service.users_page(store.records(), 0)
-                self.assertIn(f'<code>200</code>｜{bot.admin_text("ordinary")}｜8/100｜{code}', text)
-                self.assertIn('0/∞', text)
+                self.assertIn(f'<code>200</code>｜8/100｜{code}｜—', text)
+                self.assertNotIn('<code>100</code>', text)
+                self.assertIn('0/∞', service.users_page(store.records(), 0, "owner")[0])
                 self.assertEqual(len(text.splitlines()[-1].split("｜")), 4)
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
+
+    def test_user_list_default_role_filters_are_disjoint_and_keep_usage_sorting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            for user_id, quota in ((101, None), (200, 50), (201, 100), (202, 100), (203, 0), (204, 0), (205, -1)):
+                store.set_quota(user_id, quota)
+            store.request_access(204)
+            for user_id, count in ((200, 1), (201, 3), (202, 8)):
+                for _ in range(count):
+                    store.consume(user_id)
+            service = bot.Bot(MagicMock(), store)
+            expected = {"all": {100, 101, 200, 201, 202, 203, 204, 205}, "owner": {100}, "admin": {101},
+                        "ordinary": {200, 201, 202}, "initialized": {203}, "pending": {204}, "blocked": {205}}
+            import re
+            for role in bot.USER_ROLE_FILTERS:
+                text, keyboard, _ = service.users_page(store.records(), 0, role)
+                ids = {int(value) for value in re.findall(r"<code>(\d+)</code>", text)}
+                self.assertEqual(ids, expected[role])
+                selected = [button for row in keyboard["inline_keyboard"][1:-1] for button in row if button["text"].startswith("✓ ")]
+                self.assertEqual([button["callback_data"] for button in selected], [f"userspage:0:{role}"])
+            text = service.users_page(store.records(), 0)[0]
+            self.assertEqual(re.findall(r"<code>(\d+)</code>", text), ["202", "201", "200"])
+            self.assertNotIn("狀態", text.splitlines()[1])
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_user_filter_pagination_preserves_role_and_clamps_filtered_pages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            for user_id in range(200, 225):
+                store.set_quota(user_id, None)
+            for user_id in range(300, 341):
+                store.set_quota(user_id, 50)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            text, keyboard, page = service.users_page(store.records(), 99, "admin")
+            self.assertEqual(page, 1)
+            self.assertIn("第 2/2 頁，共 25 位", text)
+            self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "userspage:0:admin")
+            for action, expected_role in (("userspage:1:ordinary", "ordinary"), ("userspage:0:admin", "admin"), ("userspage:0", "all")):
+                api.reset_mock()
+                service.handle_callback({"id": "callback", "data": action, "from": {"id": 100},
+                                         "message": {"message_id": 1, "chat": {"id": 100}}})
+                self.assertEqual(api.edit_message.call_args.kwargs["parse_mode"], "HTML")
+                keyboard = api.edit_message.call_args.args[3]
+                selected = [button["callback_data"] for row in keyboard["inline_keyboard"][1:-1]
+                            for button in row if button["text"].startswith("✓ ")]
+                self.assertEqual(selected, [f"userspage:0:{expected_role}"])
+            for invalid in ("userspage:0:unknown", "userspage:0:ordinary:owner", "userspage:-1:ordinary"):
+                api.reset_mock()
+                service.handle_callback({"id": "callback", "data": invalid, "from": {"id": 100},
+                                         "message": {"message_id": 1, "chat": {"id": 100}}})
+                api.edit_message.assert_not_called()
+                self.assertTrue(api.answer_callback.call_args.kwargs["alert"])
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_user_list_command_and_menu_default_to_regular_users_for_admins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(101, None)
+            store.set_quota(200, 100)
+            store.set_quota(300, 0)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for user_id in (100, 101):
+                api.reset_mock()
+                service.handle_update({"message": {"message_id": 1, "from": {"id": user_id},
+                                                   "chat": {"id": user_id}, "text": "/users"}})
+                command_page = api.send_message.call_args.args[1]
+                api.reset_mock()
+                service.handle_callback({"id": "callback", "data": "nav:userlist", "from": {"id": user_id},
+                                         "message": {"message_id": 1, "chat": {"id": user_id}}})
+                menu_page = api.edit_message.call_args.args[2]
+                for text in (command_page, menu_page):
+                    self.assertIn("<code>200</code>", text)
+                    for excluded in (100, 101, 300):
+                        self.assertNotIn(f"<code>{excluded}</code>", text)
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_user_filters_localize_empty_lists_and_reset_page_in_four_languages(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
+                store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+                service = bot.Bot(MagicMock(), store)
+                text, keyboard, page = service.users_page(store.records(), 99, "blocked")
+                self.assertEqual(page, 0)
+                self.assertIn(bot.admin_text("no_filtered_users"), text)
+                self.assertEqual(keyboard["inline_keyboard"][0], [{"text": "1/1", "callback_data": "noop:0"}])
+                buttons = [button for row in keyboard["inline_keyboard"][1:-1] for button in row]
+                self.assertEqual([button["callback_data"] for button in buttons], [f"userspage:0:{role}" for role in bot.USER_ROLE_FILTERS])
+                for role, button in zip(bot.USER_ROLE_FILTERS, buttons):
+                    self.assertEqual(button["text"], ("✓ " if role == "blocked" else "") + bot.admin_text(role))
+                    self.assertLessEqual(len(button["callback_data"].encode()), 64)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_user_filters_remain_private_admin_only_and_do_not_change_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            for user_id, quota in ((101, None), (200, 75)):
+                store.set_quota(user_id, quota)
+            for user_id in (100, 101, 200):
+                store.observe({"id": user_id})
+            before = json.dumps(store.data, sort_keys=True)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            for user_id, chat_id, permitted in ((100, 100, True), (101, 101, True), (200, 200, False), (101, -500, False)):
+                api.reset_mock()
+                service.handle_callback({"id": "callback", "data": "userspage:0:owner", "from": {"id": user_id},
+                                         "message": {"message_id": 1, "chat": {"id": chat_id}}})
+                self.assertEqual(api.edit_message.called, permitted)
+                self.assertEqual(json.dumps(store.data, sort_keys=True), before)
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_user_list_names_have_bounded_width_and_details_keep_full_escaped_name(self):
+        cases = {"ABCDEFGHIJ": "ABCDEFGHIJ", "ABCDEFGHIJK": "ABCDEFGH…", "中文測試名字": "中文測試…",
+                 "AB.CDEFGHI": "AB.CDEF…", "": "—"}
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(bot.user_name({"first_name": name}, bot.USER_LIST_NAME_WIDTH), expected)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.observe({"id": 200, "first_name": "<b>Not markup</b>\nvery long name", "username": "example_user"})
+            store.set_quota(200, 100)
+            service = bot.Bot(MagicMock(), store)
+            row = service.users_page(store.records(), 0)[0].splitlines()[-1]
+            self.assertIn("&lt;b&gt;", row)
+            self.assertNotIn("<b>", row)
+            self.assertEqual(len(row.split("｜")), 4)
+            name = bot.html.unescape(row.split("｜")[-1])
+            width = sum(1 if char.isascii() and (char.isalnum() or char == " ") else 2 for char in name)
+            self.assertLessEqual(width, bot.USER_LIST_NAME_WIDTH)
+            details = service.user_search_result(200, 100)[0]
+            self.assertIn("&lt;b&gt;Not markup&lt;/b&gt; very long name", details)
+            self.assertIn('<a href="https://t.me/example_user">@example_user</a>', details)
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
 
     def test_user_detail_sends_and_all_edit_paths_use_html(self):
         for language in bot.PUBLIC_TEXT:

@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.3.11"
+APP_VERSION = "3.4.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -98,6 +98,8 @@ MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
 LANGUAGE_CODES = {"zh-cn": "CNS", "zh": "CNT", "ja": "JA", "en": "EN"}
+USER_LIST_NAME_WIDTH = 10
+USER_ROLE_FILTERS = ("all", "ordinary", "owner", "admin", "pending", "initialized", "blocked")
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
@@ -452,6 +454,7 @@ ADMIN_TEXT = {
     "deny": ("拒絕", "Reject", "拒否", "拒绝"),
     "approve_page": ("通過本頁全部", "Approve this page", "このページをすべて承認", "通过本页全部"),
     "owner": ("所有者", "Owner", "所有者", "所有者"),
+    "all": ("全部", "All", "すべて", "全部"),
     "admin": ("管理員", "Administrator", "管理者", "管理员"),
     "ordinary": ("普通", "Regular", "一般", "普通"),
     "blocked": ("封鎖", "Blocked", "ブロック", "封禁"),
@@ -487,6 +490,7 @@ ADMIN_TEXT = {
     "default_limit_range": ("預設額度必須是 1 至 100000 的整數。", "The default limit must be an integer from 1 to 100000.", "標準上限は 1～100000 の整数にしてください。", "预设额度必须是 1 至 100000 的整数。"),
     "admin_unlimited": ("不限・管理員", "Unlimited · Administrator", "無制限・管理者", "不限・管理员"),
     "no_requests": ("目前沒有待審批申請。", "No pending requests.", "審査待ちの申請はありません。", "目前没有待审批申请。"),
+    "no_filtered_users": ("沒有符合條件的用戶。", "No matching users.", "該当するユーザーはいません。", "没有符合条件的用户。"),
     "find_user": ("請輸入要修改權限的 Telegram User ID。", "Enter the Telegram User ID to manage.", "権限を変更する Telegram User ID を入力してください。", "请输入要修改权限的 Telegram User ID。"),
     "invalid_menu": ("無效選單。", "Invalid menu.", "無効なメニューです。", "无效菜单。"),
     "invalid_action": ("無效操作。", "Invalid action.", "無効な操作です。", "无效操作。"),
@@ -1337,7 +1341,7 @@ def remove_keyboard() -> dict[str, bool]:
     return {"remove_keyboard": True}
 
 
-def user_name(record: dict[str, Any]) -> str:
+def user_name(record: dict[str, Any], max_width: int | None = None) -> str:
     def clean(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -1347,7 +1351,32 @@ def user_name(record: dict[str, Any]) -> str:
             clean(record.get("last_name")),
         ) if value
     )
-    return name or admin_text("not_named")
+    if max_width is None:
+        return name or admin_text("not_named")
+    if not name:
+        return "—"
+    widths = [1 if character.isascii() and (character.isalnum() or character == " ") else 2
+              for character in name]
+    if sum(widths) > max_width:
+        used = 0
+        for index, width in enumerate(widths):
+            if used + width > max_width - 2:
+                return name[:index] + "…"
+            used += width
+    return name
+
+
+def user_role(record: dict[str, Any], owner_id: int) -> str:
+    if record["user_id"] == owner_id:
+        return "owner"
+    quota = record.get("quota", 0)
+    if quota is None:
+        return "admin"
+    if quota == -1:
+        return "blocked"
+    if record.get("pending"):
+        return "pending"
+    return "initialized" if quota == 0 else "ordinary"
 
 
 def user_label(record: dict[str, Any]) -> str:
@@ -1438,11 +1467,19 @@ def pending_keyboard(
     return {"inline_keyboard": rows}
 
 
-def users_page_keyboard(page: int, total: int) -> dict[str, Any]:
-    return {"inline_keyboard": [
-        pagination_row("userspage", page, total),
-        [{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}],
-    ]}
+def users_page_keyboard(page: int, total: int, role: str = "ordinary") -> dict[str, Any]:
+    navigation = pagination_row("userspage", page, total)
+    for button in navigation:
+        if button["callback_data"].startswith("userspage:"):
+            button["callback_data"] += f":{role}"
+    rows = [navigation]
+    for choices in (USER_ROLE_FILTERS[:2], USER_ROLE_FILTERS[2:4], USER_ROLE_FILTERS[4:]):
+        rows.append([{
+            "text": ("✓ " if choice == role else "") + admin_text(choice),
+            "callback_data": f"userspage:0:{choice}",
+        } for choice in choices])
+    rows.append([{"text": f'↩️ {admin_text("users")}', "callback_data": "nav:users"}])
+    return {"inline_keyboard": rows}
 
 
 def searched_user_keyboard(
@@ -3511,42 +3548,39 @@ class Bot:
         self.acl.mark_daily_report(now)
 
     def users_page(
-        self, records: list[dict[str, Any]], page: int
+        self, records: list[dict[str, Any]], page: int, role: str = "ordinary"
     ) -> tuple[str, dict[str, Any], int]:
+        if role not in USER_ROLE_FILTERS:
+            raise ValueError("invalid user role filter")
+        records = [record for record in records
+                   if role == "all" or user_role(record, self.acl.owner_id) == role]
         pages = max(1, (len(records) + MANAGEMENT_PAGE_SIZE - 1) // MANAGEMENT_PAGE_SIZE)
         page = max(0, min(page, pages - 1))
         start = page * MANAGEMENT_PAGE_SIZE
+        role_label = "" if role == "all" else f" · {admin_text(role)}"
         title = {
-            "zh": f"用戶列表（第 {page + 1}/{pages} 頁，共 {len(records)} 位）",
-            "en": f"Users (page {page + 1}/{pages}, {len(records)} total)",
-            "ja": f"ユーザー一覧（{page + 1}/{pages} ページ、計 {len(records)} 人）",
-            "zh-cn": (f"用户列表（第 {page + 1}/{pages} 页，共 {len(records)} 位）"),
+            "zh": f"用戶列表{role_label}（第 {page + 1}/{pages} 頁，共 {len(records)} 位）",
+            "en": f"Users{role_label} (page {page + 1}/{pages}, {len(records)} total)",
+            "ja": f"ユーザー一覧{role_label}（{page + 1}/{pages} ページ、計 {len(records)} 人）",
+            "zh-cn": f"用户列表{role_label}（第 {page + 1}/{pages} 页，共 {len(records)} 位）",
         }[ui_language()]
         lines = [
             title,
-            {"zh": "ID｜狀態｜已用/總量｜語言", "en": "ID | Status | Used/Total | Language", "ja": "ID｜状態｜使用量/上限｜言語", "zh-cn": "ID｜状态｜已用/总量｜语言"}[ui_language()],
+            {"zh": "ID｜已用/總量｜語言｜名稱", "en": "ID | Used/Total | Language | Name", "ja": "ID｜使用量/上限｜言語｜名前", "zh-cn": "ID｜已用/总量｜语言｜名称"}[ui_language()],
         ]
         for record in records[start : start + MANAGEMENT_PAGE_SIZE]:
             user_id = int(record["user_id"])
             quota = record.get("quota")
-            if user_id == self.acl.owner_id:
-                status, quota_text = admin_text("owner"), "∞"
-            elif quota is None:
-                status, quota_text = admin_text("admin"), "∞"
-            elif quota == -1:
-                status, quota_text = admin_text("blocked"), "-1"
-            elif record.get("pending"):
-                status, quota_text = admin_text("pending"), "0"
-            elif quota == 0:
-                status, quota_text = admin_text("initialized"), "0"
-            else:
-                status, quota_text = admin_text("ordinary"), str(quota)
+            quota_text = "∞" if quota is None else str(quota)
             language_code = LANGUAGE_CODES[self.acl.language(user_id)]
             usage = int(record.get("usage_count", 0) or 0)
+            name = html.escape(user_name(record, USER_LIST_NAME_WIDTH))
             lines.append(
-                f"<code>{user_id}</code>｜{status}｜{usage}/{quota_text}｜{language_code}"
+                f"<code>{user_id}</code>｜{usage}/{quota_text}｜{language_code}｜{name}"
             )
-        return "\n".join(lines), users_page_keyboard(page, len(records)), page
+        if not records:
+            lines.append(admin_text("no_filtered_users"))
+        return "\n".join(lines), users_page_keyboard(page, len(records), role), page
 
     def pending_page(
         self, records: list[dict[str, Any]], page: int
@@ -3988,7 +4022,11 @@ class Bot:
             if target < 0:
                 self.api.answer_callback(callback_id, admin_text("menu_invalid_page"), alert=True)
                 return
-            text, keyboard, _ = self.users_page(self.acl.records(), target)
+            role = extra[0] if extra else "all"  # Old list buttons showed every role.
+            if len(extra) > 1 or role not in USER_ROLE_FILTERS:
+                self.api.answer_callback(callback_id, admin_text("invalid_action"), alert=True)
+                return
+            text, keyboard, _ = self.users_page(self.acl.records(), target, role)
             self.api.edit_message(
                 chat_id, message_id, text, keyboard, parse_mode="HTML"
             )
