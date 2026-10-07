@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.7.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.7.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -12,7 +12,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 這個 Bot 接收單篇 `x.com`／`twitter.com` 貼文網址，回傳作者連結、文字與媒體；支援授權、每日額度及內聯分享。所有用戶（包括所有者與管理員）均可從「語言/Language」選擇简体中文、繁體中文、English、日本語；預設繁體中文（`zh`），不依客戶端語言自動切換。偏好保存在 ACL，部署不需設定語言。
 
-需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換，並建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
+需求：一台可連 Telegram 與 X 的 Debian／Ubuntu Linux 主機、root/sudo、Python 3.10+、systemd、可用的 Telegram Bot Token。部署腳本會重用或安裝 Python 3.12，在獨立候選環境中安裝並測試依賴後切換；切換後服務／設定檢查失敗時回滾程式。另建立專用系統用戶及 `/var/lib/x-tweet-telegram-bot` 私有資料目錄；缺少 `ffmpeg` 時亦會安裝。Bot 使用 long polling，不需要 Webhook 或入站埠。依賴版本見 `requirements.txt`。
 
 在全新主機上 clone 本 repository，於工程目錄執行：
 
@@ -55,7 +55,7 @@ Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁�
 
 用戶管理內的「用戶控制」集中使用開關、自動通過及額度管理。額度管理分成「預設額度」與「批量修改」：預設額度只供之後新授權的普通用戶使用，現有用戶不變；設定保存在 ACL，優先於 `DEFAULT_DAILY_LIMIT`。批量修改輸入 `A B`（例如 `50 100`），確認後只把現有額度等於 A 的正常普通用戶改為 B，不改預設額度。A、B 均須為 1–100000，且不可相同；初始化、待審、封鎖、所有者與管理員不參與，當日用量不重置。確認前名單或額度若已變更，須重新設定。
 
-`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 須先停機，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
+`status` 顯示生效額度與來源；`export-access` 保留預設額度及更新時間，`import-access` 只在服務完全停止（inactive／failed、MainPID=0）時允許執行，不會批次套用額度或覆蓋更新較新的設定。每筆快照必須明確包含 `user_id`、`quota`、`updated_at`；缺欄位、錯誤型別或重複 ID 會整份拒絕。舊快照仍可匯入，但不改全域預設。簡報與狀態的「用量」是扣額度次數，並非成功傳送次數。Inline 同網址在五分鐘內不重複計次，但額度換日後重新計次。
 
 驗證：在工程目錄執行 `python3 -m unittest -q test_bot.py`（需先安裝 `requirements.txt`），部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` 檢查資料與網路監聽；加 `TEST_URL=https://x.com/example/status/123456789`（換成真實、公開且含文字與媒體的單篇貼文）會實際下載媒體至自動清除的暫存目錄，不使用 Cookies，也不發送 Telegram 訊息。最後須本人在 Telegram 實際傳送公開貼文確認媒體輸出；自動測試不能代替此步。
 
@@ -69,7 +69,7 @@ Telegram 的指令菜單、簡介／描述依客戶端語言顯示：預設繁�
 
 この Bot は `x.com`／`twitter.com` の単一投稿URLから、投稿者リンク、本文、メディアを返します。利用許可、日次上限、インライン共有にも対応します。所有者・管理者を含む全ユーザーが「語言/Language」から简体中文・繁體中文・English・日本語を選べます。初期表示は繁體中文（`zh`）で、端末言語による自動切り替えはありません。選択は ACL に保存され、導入時の言語設定は不要です。
 
-必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+、systemd、Telegram Bot Token です。`deploy.sh` は Python 3.12 を再利用または導入し、独立した候補環境で依存関係を導入・テストしてから切り替えます。専用ユーザーと `/var/lib/x-tweet-telegram-bot` を準備し、`ffmpeg` がなければ導入します。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
+必要なものは、Telegram と X に接続できる Debian／Ubuntu Linux、root/sudo、Python 3.10+、systemd、Telegram Bot Token です。`deploy.sh` は Python 3.12 を再利用または導入し、独立した候補環境で依存関係を導入・テストしてから切り替えます。切り替え後のサービス・設定検査に失敗すればプログラムを戻します。専用ユーザーと `/var/lib/x-tweet-telegram-bot` を準備し、`ffmpeg` がなければ導入します。通信は long polling で、Webhook や受信ポートは不要です。依存バージョンは `requirements.txt` を参照してください。
 
 新しいサーバーで repository を clone し、工程ディレクトリで実行します：
 
@@ -112,7 +112,7 @@ Telegram のコマンドメニューと紹介文は端末言語に対応しま�
 
 ユーザー管理の「ユーザー制御」に利用の切り替え、自動承認、上限管理をまとめています。上限管理は「標準上限」と「一括変更」に分かれます。標準上限は今後承認する一般ユーザーにのみ適用し、既存ユーザーは変えません。ACL に保存され、`DEFAULT_DAILY_LIMIT` より優先されます。一括変更は `A B`（例：`50 100`）を入力して確認すると、上限が A の承認済み一般ユーザーだけを B に変更します。標準上限は変えません。A、B は異なる 1～100000 の整数とし、初期状態・審査待ち・ブロック中のユーザー、所有者、管理者は対象外です。本日の使用量も変えません。確認前に対象者や上限が変わった場合は、やり直してください。
 
-`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` は Bot を停止してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
+`status` は適用中の上限と設定元を表示し、`export-access` は標準上限と更新時刻も保存します。`import-access` はサービス停止（inactive／failed、MainPID=0）を確認してから使い、上限の一括適用や、より新しい設定の上書きは行いません。各レコードには `user_id`、`quota`、`updated_at` が必須で、欠落・型の誤り・IDの重複があれば全体を拒否します。旧スナップショットも使えますが、標準上限は変更しません。レポートと状態画面の「使用量」は上限から消費した回数で、送信成功数ではありません。Inline の同じURLは5分以内なら再消費しませんが、利用日の切り替え後は改めて計上します。
 
 テストは依存関係を入れたうえで `python3 -m unittest -q test_bot.py`。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` でデータと受信ポートを確認できます。本文とメディアを含む実際の公開単一投稿URLを `TEST_URL=https://x.com/example/status/123456789` の形で渡すと、一時ディレクトリへメディアを実際にダウンロードし、検査後に削除します。Cookies は使わず、Telegram への送信もしません。最後に本人が Telegram で投稿URLを送ってメディアを確認してください。自動テストだけでは代替できません。
 
@@ -126,7 +126,7 @@ Telegram のコマンドメニューと紹介文は端末言語に対応しま�
 
 Send a single `x.com` or `twitter.com` post URL to receive its author link, text, and media. The bot also supports access approval, daily limits, and inline sharing. Every user, including the owner and administrators, can choose 简体中文, 繁體中文, English, or 日本語 from 語言/Language. The default is Traditional Chinese (`zh`), not the client's language. Preferences are saved in the ACL; no deployment language setting is needed.
 
-You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+, systemd, and a Telegram Bot Token. `deploy.sh` reuses or installs Python 3.12, installs and tests packages in a separate candidate environment before switching, and creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. It installs `ffmpeg` if missing. The bot uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
+You need a Debian or Ubuntu Linux server that can reach Telegram and X, root/sudo, Python 3.10+, systemd, and a Telegram Bot Token. `deploy.sh` reuses or installs Python 3.12, installs and tests packages in a separate candidate environment before switching, and creates a dedicated system user and private state directory at `/var/lib/x-tweet-telegram-bot`. After switching, failed service/config checks roll back the program. It installs `ffmpeg` if missing. The bot uses long polling, so no Webhook or inbound port is needed. Pinned dependencies are in `requirements.txt`.
 
 Clone this repository onto a fresh server and run from its directory:
 
@@ -169,7 +169,7 @@ Telegram's command menu and short/full descriptions follow the client's language
 
 The User controls menu under User management groups user access, auto-approval, and Quota management. Quota management has Default limit and Bulk change. The default applies only to regular users approved afterwards; existing users are unchanged. It is saved in the ACL and overrides `DEFAULT_DAILY_LIMIT`. For Bulk change, enter `A B` (e.g. `50 100`) and confirm to change only approved regular users whose current limit is A to B, without changing the default. A and B must be different integers from 1 to 100000. Initialized, pending, blocked, owner, and administrator accounts are excluded; today's usage stays unchanged. Set up the operation again if the target users or limits change before confirmation.
 
-`status` shows the effective limit and its source. `export-access` includes the default and its update time; stop the bot before using `import-access`, which does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries. Inline requests for the same URL are charged once per five-minute window, but are charged again after the configured daily reset.
+`status` shows the effective limit and its source. `export-access` includes the default and its update time; `import-access` requires an inactive/failed service with MainPID=0 and does not bulk-apply quotas or overwrite newer settings. Every record must explicitly include `user_id`, `quota`, and `updated_at`; missing fields, wrong types, or duplicate IDs reject the entire snapshot. Older snapshots remain supported without changing the global default. Usage in reports and status means quota charged, not successful deliveries. Inline requests for the same URL are charged once per five-minute window, but are charged again after the configured daily reset.
 
 For local tests, install `requirements.txt` and run `python3 -m unittest -q test_bot.py`. After deployment, `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` checks state and inbound listeners. Set `TEST_URL=https://x.com/example/status/123456789` to a real public single-post URL containing text and media to actually download and inspect media in an automatically removed temporary directory. This check uses no Cookies and sends nothing to Telegram. Finally, personally send a public post to the bot in Telegram and inspect the media; automated checks do not replace that test.
 

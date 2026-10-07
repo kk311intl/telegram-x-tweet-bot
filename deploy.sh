@@ -196,6 +196,7 @@ systemctl restart "$SERVICE"
 sleep 3
 systemctl is-active --quiet "$SERVICE"
 [[ $(systemctl show "$SERVICE" -p MainPID --value) =~ ^[1-9][0-9]*$ ]]
+/usr/local/sbin/x-tweet-bot-config status
 trap - ERR
 if [[ $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then
   rm -rf -- "$rollback_dir"
@@ -207,6 +208,5 @@ fi
 candidate_venv=""
 
 echo "service=$(systemctl is-active "$SERVICE")"
-/usr/local/sbin/x-tweet-bot-config status
 echo "Configure later with: x-tweet-bot-config set-token"
 echo "Set owner directly with: x-tweet-bot-config set-owner TELEGRAM_USER_ID"

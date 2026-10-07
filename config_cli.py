@@ -199,7 +199,15 @@ def main() -> int:
         limit, _source = default_limit_status(values, {})
         print(json.dumps(ACLStore.read_access_snapshot(STATE_PATH, limit), ensure_ascii=False))
     elif command == "import-access":
-        if subprocess.run(["systemctl", "is-active", "--quiet", "x-tweet-telegram-bot.service"]).returncode == 0:
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", "x-tweet-telegram-bot.service", "--property=ActiveState,MainPID"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            raise SystemExit("Could not verify that the Bot is stopped") from None
+        state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if result.returncode or state.get("ActiveState") not in {"inactive", "failed"} or state.get("MainPID") != "0":
             raise SystemExit("Stop the Bot before restoring access data")
         try:
             snapshot = json.load(sys.stdin)

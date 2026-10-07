@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.7.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -2757,6 +2757,8 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
     caption = inline_caption(author, author_url, text, effective_url, debug)
     results: list[dict[str, Any]] = []
     for index, item in enumerate(fxtwitter_media(tweet), start=1):
+        if len(results) >= INLINE_RESULT_LIMIT:
+            break
         media_url = trusted_twimg_url(item.get("url"))
         if not media_url:
             continue
@@ -2807,8 +2809,6 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
             if duration > 0:
                 result["video_duration"] = duration
         results.append(result)
-        if len(results) >= INLINE_RESULT_LIMIT:
-            break
     if results:
         return results
     message = tweet_html(author, author_url, text, effective_url, 4096)

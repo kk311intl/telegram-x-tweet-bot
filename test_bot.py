@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import io
 import os
 import shutil
 import subprocess
@@ -15,6 +16,84 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_deploy_keeps_config_health_check_inside_rollback_protection(self):
+        script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
+        health_check = script.index("/usr/local/sbin/x-tweet-bot-config status")
+        rollback_commit = script.index("trap - ERR\nif [[ $rollback_dir")
+        self.assertLess(health_check, rollback_commit)
+        self.assertLess(health_check, script.index('candidate_venv=""'))
+        bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
+        if Path(bash).exists():
+            checks = script.split("sleep 3\n", 1)[1].split("trap - ERR\n", 1)[0]
+            checks = checks.replace("/usr/local/sbin/x-tweet-bot-config status", "config_status")
+            harness = """set -e
+SERVICE=test.service
+systemctl() { if [[ $1 == show ]]; then printf '123\\n'; fi; }
+config_status() { return 1; }
+rollback_deploy() { printf 'rolled_back\\n'; exit 1; }
+trap rollback_deploy ERR
+""" + checks + "printf 'incorrectly_committed\\n'\n"
+            result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, timeout=15)
+            self.assertEqual((result.returncode, result.stdout.strip()), (1, "rolled_back"), result.stderr)
+
+    def test_access_restore_rejects_transitional_or_unverifiable_service_state(self):
+        blocked = [(state, pid, 0) for state, pid in (
+            ("active", "123"), ("activating", "123"), ("deactivating", "123"),
+            ("reloading", "123"), ("activating", "0"), ("inactive", "123"),
+            ("failed", "123"), ("", ""), ("unknown", "0"),
+        )] + [("inactive", "0", 1)]
+        for state, pid, returncode in blocked:
+            with self.subTest(state=state, pid=pid, returncode=returncode), \
+                 patch.object(config_cli.os, "geteuid", return_value=0, create=True), \
+                 patch.object(config_cli.sys, "argv", ["config", "import-access"]), \
+                 patch.object(config_cli.sys, "stdin", io.StringIO('{"version":1,"users":[]}')), \
+                 patch.object(config_cli, "load_env", return_value={}), \
+                 patch.object(config_cli, "acl_store") as store, patch("builtins.print"):
+                def query(arguments, **kwargs):
+                    code = (0 if state == "active" else 3) if "is-active" in arguments else returncode
+                    return subprocess.CompletedProcess(arguments, code, stdout=f"ActiveState={state}\nMainPID={pid}\n")
+                with patch.object(config_cli.subprocess, "run", side_effect=query), \
+                     self.assertRaises(SystemExit):
+                    config_cli.main()
+                store.assert_not_called()
+        for error in (OSError(), subprocess.TimeoutExpired("systemctl", 5)):
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(config_cli.os, "geteuid", return_value=0, create=True), \
+                 patch.object(config_cli.sys, "argv", ["config", "import-access"]), \
+                 patch.object(config_cli, "load_env", return_value={}), \
+                 patch.object(config_cli, "acl_store") as store, \
+                 patch.object(config_cli.subprocess, "run", side_effect=error), self.assertRaises(SystemExit):
+                config_cli.main()
+            store.assert_not_called()
+
+    def test_access_restore_accepts_only_confirmed_stopped_service(self):
+        snapshot = {"version": 1, "users": []}
+        for state in ("inactive", "failed"):
+            with self.subTest(state=state), patch.object(config_cli.os, "geteuid", return_value=0, create=True), \
+                 patch.object(config_cli.sys, "argv", ["config", "import-access"]), \
+                 patch.object(config_cli.sys, "stdin", io.StringIO(json.dumps(snapshot))), \
+                 patch.object(config_cli, "load_env", return_value={}), \
+                 patch.object(config_cli, "acl_store") as store, patch("builtins.print"):
+                store.return_value.import_access.return_value = 0
+                with patch.object(config_cli.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=f"ActiveState={state}\nMainPID=0\n")):
+                    self.assertEqual(config_cli.main(), 0)
+                store.return_value.import_access.assert_called_once_with(snapshot)
+
+    def test_inline_photos_obey_result_limit_and_skip_unneeded_video_lookup(self):
+        photos = [{"type": "photo", "url": f"https://pbs.twimg.com/media/example{index}.jpg"}
+                  for index in range(bot.INLINE_RESULT_LIMIT + 1)]
+        video = {"type": "video", "url": "https://video.twimg.com/example.mp4",
+                 "thumbnail_url": "https://pbs.twimg.com/media/thumbnail.jpg"}
+        for media in (photos, photos[:bot.INLINE_RESULT_LIMIT] + [video]):
+            with self.subTest(media_count=len(media)), patch.object(bot, "fetch_fxtwitter", return_value={
+                "id": "123", "text": "example", "media": {"all": media},
+            }), patch.object(bot, "remote_media_size", return_value=100) as size:
+                results = bot.build_inline_results("https://x.com/example/status/123")
+                self.assertEqual(len(results), bot.INLINE_RESULT_LIMIT)
+                self.assertTrue(all(result["type"] == "photo" for result in results))
+                size.assert_not_called()
+
     def test_post_ids_and_metadata_profiles_are_safe_for_original_filenames(self):
         for value in ("９９", "1" * 26, "123\r\nHeader"):
             with self.subTest(value=value):
