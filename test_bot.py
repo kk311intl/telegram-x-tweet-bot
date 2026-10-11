@@ -16,6 +16,72 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_gif_detection_uses_source_type_not_silent_video_or_partial_order(self):
+        tweet = {"media": {"all": [
+            {"type": "photo", "url": "https://pbs.twimg.com/p.jpg"},
+            {"type": "gif", "url": "https://video.twimg.com/g.mp4"},
+            {"type": "video", "url": "https://video.twimg.com/v.mp4"},
+        ]}}
+        paths = [Path("fxtwitter_2.mp4"), Path("fxtwitter_3.mp4"), Path("unknown.mp4")]
+        self.assertEqual(bot.gif_media_paths(paths, tweet), {paths[0]})
+        self.assertEqual(bot.gif_media_paths(paths, {}), set())
+        tweet["media"]["all"].pop()
+        self.assertEqual(bot.gif_media_paths([paths[2]], tweet), {paths[2]})
+
+    def test_gif_conversion_failures_keep_source_and_remove_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            source.write_bytes(b"original video")
+            target = source.with_name(source.name + ".gif")
+            for failure in (OSError("missing encoder"), subprocess.TimeoutExpired("ffmpeg", 60), ValueError("disk limit")):
+                target.write_bytes(b"partial")
+                with patch.object(bot, "run_command", side_effect=failure):
+                    self.assertEqual(bot.gif_document(source), source)
+                self.assertFalse(target.exists())
+                self.assertEqual(source.read_bytes(), b"original video")
+            def oversized(*args, **kwargs):
+                target.write_bytes(b"GIF89a" + b"x" * 30)
+                return subprocess.CompletedProcess([], 0, "")
+            with patch.object(bot, "run_command", side_effect=oversized), patch.object(bot, "MAX_MEDIA_BYTES", 20):
+                self.assertEqual(bot.gif_document(source), source)
+            self.assertFalse(target.exists())
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")
+    def test_gif_document_is_a_real_looping_animation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "animation.mp4"
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                            "testsrc2=size=96x64:rate=15", "-t", "1", "-c:v", "mpeg4", str(source)], check=True)
+            original = source.read_bytes()
+            target = bot.gif_document(source)
+            self.assertNotEqual(target, source)
+            with bot.Image.open(target) as animation:
+                self.assertEqual(animation.format, "GIF")
+                self.assertGreater(animation.n_frames, 1)
+                self.assertEqual(animation.info.get("loop"), 0)
+                self.assertEqual(animation.size, (96, 64))
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_mixed_post_sends_converted_gif_document_without_converting_normal_video(self):
+        tweet = {"id": "123", "text": "mixed", "author": {"name": "Example", "screen_name": "example"},
+                 "media": {"all": [{"type": kind, "url": f"https://video.twimg.com/{i}.mp4"}
+                                    for i, kind in enumerate(("gif", "video"))]}}
+        with tempfile.TemporaryDirectory() as directory:
+            animation, video = Path(directory) / "fxtwitter_1.mp4", Path(directory) / "fxtwitter_2.mp4"
+            converted = Path(directory) / "converted.gif"
+            for path in (animation, video, converted):
+                path.write_bytes(b"media")
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            with patch.object(bot, "TMP_DIR", Path(directory)), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", return_value=([animation, video], "", 0)), \
+                 patch.object(bot, "gif_document", return_value=converted) as convert:
+                service.process_url(100, 10, 100, "https://x.com/example/status/123")
+            convert.assert_called_once_with(animation)
+            self.assertEqual(api.send_previews.call_args.args[1], [animation, video])
+            api.send_documents.assert_called_once_with(100, [converted, video], tweet_id="123")
+
     def test_deploy_keeps_config_health_check_inside_rollback_protection(self):
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
         health_check = script.index("/usr/local/sbin/x-tweet-bot-config status")
