@@ -98,13 +98,19 @@ class ReliabilityTests(unittest.TestCase):
             store = bot.ACLStore(Path(directory) / "acl.json", 100)
             api = MagicMock()
             service = bot.Bot(api, store)
-            with patch.object(bot, "TMP_DIR", Path(directory)), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
-                 patch.object(bot, "download_fxtwitter_media", return_value=([animation, video], "", 0)), \
-                 patch.object(bot, "gif_document", return_value=converted) as convert:
-                service.process_url(100, 10, 100, "https://x.com/example/status/123")
-            convert.assert_called_once_with(animation)
-            self.assertEqual(api.send_previews.call_args.args[1], [converted, video])
-            api.send_documents.assert_called_once_with(100, [converted, video], tweet_id="123")
+            for files, previews, documents in (
+                ([animation, video], [animation, video], [converted, video]),
+                ([animation], [animation], [converted]),
+            ):
+                api.reset_mock()
+                with self.subTest(files=files), patch.object(bot, "TMP_DIR", Path(directory)), \
+                     patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                     patch.object(bot, "download_fxtwitter_media", return_value=(files, "", 0)), \
+                     patch.object(bot, "gif_document", return_value=converted) as convert:
+                    service.process_url(100, 10, 100, "https://x.com/example/status/123")
+                convert.assert_called_once_with(animation)
+                self.assertEqual(api.send_previews.call_args.args[1], previews)
+                api.send_documents.assert_called_once_with(100, documents, tweet_id="123")
 
     def test_deploy_keeps_config_health_check_inside_rollback_protection(self):
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")

@@ -5038,7 +5038,7 @@ class Bot:
                 prepare_image(path)
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
                 else path
-                for path in documents
+                for path in files
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v", ".gif"}
             ]
             caption = media_caption(
