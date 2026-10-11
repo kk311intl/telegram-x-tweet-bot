@@ -16,6 +16,30 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_gif_preview_and_document_share_bytes_and_mixed_previews_keep_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            photo, animation = Path(directory) / "photo.jpg", Path(directory) / "animation.gif"
+            photo.write_bytes(b"photo")
+            animation.write_bytes(b"GIF89a-test")
+            api = bot.TelegramAPI("YOUR_API_TOKEN")
+            calls = []
+            def capture(method, data, files, **kwargs):
+                calls.append((method, data, [(name, handle.read()) for name, handle in files.values()]))
+                return {"message_id": len(calls)}
+            api.call = capture
+            result = api.send_previews(100, [animation], "caption", tweet_id="123")
+            api.send_documents(100, [animation], tweet_id="123")
+            self.assertEqual(len(result), 1)
+            self.assertEqual([call[0] for call in calls], ["sendAnimation", "sendDocument"])
+            self.assertEqual(calls[0][2], calls[1][2])
+            self.assertEqual(calls[0][2][0][0], "X_123_01.gif")
+            calls.clear()
+            result = api.send_previews(100, [photo, animation], "<b>caption</b>", parse_mode="HTML", tweet_id="123")
+            self.assertEqual(len(result), 2)
+            self.assertEqual([call[0] for call in calls], ["sendPhoto", "sendAnimation"])
+            self.assertEqual([call[1]["caption"] for call in calls], ["<b>caption</b>", ""])
+            self.assertEqual(calls[1][2][0][0], "X_123_02.gif")
+
     def test_gif_detection_uses_source_type_not_silent_video_or_partial_order(self):
         tweet = {"media": {"all": [
             {"type": "photo", "url": "https://pbs.twimg.com/p.jpg"},
@@ -79,7 +103,7 @@ class ReliabilityTests(unittest.TestCase):
                  patch.object(bot, "gif_document", return_value=converted) as convert:
                 service.process_url(100, 10, 100, "https://x.com/example/status/123")
             convert.assert_called_once_with(animation)
-            self.assertEqual(api.send_previews.call_args.args[1], [animation, video])
+            self.assertEqual(api.send_previews.call_args.args[1], [converted, video])
             api.send_documents.assert_called_once_with(100, [converted, video], tweet_id="123")
 
     def test_deploy_keeps_config_health_check_inside_rollback_protection(self):

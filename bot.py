@@ -2281,6 +2281,8 @@ class TelegramAPI:
             data["parse_mode"] = parse_mode
         if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
             method, field = "sendPhoto", "photo"
+        elif suffix == ".gif":
+            method, field = "sendAnimation", "animation"
         elif suffix in {".mp4", ".mov", ".m4v"}:
             method, field = "sendVideo", "video"
             dimensions = video_dimensions(path)
@@ -2312,18 +2314,23 @@ class TelegramAPI:
             raise ValueError("invalid post ID for media filename")
         supported = [
             path for path in paths
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v", ".gif"}
         ]
         if not supported:
             if paths:
                 self.send_message(chat_id, caption, parse_mode=parse_mode)
             return []
-        if len(supported) == 1:
-            result = self.send_preview(
-                chat_id, supported[0], caption, parse_mode=parse_mode,
-                filename=f"X_{tweet_id}_01{supported[0].suffix.lower()}" if tweet_id else None,
-            )
-            return [result] if isinstance(result, dict) else []
+        if len(supported) == 1 or any(path.suffix.lower() == ".gif" for path in supported):
+            # Telegram media albums do not support animation items.
+            results = []
+            for index, path in enumerate(supported[:10]):
+                result = self.send_preview(
+                    chat_id, path, caption if index == 0 else "", parse_mode=parse_mode,
+                    filename=f"X_{tweet_id}_{index + 1:02d}{path.suffix.lower()}" if tweet_id else None,
+                )
+                if isinstance(result, dict):
+                    results.append(result)
+            return results
 
         media: list[dict[str, Any]] = []
         with ExitStack() as stack:
@@ -5023,12 +5030,16 @@ class Bot:
                         message_id,
                     )
                 return
+            if not self.can_process(user_id):
+                return
+            gif_paths = gif_media_paths(files, fallback_tweet or {})
+            documents = [gif_document(path) if path in gif_paths else path for path in files]
             previews = [
                 prepare_image(path)
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
                 else path
-                for path in files
-                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
+                for path in documents
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v", ".gif"}
             ]
             caption = media_caption(
                 author,
@@ -5068,10 +5079,6 @@ class Bot:
             if not self.can_process(user_id):
                 return
             try:
-                gif_paths = gif_media_paths(files, fallback_tweet or {})
-                documents = [gif_document(path) if path in gif_paths else path for path in files]
-                if not self.can_process(user_id):
-                    return
                 self.api.send_documents(chat_id, documents, tweet_id=effective_url.rsplit("/", 1)[-1])
                 if any(source in gif_paths and source == document for source, document in zip(files, documents)):
                     self.api.send_message(chat_id, {

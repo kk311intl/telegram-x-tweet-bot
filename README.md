@@ -60,7 +60,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 圖片與影片都會附上原始檔，混合貼文亦同；影片受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
 
-直接傳送網址時，可辨識的 GIF 另轉為 `.gif` 文件（最長邊 640 像素、15 fps），預覽及 Inline 分享維持 Telegram 動畫／影片格式。轉換失敗或超限會保留來源影片並提示；來源未能辨識為 GIF 時不猜測轉換。
+直接傳送網址時，可辨識的 GIF 轉為 `.gif`（最長邊 640 像素、15 fps），同一份檔案用於動畫預覽及文件附件。GIF 是轉換檔，不是來源原檔；Telegram 可能重新編碼預覽，文件附件保留 GIF。含 GIF 的預覽逐項發送，Inline 分享不變。轉換失敗或超限會保留來源影片並提示；來源未能辨識為 GIF 時不猜測轉換。
 
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
@@ -144,7 +144,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 画像と動画には、両方を含む投稿でも元ファイルを添付します。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
 
-URL を直接送った場合、GIF と判別できる素材は `.gif` ファイルに変換します（長辺最大640ピクセル、15 fps）。プレビューとインライン共有は Telegram のアニメーション／動画形式のままです。変換失敗や上限超過時は元の動画を添付して通知し、GIF と判別できない素材は変換しません。
+URL を直接送った場合、GIF と判別できる素材は `.gif` に変換し（長辺最大640ピクセル、15 fps）、同じファイルをアニメーションプレビューと添付書類に使います。GIF は変換後のファイルで、配信元の原本ではありません。Telegram がプレビューを再エンコードしても、添付書類は GIF のままです。GIF を含むプレビューは個別に送信し、インライン共有は変更しません。変換失敗や上限超過時は元の動画を添付して通知し、GIF と判別できない素材は変換しません。
 
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
@@ -228,7 +228,7 @@ Enable Inline Mode in BotFather for inline sharing. The owner can import cookies
 
 Images and videos include the original files, including in mixed-media posts. Videos are subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
 
-For URLs sent directly to the bot, identified GIFs are converted to `.gif` documents (up to 640 pixels on the longest side, 15 fps). Previews and inline sharing keep Telegram's animation/video format. Failed or oversized conversions fall back to the source video with a notice; media without a reliable GIF classification is not converted.
+For URLs sent directly to the bot, identified GIFs are converted to `.gif` (up to 640 pixels on the longest side, 15 fps). The same converted file supplies the animation preview and document attachment; it is not the original source file. Telegram may re-encode the preview, while the document remains a GIF. Previews containing GIFs are sent individually; inline sharing is unchanged. Failed or oversized conversions fall back to the source video with a notice; media without a reliable GIF classification is not converted.
 
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 
