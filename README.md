@@ -60,7 +60,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 圖片與影片都會附上原始檔，混合貼文亦同；影片受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
 
-直接傳送網址時，可辨識的 GIF 轉為 `.gif` 文件（最長邊 640 像素、15 fps），不是來源原檔。GIF 一律使用來源影片預覽，多媒體貼文維持相簿，附件仍為 GIF。Inline 分享不變。轉換失敗或超限會保留來源影片並提示；來源未能辨識為 GIF 時不猜測轉換。
+X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。Inline 分享不變。
 
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
@@ -144,7 +144,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 画像と動画には、両方を含む投稿でも元ファイルを添付します。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
 
-URL を直接送った場合、GIF と判別できる素材は `.gif` ファイルに変換します（長辺最大640ピクセル、15 fps）。配信元の原本ではありません。GIF のプレビューには常に元の動画を使い、複数メディアの投稿はアルバムを維持します。添付書類は GIF のままです。インライン共有は変更しません。変換失敗や上限超過時は元の動画を添付して通知し、GIF と判別できない素材は変換しません。
+X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。インライン共有は変更しません。
 
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
@@ -228,7 +228,7 @@ Enable Inline Mode in BotFather for inline sharing. The owner can import cookies
 
 Images and videos include the original files, including in mixed-media posts. Videos are subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
 
-For URLs sent directly to the bot, identified GIFs are converted to `.gif` documents (up to 640 pixels on the longest side, 15 fps), not original source files. GIFs always use their source video for previews; multi-media posts keep album previews, and attachments remain GIF documents. Inline sharing is unchanged. Failed or oversized conversions fall back to the source video with a notice; media without a reliable GIF classification is not converted.
+X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews. Inline sharing is unchanged.
 
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 

@@ -2972,46 +2972,6 @@ def media_files(directory: Path) -> list[Path]:
     )
 
 
-def gif_media_paths(files: list[Path], tweet: dict[str, Any]) -> set[Path]:
-    media = fxtwitter_media(tweet)
-    motion = [item for item in media if item["type"] in {"video", "gif"}]
-    result = set()
-    for path in files:
-        if path.suffix.lower() not in {".mp4", ".mov", ".m4v", ".webm"}:
-            continue
-        index = re.fullmatch(r"fxtwitter_([0-9]+)", path.stem)
-        if index and 1 <= int(index[1]) <= len(media):
-            if media[int(index[1]) - 1]["type"] == "gif":
-                result.add(path)
-        elif motion and all(item["type"] == "gif" for item in motion):
-            result.add(path)
-    return result
-
-
-def gif_document(path: Path) -> Path:
-    target = path.with_name(path.name + ".gif")
-    limit = min(MAX_MEDIA_BYTES, MAX_TOTAL_BYTES)
-    try:
-        result = run_command([
-            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-threads", "1", "-protocol_whitelist", "file,pipe", "-i", str(path),
-            "-filter_complex_threads", "1", "-filter_complex",
-            "fps=15,scale=w='min(640,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease,"
-            "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1",
-            "-an", "-threads", "1", "-loop", "0", "-fs", str(limit), str(target),
-        ], timeout=60, directory=path.parent)
-        if result.returncode or not 0 < target.stat().st_size < limit:
-            raise ValueError("GIF conversion failed or exceeded size limit")
-        with target.open("rb") as handle:
-            if handle.read(6) not in {b"GIF87a", b"GIF89a"}:
-                raise ValueError("Invalid GIF output")
-        return target
-    except (OSError, ValueError, subprocess.SubprocessError):
-        target.unlink(missing_ok=True)
-        LOG.warning("GIF conversion unavailable; retaining source video")
-        return path
-
-
 def telegram_photo_dimensions_valid(width: int, height: int) -> bool:
     if width <= 0 or height <= 0 or width + height > 10_000:
         return False
@@ -5032,8 +4992,6 @@ class Bot:
                 return
             if not self.can_process(user_id):
                 return
-            gif_paths = gif_media_paths(files, fallback_tweet or {})
-            documents = [gif_document(path) if path in gif_paths else path for path in files]
             previews = [
                 prepare_image(path)
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
@@ -5079,14 +5037,7 @@ class Bot:
             if not self.can_process(user_id):
                 return
             try:
-                self.api.send_documents(chat_id, documents, tweet_id=effective_url.rsplit("/", 1)[-1])
-                if any(source in gif_paths and source == document for source, document in zip(files, documents)):
-                    self.api.send_message(chat_id, {
-                        "zh": "GIF 無法轉換，已附上原始影片文件。",
-                        "zh-cn": "GIF 无法转换，已附上原始视频文件。",
-                        "en": "Couldn't convert the GIF. The source video file is attached.",
-                        "ja": "GIF に変換できなかったため、元の動画ファイルを添付しました。",
-                    }[ui_language()])
+                self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
             except (OSError, requests.RequestException, RuntimeError):
                 LOG.exception("Could not send original media files")
                 if not self.can_process(user_id):
