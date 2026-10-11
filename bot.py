@@ -2360,7 +2360,7 @@ class TelegramAPI:
         with path.open("rb") as handle:
             self.call(
                 "sendDocument",
-                {"chat_id": chat_id, "caption": caption[:1024]},
+                {"chat_id": chat_id, "caption": caption[:1024], "disable_content_type_detection": "true"},
                 {"document": (filename or path.name, handle)},
                 timeout=(15, 180),
             )
@@ -2383,6 +2383,7 @@ class TelegramAPI:
                 item: dict[str, Any] = {
                     "type": "document",
                     "media": f"attach://{name}",
+                    "disable_content_type_detection": True,
                 }
                 handle = stack.enter_context(path.open("rb"))
                 files[name] = (filenames[index], handle)
@@ -4005,9 +4006,9 @@ class Bot:
         )
         periods = []
         for days in (7, 30):
-            active, total, complete = self.acl.usage_period(days)
+            active, total, _complete = self.acl.usage_period(days)
             periods.append(admin_text("usage_period").format(
-                days=days, active=active, total=str(total) if complete else f"≥{total}",
+                days=days, active=active, total=total,
             ))
         today_text, users_text = text.split("\n\n", 1)
         return today_text + "\n" + "\n".join(periods) + "\n\n" + users_text.rstrip()

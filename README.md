@@ -60,7 +60,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 圖片與影片都會附上原始檔，混合貼文亦同；影片受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
 
-用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時以 `≥` 表示目前可確認的用量。
+用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
 「運行狀態」顯示 Bot 與下載器最近 24 小時的流量，按分鐘估算，重啟後保留。紀錄不足 24 小時會註明；無法取得時不會用整臺主機的流量代替。此功能需要 systemd 的 `IPAccounting=yes`。
 
@@ -142,7 +142,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 画像と動画には、両方を含む投稿でも元ファイルを添付します。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
 
-利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は確認できる使用量に `≥` を付けます。
+利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
 「稼働状況」の通信量は Bot とダウンローダーの直近24時間分を、分単位で概算したものです。再起動後も記録を保持し、24時間分に満たない場合はその旨を表示します。取得できない場合にサーバー全体の通信量で代用することはありません。systemd の `IPAccounting=yes` が必要です。
 
@@ -224,7 +224,7 @@ Enable Inline Mode in BotFather for inline sharing. The owner can import cookies
 
 Images and videos include the original files, including in mixed-media posts. Videos are subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
 
-Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; `≥` marks the known usage when history is incomplete.
+Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 
 Runtime status shows traffic for the bot and its downloaders over the last 24 hours, estimated by minute and retained across restarts. It indicates when less than 24 hours of data are available. If counters are unavailable, it does not substitute server-wide traffic. This requires systemd's `IPAccounting=yes`.
 

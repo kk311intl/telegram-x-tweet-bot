@@ -249,6 +249,10 @@ trap rollback_deploy ERR
             api = bot.TelegramAPI("YOUR_API_TOKEN")
             uploads = []
             def capture(method, data, files, **kwargs):
+                if method == "sendDocument":
+                    self.assertEqual(data["disable_content_type_detection"], "true")
+                else:
+                    self.assertTrue(all(item["disable_content_type_detection"] for item in json.loads(data["media"])))
                 uploads.append((method, [(name, handle.read()) for name, handle in files.values()]))
             api.call = capture
             api.send_documents(100, [first], tweet_id="123456789")
@@ -2324,7 +2328,7 @@ class MenuTests(unittest.TestCase):
                 }[language]
                 overview_lines = service.usage_overview_text(100).splitlines()
                 expected_periods = [line for days in (7, 30) for line in bot.admin_text("usage_period").format(
-                    days=days, active=0, total="≥0").splitlines()]
+                    days=days, active=0, total=0).splitlines()]
                 self.assertEqual(overview_lines[:9], [bot.admin_text("usage_overview"), *expected_today, *expected_periods, ""])
                 self.assertEqual(overview_lines[9:], formatted.splitlines()[4:])
                 counts = [line for line in formatted.splitlines() if "：" in line or ": " in line]
