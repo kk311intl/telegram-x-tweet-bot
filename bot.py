@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.7.3"
+APP_VERSION = "3.8.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -426,6 +426,7 @@ ADMIN_TEXT = {
     "cookie_clear": ("清除 Cookies", "Clear Cookies", "Cookies を削除", "清除 Cookies"),
     "status": ("運行狀態", "Runtime status", "稼働状況", "运行状态"),
     "usage_overview": ("用量總覽", "Usage overview", "利用状況", "用量总览"),
+    "usage_period": ("{days} 日活躍：{active}\n{days} 日用量：{total}", "Active over {days} days: {active}\nUsage over {days} days: {total}", "{days}日間の利用者：{active}\n{days}日間の使用量：{total}", "{days} 日活跃：{active}\n{days} 日用量：{total}"),
     "status_technical": (
         "版本：{version}\n\nBot 流量（最近 24 小時）\n接收：{received}\n傳送：{sent}",
         "Version: {version}\n\nBot traffic (last 24 hours)\nReceived: {received}\nSent: {sent}",
@@ -645,6 +646,7 @@ class ACLStore:
             "pending_applications": {},
             "last_daily_report_date": "",
             "daily_usage": {},
+            "usage_history_since": bot_date(),
             "external_access_enabled": True,
             "ordinary_user_cookies_enabled": True,
             "auto_approve_enabled": False,
@@ -701,7 +703,7 @@ class ACLStore:
             if setting in raw and type(raw[setting]) is not bool:
                 raise ValueError(f"invalid ACL boolean: {setting}")
         daily_usage = raw.get("daily_usage", {})
-        if not isinstance(daily_usage, dict) or len(daily_usage) > 3:
+        if not isinstance(daily_usage, dict) or len(daily_usage) > 30:
             raise ValueError("invalid daily usage history")
         for day, counts in daily_usage.items():
             if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
@@ -711,12 +713,17 @@ class ACLStore:
                     or any(type(counts[key]) is not int or counts[key] < 0 for key in counts)
                     or counts["active"] > counts["total"]):
                 raise ValueError("invalid daily usage counts")
+        history_since = raw.get("usage_history_since", bot_date())
+        if not isinstance(history_since, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", history_since):
+            raise ValueError("invalid usage history start")
+        datetime.fromisoformat(history_since)
         data: dict[str, Any] = {
             "owner_id": owner_id,
             "users": users,
             "pending_applications": pending,
             "last_daily_report_date": str(raw.get("last_daily_report_date") or ""),
             "daily_usage": daily_usage,
+            "usage_history_since": history_since,
             "external_access_enabled": bool(raw.get("external_access_enabled", True)),
             "ordinary_user_cookies_enabled": bool(
                 raw.get("ordinary_user_cookies_enabled", True)
@@ -1264,10 +1271,24 @@ class ACLStore:
             total += count
         return active, total
 
+    def usage_period(self, days: int) -> tuple[int, int, bool]:
+        if days not in (7, 30):
+            raise ValueError("unsupported usage period")
+        today = bot_date()
+        dates = [(datetime.fromisoformat(today) - timedelta(days=offset)).strftime("%Y-%m-%d")
+                 for offset in range(days)]
+        with self.lock:
+            active = sum(1 for record in self.data["users"].values()
+                         if dates[-1] <= record.get("usage_date", "") <= today
+                         and record.get("usage_count", 0) > 0)
+            total = sum(self._usage_summary(day)[1] for day in dates)
+            return active, total, self.data["usage_history_since"] <= dates[-1]
+
     def _remember_usage_day(self, usage_date: str) -> dict[str, int]:
-        # Caller holds self.lock. Keep today and two completed quota days only.
+        # Caller holds self.lock. Keep today and 29 completed quota days.
         days = {(datetime.fromisoformat(usage_date) - timedelta(days=offset)).strftime("%Y-%m-%d")
-                for offset in range(3)}
+                for offset in range(30)}
+        self.data["usage_history_since"] = min(self.data["usage_history_since"], usage_date)
         active, total = self._usage_summary(usage_date)
         self.data["daily_usage"].setdefault(usage_date, {"active": active, "total": total})
         self.data["daily_usage"] = {day: counts for day, counts in self.data["daily_usage"].items() if day in days}
@@ -3982,7 +4003,14 @@ class Bot:
             initialized=initialized, pending=pending, banned=banned,
             active_today=active_today, interactions=interactions, exhausted=exhausted,
         )
-        return text.rstrip()
+        periods = []
+        for days in (7, 30):
+            active, total, complete = self.acl.usage_period(days)
+            periods.append(admin_text("usage_period").format(
+                days=days, active=active, total=str(total) if complete else f"≥{total}",
+            ))
+        today_text, users_text = text.split("\n\n", 1)
+        return today_text + "\n" + "\n".join(periods) + "\n\n" + users_text.rstrip()
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         user_id = int((callback.get("from") or {}).get("id", 0) or 0)
@@ -4996,14 +5024,10 @@ class Bot:
                 self.api.send_message(
                     chat_id, caption, message_id, parse_mode="HTML"
                 )
-            original_files = [
-                path for path in files
-                if path.suffix.lower() not in {".mp4", ".mov", ".m4v"}
-            ]
             if not self.can_process(user_id):
                 return
             try:
-                self.api.send_documents(chat_id, original_files, tweet_id=effective_url.rsplit("/", 1)[-1])
+                self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
             except (OSError, requests.RequestException, RuntimeError):
                 LOG.exception("Could not send original media files")
                 if not self.can_process(user_id):

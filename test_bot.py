@@ -243,7 +243,7 @@ trap rollback_deploy ERR
 
     def test_original_media_names_use_post_id_and_preserve_bytes_for_single_and_grouped_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            first, second = Path(directory) / "fxtwitter_3.JPG", Path(directory) / "downloader.png"
+            first, second = Path(directory) / "fxtwitter_3.JPG", Path(directory) / "downloader.MP4"
             first.write_bytes(b"original one")
             second.write_bytes(b"original two")
             api = bot.TelegramAPI("YOUR_API_TOKEN")
@@ -255,7 +255,7 @@ trap rollback_deploy ERR
             api.send_documents(100, [first, second], tweet_id="123456789")
             self.assertEqual(uploads, [
                 ("sendDocument", [("X_123456789_01.jpg", b"original one")]),
-                ("sendMediaGroup", [("X_123456789_01.jpg", b"original one"), ("X_123456789_02.png", b"original two")]),
+                ("sendMediaGroup", [("X_123456789_01.jpg", b"original one"), ("X_123456789_02.mp4", b"original two")]),
             ])
             self.assertEqual(first.read_bytes(), b"original one")
             self.assertEqual(second.read_bytes(), b"original two")
@@ -2018,20 +2018,50 @@ class ACLTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "BOT_TIMEZONE", bot.timezone.utc), patch.object(bot, "DAILY_RESET_HOUR", 0):
             path = Path(temporary) / "acl.json"
             store = bot.ACLStore(path, 100)
-            for offset in range(10):
+            for offset in range(40):
                 store.consume(100, now=first_day + offset * 86400)
-            self.assertEqual(set(store.data["daily_usage"]), {"2026-10-08", "2026-10-09", "2026-10-10"})
+            self.assertEqual(set(store.data["daily_usage"]), {
+                datetime.fromtimestamp(first_day + offset * 86400, bot.timezone.utc).strftime("%Y-%m-%d")
+                for offset in range(10, 40)
+            })
             self.assertNotIn("daily_usage", store.export_access())
-            self.assertEqual(bot.ACLStore(path, 100).usage_summary("2026-10-09"), (1, 1))
+            self.assertEqual(bot.ACLStore(path, 100).usage_summary("2026-11-09"), (1, 1))
 
     def test_daily_usage_history_rejects_invalid_dates_counts_and_unbounded_entries(self):
         invalid = [[], {"invalid": {"active": 0, "total": 0}}, {"2026-02-30": {"active": 0, "total": 0}},
                    {"2026-10-07": {"active": True, "total": 1}}, {"2026-10-07": {"active": 2, "total": 1}},
                    {"2026-10-07": {"active": 0, "total": -1}},
-                   {f"2026-10-0{day}": {"active": 0, "total": 0} for day in range(1, 5)}]
+                   {f"2026-10-{day:02d}": {"active": 0, "total": 0} for day in range(1, 32)}]
         for history in invalid:
             with self.subTest(history=history), self.assertRaises(ValueError):
                 bot.ACLStore.__new__(bot.ACLStore)._apply_state({"daily_usage": history}, 0)
+
+    def test_usage_periods_deduplicate_users_and_survive_reload(self):
+        first = datetime(2026, 10, 1, tzinfo=bot.timezone.utc).timestamp()
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot, "BOT_TIMEZONE", bot.timezone.utc), patch.object(bot, "DAILY_RESET_HOUR", 0):
+            path = Path(directory) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.set_quota(200, 100)
+            store.set_quota(300, 100)
+            for offset in range(40):
+                store.consume(100, now=first + offset * 86400)
+                if offset == 32:
+                    store.consume(300, now=first + offset * 86400)
+                if offset == 33:
+                    store.consume(200, now=first + offset * 86400)
+            with patch.object(bot, "bot_date", return_value="2026-11-09"):
+                reloaded = bot.ACLStore(path, 100)
+                self.assertEqual(reloaded.usage_period(7), (2, 8, True))
+                self.assertEqual(reloaded.usage_period(30), (3, 32, True))
+                reloaded.data.pop("usage_history_since")
+                reloaded._save()
+                migrated = bot.ACLStore(path, 100)
+                self.assertEqual(migrated.usage_period(7), (2, 8, False))
+                self.assertEqual(migrated.usage_period(30), (3, 32, False))
+                self.assertNotIn("usage_history_since", migrated.export_access())
+            for invalid in (None, [], "2026-02-30", "yesterday"):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    bot.ACLStore.__new__(bot.ACLStore)._apply_state({"usage_history_since": invalid}, 0)
 
     def test_report_at_custom_reset_hour_uses_completed_quota_day(self):
         zone = bot.timezone(bot.timedelta(hours=9))
@@ -2293,8 +2323,10 @@ class MenuTests(unittest.TestCase):
                     "ja": ["本日の利用者：0", "本日の使用量：0", "上限到達：0"],
                 }[language]
                 overview_lines = service.usage_overview_text(100).splitlines()
-                self.assertEqual(overview_lines[:5], [bot.admin_text("usage_overview"), *expected_today, ""])
-                self.assertEqual(overview_lines[1:], formatted.splitlines())
+                expected_periods = [line for days in (7, 30) for line in bot.admin_text("usage_period").format(
+                    days=days, active=0, total="≥0").splitlines()]
+                self.assertEqual(overview_lines[:9], [bot.admin_text("usage_overview"), *expected_today, *expected_periods, ""])
+                self.assertEqual(overview_lines[9:], formatted.splitlines()[4:])
                 counts = [line for line in formatted.splitlines() if "：" in line or ": " in line]
                 self.assertEqual(len(counts), 9)
                 for line in counts:
@@ -4499,15 +4531,20 @@ class MediaTests(unittest.TestCase):
             "media": {"all": [{
                 "type": "photo",
                 "url": "https://pbs.twimg.com/photo.jpg",
+            }, {
+                "type": "video",
+                "url": "https://video.twimg.com/video.mp4",
             }]},
         }
         with tempfile.TemporaryDirectory() as temporary:
             media = Path(temporary) / "photo.jpg"
             media.write_bytes(b"photo")
+            video = Path(temporary) / "video.mp4"
+            video.write_bytes(b"video")
             with patch.object(bot, "TMP_DIR", Path(temporary)), patch.object(
                 bot, "fetch_fxtwitter", return_value=tweet
             ), patch.object(
-                bot, "download_fxtwitter_media", return_value=([media], "", 0)
+                bot, "download_fxtwitter_media", return_value=([media, video], "", 0)
             ) as direct, patch.object(
                 bot, "download_media"
             ) as extractor, patch.object(
@@ -4521,7 +4558,8 @@ class MediaTests(unittest.TestCase):
             direct.assert_called_once()
             extractor.assert_not_called()
             api.send_previews.assert_called_once()
-            api.send_documents.assert_called_once_with(100, [media], tweet_id="123")
+            self.assertEqual(api.send_previews.call_args.args[1], [media, video])
+            api.send_documents.assert_called_once_with(100, [media, video], tweet_id="123")
 
     def test_prepare_image_skips_reencoding_when_already_telegram_safe(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4805,7 +4843,7 @@ class MediaTests(unittest.TestCase):
             fallback = api.send_message.call_args.args[1]
             self.assertIn("media preview", fallback.lower())
             self.assertIn("try again later", fallback.lower())
-            api.send_documents.assert_called_once_with(100, [], tweet_id="123")
+            api.send_documents.assert_called_once_with(100, [media], tweet_id="123")
 
     def test_owner_keeps_cookie_access_when_regular_cookie_access_is_off(self):
         tweet = {
