@@ -8,9 +8,11 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 不熟悉程式時，可把儲存庫連結和以下提示詞交給能讀檔、執行指令的 AI：
 
-> 請先讀這個儲存庫的 README、VERSION、bot.py、config_cli.py、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝 README 指定的發布版本。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
+> 請先讀這個儲存庫的 README、VERSION、bot.py、config_cli.py、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝目前 main 分支的程式。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
 
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「語言/Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
+
+以下新安裝使用 main 的最新修正；版本標籤保留發布當時的程式，不會隨 main 移動。
 
 ### 部署
 
@@ -19,7 +21,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 先在 BotFather 建立 Bot。以下指令用於尚未安裝本 Bot 的主機，最後一步會在終端隱藏輸入 Token；不要把 Token 放進命令引數。
 
 ```sh
-git clone --branch v3.8.0 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
@@ -86,13 +88,13 @@ sudo bash deploy.sh
 
 安裝 `requirements.txt` 中的依賴後，可執行 `python3 -m unittest -q test_bot.py`。部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`，並用 `TEST_URL=https://x.com/example/status/123456789` 指定真實公開且含文字與媒體的貼文，測試下載。測試不使用 Cookies、不發送 Telegram 訊息，結束後會清除暫存。最後仍須在 Telegram 確認文字與媒體接收，自動測試不能代替這一步。
 
-原始碼 © 2026 kk311intl，採 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）。requests、Pillow、yt-dlp、gallery-dl 各自沿用上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
+原始碼 © 2026 kk311intl，採 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl 各自沿用上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
 
 ## 日本語
 
 プログラミングに慣れていない場合は、ファイルを読んでコマンドを実行できる AI にリポジトリのリンクと次の指示を渡せます。
 
-> まず README、VERSION、bot.py、config_cli.py、deploy.sh、systemd のサービスファイル、テストを読んで、README に記載されたリリース版を私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
+> まず README、VERSION、bot.py、config_cli.py、deploy.sh、systemd のサービスファイル、テストを読んで、現在の main ブランチを私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
 
 X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「語言/Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
@@ -102,8 +104,10 @@ Debian／Ubuntu、systemd、git、Python 3.10+、root または sudo 権限が�
 
 先に BotFather で Bot を作成します。次のコマンドは、この Bot をまだ導入していないサーバーで実行してください。最後に Token を入力しますが、画面には表示されません。Token をコマンド引数に含めないでください。
 
+新規導入では main の最新修正を使います。バージョンタグは公開時点の内容を保持します。
+
 ```sh
-git clone --branch v3.8.0 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
@@ -170,13 +174,13 @@ sudo bash deploy.sh
 
 `requirements.txt` の依存パッケージをインストールすると、`python3 -m unittest -q test_bot.py` を実行できます。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` で確認し、必要なら `TEST_URL=https://x.com/example/status/123456789` に本文とメディアを含む実際の公開投稿を指定して、ダウンロードを試せます。Cookies は使わず、Telegram にメッセージを送ることもありません。一時ファイルは終了後に削除されます。最後に Telegram で本文とメディアの受信を確認してください。自動テストではこの確認を代替できません。
 
-ソースコード © 2026 kk311intl のライセンスは [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）です。requests、Pillow、yt-dlp、gallery-dl はそれぞれ元のライセンスに従います。依存パッケージを含めて再配布する場合は、それらのライセンス要件も確認してください。
+ソースコード © 2026 kk311intl のライセンスは [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）です。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl はそれぞれ元のライセンスに従います。依存パッケージを含めて再配布する場合は、それらのライセンス要件も確認してください。
 
 ## English
 
 If you do not write code, give the repository link and this prompt to an AI that can read files and run commands:
 
-> First read the README, VERSION, bot.py, config_cli.py, deploy.sh, systemd service file and tests, then walk me through installing the release listed in the README on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
+> First read the README, VERSION, bot.py, config_cli.py, deploy.sh, systemd service file and tests, then walk me through installing the current main branch on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
 
 Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in 語言/Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
@@ -186,8 +190,10 @@ You need Debian/Ubuntu, systemd, git, Python 3.10+ and root or sudo access. The 
 
 Create the bot in BotFather first. Run these commands on a server where this bot is not already installed. The last command prompts for the token without showing it on screen; never put it in command arguments.
 
+New installations use the latest fixes on main. Version tags retain the code from their release date.
+
 ```sh
-git clone --branch v3.8.0 https://github.com/kk311intl/telegram-x-tweet-bot.git
+git clone https://github.com/kk311intl/telegram-x-tweet-bot.git
 cd telegram-x-tweet-bot
 sudo bash deploy.sh
 sudo x-tweet-bot-config set-token
@@ -254,4 +260,4 @@ For full recovery, back up environment settings and state from the same point in
 
 Install the dependencies in `requirements.txt`, then run `python3 -m unittest -q test_bot.py`. After deployment, run `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`. You can set `TEST_URL=https://x.com/example/status/123456789` to a real public post with text and media to test downloading. The check uses no cookies, sends no Telegram messages and removes its temporary files afterwards. Finally, confirm text and media reception in Telegram; automated checks do not replace this step.
 
-Source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). requests, Pillow, yt-dlp and gallery-dl retain their upstream licenses. Check their license requirements when redistributing a bundled build.
+Source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). requests, requests-toolbelt, Pillow, yt-dlp and gallery-dl retain their upstream licenses. Check their license requirements when redistributing a bundled build.

@@ -67,11 +67,11 @@ with tempfile.TemporaryDirectory(prefix="verify-media-", dir=TMP_DIR) as tempora
     files = []
     method = ""
     if tweet and fxtwitter_media(tweet):
-        files, _, _ = download_fxtwitter_media(tweet, directory)
+        files, _ = download_fxtwitter_media(tweet, directory)
         if files:
             method = "FxTwitter"
     if not files:
-        files, _, method, _ = download_media(url, directory, allow_cookies=False)
+        files, method, _ = download_media(url, directory, allow_cookies=False)
     files, rejected = trim_files(files)
     if not files:
         raise SystemExit("No media downloaded; use a public post with an image or video")

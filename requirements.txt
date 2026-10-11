@@ -2,3 +2,4 @@ requests==2.33.0
 yt-dlp==2026.8.19
 gallery-dl==1.30.10
 Pillow==12.3.0
+requests-toolbelt==1.0.0

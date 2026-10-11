@@ -26,6 +26,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from requests_toolbelt.multipart.encoder import MultipartEncoder
 from PIL import Image, ImageOps
 from urllib3.exceptions import HTTPError as StreamHTTPError
 
@@ -646,7 +647,6 @@ class ACLStore:
             "pending_applications": {},
             "last_daily_report_date": "",
             "daily_usage": {},
-            "usage_history_since": bot_date(),
             "external_access_enabled": True,
             "ordinary_user_cookies_enabled": True,
             "auto_approve_enabled": False,
@@ -713,17 +713,12 @@ class ACLStore:
                     or any(type(counts[key]) is not int or counts[key] < 0 for key in counts)
                     or counts["active"] > counts["total"]):
                 raise ValueError("invalid daily usage counts")
-        history_since = raw.get("usage_history_since", bot_date())
-        if not isinstance(history_since, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", history_since):
-            raise ValueError("invalid usage history start")
-        datetime.fromisoformat(history_since)
         data: dict[str, Any] = {
             "owner_id": owner_id,
             "users": users,
             "pending_applications": pending,
             "last_daily_report_date": str(raw.get("last_daily_report_date") or ""),
             "daily_usage": daily_usage,
-            "usage_history_since": history_since,
             "external_access_enabled": bool(raw.get("external_access_enabled", True)),
             "ordinary_user_cookies_enabled": bool(
                 raw.get("ordinary_user_cookies_enabled", True)
@@ -1271,7 +1266,7 @@ class ACLStore:
             total += count
         return active, total
 
-    def usage_period(self, days: int) -> tuple[int, int, bool]:
+    def usage_period(self, days: int) -> tuple[int, int]:
         if days not in (7, 30):
             raise ValueError("unsupported usage period")
         today = bot_date()
@@ -1282,13 +1277,12 @@ class ACLStore:
                          if dates[-1] <= record.get("usage_date", "") <= today
                          and record.get("usage_count", 0) > 0)
             total = sum(self._usage_summary(day)[1] for day in dates)
-            return active, total, self.data["usage_history_since"] <= dates[-1]
+            return active, total
 
     def _remember_usage_day(self, usage_date: str) -> dict[str, int]:
         # Caller holds self.lock. Keep today and 29 completed quota days.
         days = {(datetime.fromisoformat(usage_date) - timedelta(days=offset)).strftime("%Y-%m-%d")
                 for offset in range(30)}
-        self.data["usage_history_since"] = min(self.data["usage_history_since"], usage_date)
         active, total = self._usage_summary(usage_date)
         self.data["daily_usage"].setdefault(usage_date, {"active": active, "total": total})
         self.data["daily_usage"] = {day: counts for day, counts in self.data["daily_usage"].items() if day in days}
@@ -2013,14 +2007,24 @@ class TelegramAPI:
         files: dict[str, Any] | None = None,
         timeout: tuple[int, int] = (10, 70),
     ) -> Any:
+        positions = [(value[1], value[1].tell()) for value in (files or {}).values()]
         for attempt in range(2):
             try:
-                response = self.session().post(
-                    f"{self.base}/{method}",
-                    data=data or {},
-                    files=files,
-                    timeout=timeout,
-                )
+                if files:
+                    for handle, position in positions:
+                        handle.seek(position)
+                    body = MultipartEncoder(fields={
+                        **{key: str(value) for key, value in (data or {}).items()},
+                        **files,
+                    })
+                    response = self.session().post(
+                        f"{self.base}/{method}", data=body,
+                        headers={"Content-Type": body.content_type}, timeout=timeout,
+                    )
+                else:
+                    response = self.session().post(
+                        f"{self.base}/{method}", data=data or {}, timeout=timeout,
+                    )
             except requests.RequestException as error:
                 # requests includes the full URL (and therefore the bot token) in
                 # its exception text. Never allow that URL into journald.
@@ -2039,7 +2043,7 @@ class TelegramAPI:
                 if response.status_code >= 400:
                     raise TelegramAPIError(method, response.status_code)
                 raise RuntimeError(f"Telegram {method} returned an invalid response")
-            if response.status_code == 429 and attempt == 0 and not files:
+            if response.status_code == 429 and attempt == 0 and method != "sendChatAction":
                 parameters = payload.get("parameters")
                 retry_after = parameters.get("retry_after", 0) if isinstance(parameters, dict) else 0
                 try:
@@ -2052,6 +2056,7 @@ class TelegramAPI:
                         method,
                         retry_after,
                     )
+                    response.close()
                     time.sleep(retry_after)
                     continue
             if response.status_code >= 400:
@@ -2228,7 +2233,7 @@ class TelegramAPI:
 
     def send_action(self, chat_id: int, action: str) -> None:
         try:
-            self.call("sendChatAction", {"chat_id": chat_id, "action": action})
+            self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=(2, 3))
         except RuntimeError as error:
             # Chat actions are cosmetic. A transient Telegram failure must not
             # abort media retrieval or consume the user's request without output.
@@ -2887,19 +2892,19 @@ def media_caption(
 
 def download_fxtwitter_media(
     tweet: dict[str, Any], directory: Path
-) -> tuple[list[Path], str, int]:
-    downloaded: list[Path] = []
+) -> tuple[list[Path], int]:
     total = 0
-    oversized_videos = 0
+    budget_lock = threading.Lock()
     deadline = time.monotonic() + 240
-    for index, item in enumerate(fxtwitter_media(tweet), start=1):
+    def download_item(entry: tuple[int, dict[str, Any]]) -> tuple[Path | None, bool]:
+        nonlocal total
+        index, item = entry
         media_type = str(item.get("type") or "")
         item_limit = MAX_VIDEO_BYTES if media_type in {"video", "gif"} else MAX_MEDIA_BYTES
         candidates = [item]
         if media_type in {"video", "gif"}:
             candidates = sorted_mp4_formats(item) or candidates
 
-        item_downloaded = False
         item_oversized = False
         seen_urls: set[str] = set()
         for candidate in candidates:
@@ -2919,6 +2924,7 @@ def download_fxtwitter_media(
             elif media_type in {"video", "gif"} and suffix not in {".mp4", ".mov", ".m4v"}:
                 suffix = ".mp4"
             target = directory / f"fxtwitter_{index}{suffix or '.bin'}"
+            size = 0
             try:
                 with trusted_twimg_response(media_url, timeout=(min(10, remaining), min(30, remaining))) as response:
                     # read1 returns available data without waiting to fill a chunk,
@@ -2930,7 +2936,6 @@ def download_fxtwitter_media(
                     if content_length.isdigit() and int(content_length) > item_limit:
                         item_oversized = True
                         continue
-                    size = 0
                     with target.open("wb") as handle:
                         for chunk in iter(lambda: read(128 * 1024, decode_content=False), b""):
                             if time.monotonic() >= deadline:
@@ -2939,27 +2944,33 @@ def download_fxtwitter_media(
                                 continue
                             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES + len(chunk):
                                 raise OSError("Not enough free space for media download")
-                            size += len(chunk)
-                            if size > item_limit:
+                            if size + len(chunk) > item_limit:
                                 item_oversized = True
                                 raise ValueError("FxTwitter media exceeds item limit")
-                            if total + size > MAX_TOTAL_BYTES:
-                                raise ValueError("FxTwitter media exceeds configured limit")
+                            with budget_lock:
+                                if total + len(chunk) > MAX_TOTAL_BYTES:
+                                    raise ValueError("FxTwitter media exceeds configured limit")
+                                total += len(chunk)
+                                size += len(chunk)
                             handle.write(chunk)
-                    total += size
-                    downloaded.append(target)
-                    item_downloaded = True
-                    break
+                    if size == 0:
+                        raise ValueError("Empty media response")
+                    return target, False
             except (OSError, ValueError, requests.RequestException, StreamHTTPError):
                 target.unlink(missing_ok=True)
+                with budget_lock:
+                    total -= size
                 LOG.warning("FxTwitter media candidate failed", exc_info=True)
-        if not item_downloaded and item_oversized and media_type in {"video", "gif"}:
-            oversized_videos += 1
-    return (
-        downloaded,
-        "FxTwitter direct download returned no downloadable media",
-        oversized_videos,
-    )
+        return None, item_oversized and media_type in {"video", "gif"}
+
+    entries = list(enumerate(fxtwitter_media(tweet), start=1))
+    if len(entries) < 2:
+        results = list(map(download_item, entries))
+    else:
+        # Two downloads per media worker; uploads remain sequential.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(download_item, entries))
+    return [path for path, _ in results if path is not None], sum(oversized for _, oversized in results)
 
 
 def media_files(directory: Path) -> list[Path]:
@@ -3069,7 +3080,7 @@ def video_dimensions(path: Path) -> tuple[int, int] | None:
 
 def download_media(
     url: str, directory: Path, allow_cookies: bool = True
-) -> tuple[list[Path], str, str, bool]:
+) -> tuple[list[Path], str, bool]:
     def run_extractor(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         try:
             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
@@ -3148,8 +3159,7 @@ def download_media(
             if files:
                 method = "yt-dlp（Cookies）"
 
-    log_tail = "\n".join(result.stdout.strip().splitlines()[-8:])
-    return files, log_tail, method, cookie_invalid
+    return files, method, cookie_invalid
 
 
 def trim_files(files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
@@ -3160,6 +3170,9 @@ def trim_files(files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
         size = path.stat().st_size
         is_video = path.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}
         item_limit = MAX_VIDEO_BYTES if is_video else MAX_MEDIA_BYTES
+        if size == 0:
+            rejected.append((path.name, "media_skipped"))
+            continue
         if size > item_limit:
             rejected.append((path.name, "video_oversized" if is_video else "images_skipped"))
             continue
@@ -4013,7 +4026,7 @@ class Bot:
         )
         periods = []
         for days in (7, 30):
-            active, total, _complete = self.acl.usage_period(days)
+            active, total = self.acl.usage_period(days)
             periods.append(admin_text("usage_period").format(
                 days=days, active=active, total=total,
             ))
@@ -4925,7 +4938,7 @@ class Bot:
         effective_url = fxtwitter_tweet_url(root_tweet) if root_tweet else None
         effective_url = effective_url or url
         text, author, author_url = fxtwitter_text_author(root_tweet) if root_tweet else ("", "", "")
-        if not text:
+        if not text and not (root_tweet and isinstance(root_tweet.get("text"), str)):
             text, author, author_url = fetch_tweet_text(effective_url)
         with media_temporary_directory() as directory:
             files: list[Path] = []
@@ -4934,13 +4947,13 @@ class Bot:
             fallback_oversized_videos = 0
             fallback_skipped_media = False
             if root_tweet and fxtwitter_media(root_tweet):
-                files, _, fallback_oversized_videos = (
+                files, fallback_oversized_videos = (
                     download_fxtwitter_media(root_tweet, directory)
                 )
                 if files:
                     method = "FxTwitter 直連"
             if not files:
-                files, _, method, cookie_invalid = download_media(
+                files, method, cookie_invalid = download_media(
                     effective_url,
                     directory,
                     allow_cookies=(
@@ -4969,7 +4982,7 @@ class Bot:
             if fallback_tweet and not text:
                 text, author, author_url = fxtwitter_text_author(fallback_tweet)
             if fallback_tweet and not files and fallback_tweet is not root_tweet:
-                files, _, fallback_oversized_videos = download_fxtwitter_media(
+                files, fallback_oversized_videos = download_fxtwitter_media(
                     fallback_tweet, directory
                 )
                 if files:
