@@ -263,6 +263,31 @@ trap rollback_deploy ERR
                 with self.assertRaises(ValueError):
                     api.send_documents(100, [first], tweet_id=invalid_id)
 
+    def test_video_upload_names_cover_single_and_mixed_media_without_changing_bytes(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot, "video_dimensions", return_value=(640, 360)):
+            photo = Path(directory) / "download.JPG"
+            video = Path(directory) / "download.MP4"
+            photo.write_bytes(b"photo")
+            video.write_bytes(b"video")
+            api = bot.TelegramAPI("YOUR_API_TOKEN")
+            uploads = []
+            def capture(method, data, files, **kwargs):
+                uploads.append((method, data, [(name, handle.read()) for name, handle in files.values()]))
+            api.call = capture
+            api.send_previews(100, [video], "caption", tweet_id="123")
+            api.send_previews(100, [photo, video], "caption", tweet_id="123")
+            self.assertEqual(uploads[0][0], "sendVideo")
+            self.assertEqual(uploads[0][2], [("X_123_01.mp4", b"video")])
+            self.assertEqual((uploads[0][1]["width"], uploads[0][1]["height"]), (640, 360))
+            self.assertEqual(uploads[1][0], "sendMediaGroup")
+            self.assertEqual(uploads[1][2], [("X_123_01.jpg", b"photo"), ("X_123_02.mp4", b"video")])
+            media = json.loads(uploads[1][1]["media"])
+            self.assertTrue(media[1]["supports_streaming"])
+            self.assertEqual(video.read_bytes(), b"video")
+            for invalid_id in ("../secret", "1\r\nHeader", "９９", "1" * 26):
+                with self.assertRaises(ValueError):
+                    api.send_previews(100, [video], "caption", tweet_id=invalid_id)
+
     def test_keyboard_json_preserves_unpadded_menus_in_four_languages(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), bot.language_scope(language):

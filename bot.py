@@ -31,7 +31,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.7.2"
+APP_VERSION = "3.7.3"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -2248,6 +2248,8 @@ class TelegramAPI:
         caption: str = "",
         silent: bool = False,
         parse_mode: str | None = None,
+        *,
+        filename: str | None = None,
     ) -> Any:
         suffix = path.suffix.lower()
         data: dict[str, Any] = {
@@ -2272,7 +2274,7 @@ class TelegramAPI:
             return self.call(
                 method,
                 data,
-                {field: (path.name, handle)},
+                {field: (filename or path.name, handle)},
                 timeout=(15, 180),
             )
 
@@ -2282,7 +2284,11 @@ class TelegramAPI:
         paths: list[Path],
         caption: str,
         parse_mode: str | None = None,
+        *,
+        tweet_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
+            raise ValueError("invalid post ID for media filename")
         supported = [
             path for path in paths
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
@@ -2293,7 +2299,8 @@ class TelegramAPI:
             return []
         if len(supported) == 1:
             result = self.send_preview(
-                chat_id, supported[0], caption, parse_mode=parse_mode
+                chat_id, supported[0], caption, parse_mode=parse_mode,
+                filename=f"X_{tweet_id}_01{supported[0].suffix.lower()}" if tweet_id else None,
             )
             return [result] if isinstance(result, dict) else []
 
@@ -2317,7 +2324,8 @@ class TelegramAPI:
                         item["width"], item["height"] = dimensions
                     item["supports_streaming"] = True
                 handle = stack.enter_context(path.open("rb"))
-                files[name] = (path.name, handle)
+                filename = f"X_{tweet_id}_{index + 1:02d}{suffix}" if tweet_id else path.name
+                files[name] = (filename, handle)
                 media.append(item)
             result = self.call(
                 "sendMediaGroup",
@@ -4967,7 +4975,8 @@ class Bot:
             if previews:
                 try:
                     self.api.send_previews(
-                        chat_id, previews, caption, parse_mode="HTML"
+                        chat_id, previews, caption, parse_mode="HTML",
+                        tweet_id=effective_url.rsplit("/", 1)[-1],
                     )
                 except (OSError, requests.RequestException, RuntimeError):
                     LOG.exception("Could not send media previews")
