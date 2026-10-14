@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.8.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.8.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 

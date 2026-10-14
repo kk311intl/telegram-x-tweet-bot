@@ -32,7 +32,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.1"
+APP_VERSION = "3.8.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -410,12 +410,12 @@ def public_help_text(language: str) -> str:
 
 
 def public_help_keyboard(language: str) -> dict[str, Any]:
-    rows = []
+    buttons = []
     parsed = urlparse(OWNER_CONTACT_URL)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        rows.append([{"text": public_text(language, "feedback"), "url": OWNER_CONTACT_URL}])
-    rows.append([{"text": public_text(language, "back"), "callback_data": "public:main"}])
-    return {"inline_keyboard": rows}
+        buttons.append({"text": public_text(language, "feedback"), "url": OWNER_CONTACT_URL})
+    buttons.append({"text": public_text(language, "back"), "callback_data": "public:main"})
+    return {"inline_keyboard": [buttons]}
 
 
 # Every account keeps its own language; request-local context isolates workers.

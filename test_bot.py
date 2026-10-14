@@ -570,8 +570,8 @@ trap rollback_deploy ERR
                 self.assertEqual(text, bot.public_text(language, "help_allowed"))
                 self.assertNotIn("Powered by", text)
                 self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"], [
-                    [{"text": bot.public_text(language, "feedback"), "url": "https://example.com/contact"}],
-                    [{"text": bot.public_text(language, "back"), "callback_data": "public:main"}],
+                    [{"text": bot.public_text(language, "feedback"), "url": "https://example.com/contact"},
+                     {"text": bot.public_text(language, "back"), "callback_data": "public:main"}],
                 ])
 
     def test_cookie_download_rejects_malformed_file_metadata_before_http(self):
