@@ -12,7 +12,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
-以下新安裝使用 main 的最新修正；版本標籤保留發布當時的程式，不會隨 main 移動。
+以下指令使用 main 的最新程式。GitHub 的「Latest Release」只代表最近一次正式發布，可能落後於 main；Release 說明與 tag 對應當時版本。
 
 ### 部署
 
@@ -77,7 +77,7 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-部署會重啟 Bot，但保留原有設定與用戶資料。Git 無法直接更新時先處理分歧，不重設工作目錄。若版本號相同、檔案卻不同，腳本會拒絕部署；不要強行覆蓋。舊 tag 是歷史快照，不一定包含 main 的修正，不能用同版本 tag 更新較新的 main 安裝。
+部署會重啟 Bot，但保留設定與用戶資料。Git 無法直接更新時先處理分歧，不重設本機修改。版本號相同但檔案不同時，部署腳本會拒絕更新；先核對來源，不強行覆蓋。
 
 新安裝的簡報預設為 UTC 00:00。已有環境檔的排程不會被升級覆寫；若原先設為 22 點，需自行將 `DAILY_REPORT_HOUR` 改為 `0` 並重啟服務。
 
@@ -87,7 +87,14 @@ sudo bash deploy.sh
 
 完整復原還需要環境設定與狀態目錄的備份，內容須來自同一時間點，並保留原檔所有權與權限。不要直接覆寫運行中的資料。程式不會為騰出磁碟空間自動刪除憑證、用戶資料或損壞後保留的復原檔。
 
-安裝 `requirements.txt` 中的依賴後，可執行 `python3 -m unittest -q test_bot.py`。部署後可執行 `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`，並用 `TEST_URL=https://x.com/example/status/123456789` 指定真實公開且含文字與媒體的貼文，測試下載。測試不使用 Cookies、不發送 Telegram 訊息，結束後會清除暫存。最後仍須在 Telegram 確認文字與媒體接收，自動測試不能代替這一步。
+安裝 `requirements.txt` 中的依賴後，可執行 `python3 -m unittest -q test_bot.py`。部署後先檢查服務與狀態，再測試下載；第二行請換成真實公開且含文字與媒體的貼文網址：
+
+```sh
+sudo /opt/x-tweet-telegram-bot/verify_deploy.sh
+sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram-bot/verify_deploy.sh
+```
+
+下載測試不使用 Cookies、不發送 Telegram 訊息，結束後會清除暫存。最後仍須在 Telegram 確認文字與媒體接收。
 
 原始碼 © 2026 kk311intl，採 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl 各自沿用上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
 
@@ -105,7 +112,7 @@ Debian／Ubuntu、systemd、git、Python 3.10+、root または sudo 権限が�
 
 先に BotFather で Bot を作成します。次のコマンドは、この Bot をまだ導入していないサーバーで実行してください。最後に Token を入力しますが、画面には表示されません。Token をコマンド引数に含めないでください。
 
-新規導入では main の最新修正を使います。バージョンタグは公開時点の内容を保持します。
+以下の手順は main の最新コードを使います。GitHub の「Latest Release」は直近の正式リリースで、main より古い場合があります。リリース説明とタグは公開時点の内容を示します。
 
 ```sh
 git clone https://github.com/kk311intl/telegram-x-tweet-bot.git
@@ -164,7 +171,7 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-導入時に Bot は再起動しますが、既存の設定とユーザーデータは保持されます。Git がそのまま更新できない場合は、作業内容をリセットせずに差分を確認してください。同じバージョンでファイルが異なる場合、導入は拒否されます。古いタグには main の修正が含まれないことがあるため、同じバージョンのタグで新しい main の導入環境を更新しないでください。
+導入時に Bot は再起動しますが、設定とユーザーデータは保持されます。Git で更新できない場合は、ローカル変更をリセットせずに差分を確認してください。同じバージョンでファイルが異なると導入は拒否されます。配布元を確認し、無理に上書きしないでください。
 
 新規導入では UTC 00:00 にレポートを送信します。既存の環境ファイルの時刻は更新時に変更されません。22時から変更する場合は `DAILY_REPORT_HOUR=0` に設定してサービスを再起動してください。
 
@@ -174,7 +181,14 @@ sudo bash deploy.sh
 
 完全な復元には、同じ時点の設定ファイルと状態データのバックアップが必要です。元のファイル所有者と権限も保持してください。稼働中のデータを直接置き換えないでください。容量確保のために認証情報、ユーザーデータ、破損後に残した復旧ファイルを自動削除することはありません。
 
-`requirements.txt` の依存パッケージをインストールすると、`python3 -m unittest -q test_bot.py` を実行できます。導入後は `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh` で確認し、必要なら `TEST_URL=https://x.com/example/status/123456789` に本文とメディアを含む実際の公開投稿を指定して、ダウンロードを試せます。Cookies は使わず、Telegram にメッセージを送ることもありません。一時ファイルは終了後に削除されます。最後に Telegram で本文とメディアの受信を確認してください。自動テストではこの確認を代替できません。
+`requirements.txt` の依存パッケージをインストールすると、`python3 -m unittest -q test_bot.py` を実行できます。導入後はサービスと状態を確認してから、ダウンロードを試します。2行目の URL は本文とメディアを含む実際の公開投稿に置き換えてください。
+
+```sh
+sudo /opt/x-tweet-telegram-bot/verify_deploy.sh
+sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram-bot/verify_deploy.sh
+```
+
+ダウンロードの確認には Cookies を使わず、Telegram にメッセージも送りません。一時ファイルは終了後に削除されます。最後に Telegram で本文とメディアの受信を確認してください。
 
 ソースコード © 2026 kk311intl のライセンスは [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）です。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl はそれぞれ元のライセンスに従います。依存パッケージを含めて再配布する場合は、それらのライセンス要件も確認してください。
 
@@ -192,7 +206,7 @@ You need Debian/Ubuntu, systemd, git, Python 3.10+ and root or sudo access. The 
 
 Create the bot in BotFather first. Run these commands on a server where this bot is not already installed. The last command prompts for the token without showing it on screen; never put it in command arguments.
 
-New installations use the latest fixes on main. Version tags retain the code from their release date.
+The commands below use the latest code on main. GitHub's Latest Release is the most recent formal release and may lag behind main; its notes and tag describe that release's snapshot.
 
 ```sh
 git clone https://github.com/kk311intl/telegram-x-tweet-bot.git
@@ -251,7 +265,7 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-Deployment restarts the bot but keeps existing settings and user data. If Git cannot fast-forward, resolve the differences without resetting your work. The installer rejects changed files with an unchanged version number; do not force an overwrite. Old tags are historical snapshots and may lack main's fixes. Do not use a tag of the same version to update a newer main installation.
+Deployment restarts the bot but preserves settings and user data. If Git cannot fast-forward, resolve the differences without resetting local changes. The installer rejects changed files with an unchanged version number; check the source rather than forcing an overwrite.
 
 New installations report at 00:00 UTC. Upgrades do not overwrite schedules in existing environment files. To change an existing 22:00 schedule, set `DAILY_REPORT_HOUR=0` and restart the service.
 
@@ -261,6 +275,13 @@ This repository does not include cross-server backups. `export-access` can expor
 
 For full recovery, back up environment settings and state from the same point in time, preserving file ownership and permissions. Never overwrite data while the bot is running. Credentials, user data and recovery files kept after corruption are not automatically deleted to reclaim disk space.
 
-Install the dependencies in `requirements.txt`, then run `python3 -m unittest -q test_bot.py`. After deployment, run `sudo /opt/x-tweet-telegram-bot/verify_deploy.sh`. You can set `TEST_URL=https://x.com/example/status/123456789` to a real public post with text and media to test downloading. The check uses no cookies, sends no Telegram messages and removes its temporary files afterwards. Finally, confirm text and media reception in Telegram; automated checks do not replace this step.
+Install the dependencies in `requirements.txt`, then run `python3 -m unittest -q test_bot.py`. After deployment, check the service and state, then test downloading. Replace the URL on the second line with a real public post containing text and media:
+
+```sh
+sudo /opt/x-tweet-telegram-bot/verify_deploy.sh
+sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram-bot/verify_deploy.sh
+```
+
+The download check uses no cookies, sends no Telegram messages and removes its temporary files afterwards. Finally, confirm text and media reception in Telegram.
 
 Source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). requests, requests-toolbelt, Pillow, yt-dlp and gallery-dl retain their upstream licenses. Check their license requirements when redistributing a bundled build.
