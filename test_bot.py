@@ -16,6 +16,22 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_report_defaults_to_midnight_and_preserves_explicit_hour(self):
+        root = Path(__file__).parent
+        env = dict(os.environ, BOT_TIMEZONE="UTC", DAILY_RESET_HOUR="0")
+        for value, expected in ((None, 0), ("22", 22)):
+            with self.subTest(value=value):
+                env.pop("DAILY_REPORT_HOUR", None)
+                if value is not None:
+                    env["DAILY_REPORT_HOUR"] = value
+                output = subprocess.check_output(
+                    [sys.executable, "-c", "import bot; print(bot.DAILY_REPORT_HOUR)"],
+                    cwd=root, env=env, text=True, timeout=30,
+                )
+                self.assertEqual(int(output.strip()), expected)
+        self.assertIn("DAILY_REPORT_HOUR=0\n", (root / "deploy.sh").read_text(encoding="utf-8"))
+        self.assertEqual(bot.APP_VERSION, (root / "VERSION").read_text().strip())
+
     def test_empty_media_is_rejected_without_losing_valid_file(self):
         with tempfile.TemporaryDirectory() as directory:
             empty, valid = Path(directory) / "empty.mp4", Path(directory) / "valid.mp4"
@@ -547,13 +563,16 @@ trap rollback_deploy ERR
                 store._apply_state({"allowed_user_ids": [200], "users": {"200": {"daily_limit": limit}}}, 1)
                 self.assertEqual(store.quota(200), expected)
 
-    def test_help_credit_links_only_the_name_in_every_language(self):
-        with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"), \
-             patch.object(bot, "OWNER_CONTACT_LABEL", "Powered by Example <name>"):
+    def test_help_has_feedback_and_back_without_credit_in_every_language(self):
+        with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"):
             for language in bot.PUBLIC_TEXT:
                 text = bot.public_help_text(language)
-                self.assertTrue(text.endswith('Powered by <a href="https://example.com/contact">Example &lt;name&gt;</a>'))
-                self.assertNotIn('>Powered by', text)
+                self.assertEqual(text, bot.public_text(language, "help_allowed"))
+                self.assertNotIn("Powered by", text)
+                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"], [
+                    [{"text": bot.public_text(language, "feedback"), "url": "https://example.com/contact"}],
+                    [{"text": bot.public_text(language, "back"), "callback_data": "public:main"}],
+                ])
 
     def test_cookie_download_rejects_malformed_file_metadata_before_http(self):
         api = bot.TelegramAPI("YOUR_API_TOKEN")
@@ -2017,6 +2036,7 @@ class ACLTests(unittest.TestCase):
                 self.assertTrue(store.claim(100, "correct-code"))
                 self.assertFalse(store.claim(200, "correct-code"))
 
+    @patch.object(bot, "DAILY_REPORT_HOUR", 22)
     def test_application_metadata_approval_and_daily_report_schedule(self):
         report_time = datetime(1970, 1, 3, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
         next_report_time = datetime(1970, 1, 4, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
@@ -2130,6 +2150,7 @@ class ACLTests(unittest.TestCase):
             self.assertEqual(bot.bot_date(before), "1970-01-02")
             self.assertEqual(bot.bot_date(reset), "1970-01-03")
 
+    @patch.object(bot, "DAILY_REPORT_HOUR", 22)
     def test_daily_report_is_sent_without_pending_requests(self):
         report_time = datetime(1970, 1, 3, bot.DAILY_REPORT_HOUR, tzinfo=bot.BOT_TIMEZONE).timestamp()
         with tempfile.TemporaryDirectory() as temporary:
@@ -2272,6 +2293,7 @@ class ACLTests(unittest.TestCase):
             service.stop()
             service.inline_executor.shutdown(wait=True)
 
+    @patch.object(bot, "DAILY_REPORT_HOUR", 22)
     def test_daily_report_title_has_date_without_timezone_in_all_languages(self):
         for language in bot.PUBLIC_TEXT:
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary:
@@ -2556,6 +2578,7 @@ class MenuTests(unittest.TestCase):
                 service.stop()
                 service.inline_executor.shutdown(wait=True)
 
+    @patch.object(bot, "DAILY_REPORT_HOUR", 22)
     def test_usage_labels_and_chinese_user_terms_are_consistent_in_four_languages(self):
         for language, usage_label, old_label in (("zh-cn", "用量", "处理次数"), ("zh", "用量", "處理次數"), ("ja", "使用量", "処理回数"), ("en", "Usage", "Processed")):
             with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, bot.language_scope(language):
@@ -2831,7 +2854,7 @@ class MenuTests(unittest.TestCase):
             [button["callback_data"] for button in keyboard[1]],
             ["public:language", "public:help"],
         )
-        self.assertEqual(keyboard[1][0]["text"], "🌐 語言/Language")
+        self.assertEqual(keyboard[1][0]["text"], "🌐 Language")
         self.assertEqual(
             bot.public_text("zh", "start_allowed"),
             "請傳送有效的 X/Twitter 單篇貼文網址。",
@@ -2845,10 +2868,10 @@ class MenuTests(unittest.TestCase):
             for detail in ("/id", "引用", "quoted", "未壓縮", "未压缩", "uncompressed", "インライン"):
                 self.assertNotIn(detail, guide)
         expected_menus = {
-            "zh-cn": ["🌐 語言/Language", "ℹ️ 使用说明"],
-            "zh": ["🌐 語言/Language", "ℹ️ 使用說明"],
-            "en": ["🌐 語言/Language", "ℹ️ How to use"],
-            "ja": ["🌐 語言/Language", "ℹ️ 使い方"],
+            "zh-cn": ["🌐 Language", "ℹ️ 使用说明"],
+            "zh": ["🌐 Language", "ℹ️ 使用說明"],
+            "en": ["🌐 Language", "ℹ️ How to use"],
+            "ja": ["🌐 Language", "ℹ️ 使い方"],
         }
         for language in ("zh-cn", "zh", "en", "ja"):
             menu = bot.start_keyboard(language, False, True)["inline_keyboard"][0]
@@ -3794,11 +3817,11 @@ class MenuTests(unittest.TestCase):
             })
             self.assertEqual(store.quota(987654321), 50)
 
-    def test_all_roles_share_minimal_help_with_html_contact_in_four_languages(self):
+    def test_all_roles_share_minimal_help_submenu_in_four_languages(self):
         for language in bot.PUBLIC_TEXT:
             for contact in ("", "https://example.com/contact?a=1&b=2"):
                 with self.subTest(language=language, contact=bool(contact)), tempfile.TemporaryDirectory() as temporary, \
-                     patch.object(bot, "OWNER_CONTACT_URL", contact), patch.object(bot, "OWNER_CONTACT_LABEL", "Contact & help"):
+                     patch.object(bot, "OWNER_CONTACT_URL", contact):
                     store = bot.ACLStore(Path(temporary) / "acl.json", 100)
                     store.set_quota(200, None)
                     store.set_quota(300, 50)
@@ -3810,12 +3833,19 @@ class MenuTests(unittest.TestCase):
                         service.handle_update({"message": {"message_id": 1, "from": {"id": user_id},
                                                            "chat": {"id": user_id}, "text": "/help"}})
                         self.assertEqual(api.send_message.call_args.args[1], expected)
+                        self.assertEqual(api.send_message.call_args.args[3], bot.public_help_keyboard(language))
                         self.assertEqual(api.send_message.call_args.kwargs["parse_mode"], "HTML")
                         action = "nav:help" if store.is_admin(user_id) else "public:help"
                         service.handle_callback({"id": "help", "data": action, "from": {"id": user_id},
                                                  "message": {"message_id": 1, "chat": {"id": user_id}}})
                         self.assertEqual(api.edit_message.call_args.args[2], expected)
+                        self.assertEqual(api.edit_message.call_args.args[3], bot.public_help_keyboard(language))
                         self.assertEqual(api.edit_message.call_args.kwargs["parse_mode"], "HTML")
+                        service.handle_callback({"id": "back", "data": "public:main", "from": {"id": user_id},
+                                                 "message": {"message_id": 1, "chat": {"id": user_id}}})
+                        with bot.language_scope(language):
+                            self.assertEqual(api.edit_message.call_args.args[3],
+                                             bot.start_keyboard(language, store.is_admin(user_id), store.is_allowed(user_id)))
                     for detail in ("User ID", "FxTwitter", "gallery-dl", "yt-dlp", "50 MB", "Owner guide", "管理員", "管理员", "管理者"):
                         self.assertNotIn(detail, expected)
                     self.assertLess(len(expected), 350)
@@ -5658,7 +5688,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                             service.handle_callback({**callback, "data": "nav:help"})
                             with bot.language_scope(language):
                                 self.assertEqual(api.edit_message.call_args.args[2], bot.public_help_text(language))
-                                self.assertEqual(api.edit_message.call_args.args[3], bot.owner_keyboard())
+                                self.assertEqual(api.edit_message.call_args.args[3], bot.public_help_keyboard(language))
                 store.set_language(user_id, "zh")
             self.assertEqual([store.quota(user_id) for user_id in (100, 300, 200, 400)], [None, None, 75, 0])
             self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
@@ -5730,6 +5760,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             self.assertEqual(api.answer_callback.call_args.args[1], bot.public_text("zh-cn", "unsupported_language"))
             service.stop()
 
+    @patch.object(bot, "DAILY_REPORT_HOUR", 22)
     def test_owner_and_admin_runtime_outputs_follow_their_own_language(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
@@ -5824,19 +5855,14 @@ class PublicReleaseLanguageTests(unittest.TestCase):
         with patch.object(bot, "OWNER_CONTACT_URL", ""):
             for language in bot.PUBLIC_TEXT:
                 self.assertEqual(bot.public_help_text(language), bot.public_text(language, "help_allowed"))
+                self.assertEqual(len(bot.public_help_keyboard(language)["inline_keyboard"]), 1)
         with patch.object(bot, "OWNER_CONTACT_URL", 'https://example.com/contact?a=1&b=2'):
             for language in bot.PUBLIC_TEXT:
-                self.assertIn('href="https://example.com/contact?a=1&amp;b=2"', bot.public_help_text(language))
+                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"][0][0]["url"],
+                                 'https://example.com/contact?a=1&b=2')
         with patch.object(bot, "OWNER_CONTACT_URL", "javascript:alert(1)"):
             self.assertEqual(bot.public_help_text("en"), bot.public_text("en", "help_allowed"))
-
-    def test_contact_label_override_is_escaped(self):
-        with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"), \
-             patch.object(bot, "OWNER_CONTACT_LABEL", 'Contact <owner>'):
-            for language in bot.PUBLIC_TEXT:
-                guide = bot.public_help_text(language)
-                self.assertIn('>Contact &lt;owner&gt;</a>', guide)
-                self.assertNotIn('>Contact <owner></a>', guide)
+            self.assertEqual(len(bot.public_help_keyboard("en")["inline_keyboard"]), 1)
 
     def test_version_and_translation_catalog_are_complete(self):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)

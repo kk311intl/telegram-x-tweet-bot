@@ -32,7 +32,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.8.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -53,7 +53,6 @@ BOT_MENTION = f"@{BOT_USERNAME}" if BOT_USERNAME else "@YourBotUsername"
 ENV_OWNER_ID = env_int("OWNER_USER_ID", 0, 0, (1 << 52) - 1)
 BOOTSTRAP_CODE = os.environ.get("BOOTSTRAP_CODE", "").strip()
 OWNER_CONTACT_URL = os.environ.get("OWNER_CONTACT_URL", "").strip()
-OWNER_CONTACT_LABEL = os.environ.get("OWNER_CONTACT_LABEL", "").strip()
 CURRENT_LANGUAGE: ContextVar[str] = ContextVar("current_language", default="zh")
 
 
@@ -105,7 +104,7 @@ INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
-DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 22, 0, 23)
+DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 0, 0, 23)
 DAILY_RESET_HOUR = env_int("DAILY_RESET_HOUR", 0, 0, 23)
 
 HTTP_LOCAL = threading.local()
@@ -257,8 +256,9 @@ PUBLIC_TEXT = {
             "发送 X/Twitter 单篇推文链接，获取文字、图片和视频。\n"
             f"其他聊天输入 {BOT_MENTION} 加上推文链接即可分享。"
         ),
-        "language_menu": "🌐 語言/Language",
+        "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使用说明",
+        "feedback": "💬 问题反馈",
         "choose_language": "请选择语言。",
         "back": "↩️ 返回",
         "start_owner": "管理菜单已加载，也可以直接发送 X/Twitter 推文链接。",
@@ -293,8 +293,9 @@ PUBLIC_TEXT = {
             "傳送 X/Twitter 單篇貼文網址，取得文字、圖片和影片。\n"
             f"其他聊天輸入 {BOT_MENTION} 加上貼文網址即可分享。"
         ),
-        "language_menu": "🌐 語言/Language",
+        "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使用說明",
+        "feedback": "💬 問題反饋",
         "choose_language": "請選擇語言。",
         "back": "↩️ 返回",
         "start_owner": "管理選單已載入，也可以直接傳送 X/Twitter 貼文連結。",
@@ -329,8 +330,9 @@ PUBLIC_TEXT = {
             "Send an X/Twitter post URL to get its text, images and videos.\n"
             f"Share elsewhere: type {BOT_MENTION} followed by the post URL."
         ),
-        "language_menu": "🌐 語言/Language",
+        "language_menu": "🌐 Language",
         "help_menu": "ℹ️ How to use",
+        "feedback": "💬 Feedback",
         "choose_language": "Choose a language.",
         "back": "↩️ Back",
         "start_owner": "The management menu is ready. You can also send an X/Twitter post URL directly.",
@@ -365,8 +367,9 @@ PUBLIC_TEXT = {
             "X/Twitter の単一投稿URLを送ると、本文・画像・動画を取得できます。\n"
             f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると共有できます。"
         ),
-        "language_menu": "🌐 語言/Language",
+        "language_menu": "🌐 Language",
         "help_menu": "ℹ️ 使い方",
+        "feedback": "💬 問い合わせ",
         "choose_language": "言語を選択してください。",
         "back": "↩️ 戻る",
         "start_owner": "管理メニューを表示しました。X/Twitter の投稿URLを直接送信することもできます。",
@@ -403,14 +406,16 @@ def public_text(language: str, key: str, **values: Any) -> str:
 
 
 def public_help_text(language: str) -> str:
-    language = language if language in PUBLIC_TEXT else "zh"
+    return public_text(language, "help_allowed")
+
+
+def public_help_keyboard(language: str) -> dict[str, Any]:
+    rows = []
     parsed = urlparse(OWNER_CONTACT_URL)
-    help_text = public_text(language, "help_allowed")
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return help_text
-    label = OWNER_CONTACT_LABEL or {"zh": "聯絡管理員", "ja": "管理者に連絡", "en": "Contact the owner", "zh-cn": ("联络管理员")}[language]
-    prefix = "Powered by " if label.startswith("Powered by ") else ""
-    return help_text + "\n\n" + prefix + f'<a href="{html.escape(OWNER_CONTACT_URL, quote=True)}">{html.escape(label.removeprefix(prefix))}</a>'
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        rows.append([{"text": public_text(language, "feedback"), "url": OWNER_CONTACT_URL}])
+    rows.append([{"text": public_text(language, "back"), "callback_data": "public:main"}])
+    return {"inline_keyboard": rows}
 
 
 # Every account keeps its own language; request-local context isolates workers.
@@ -3578,10 +3583,7 @@ class Bot:
                         chat_id,
                         public_help_text(language),
                         message_id,
-                        {"inline_keyboard": [[{
-                            "text": public_text(language, "back"),
-                            "callback_data": "public:main",
-                        }]]},
+                        public_help_keyboard(language),
                         parse_mode="HTML",
                     )
                     return
@@ -4108,7 +4110,7 @@ class Bot:
                     chat_id,
                     message_id,
                     public_help_text(language),
-                    back_keyboard,
+                    public_help_keyboard(language),
                     parse_mode="HTML",
                 )
             elif destination == "main":
@@ -4217,7 +4219,7 @@ class Bot:
                     text = admin_text("bulk_quota_prompt")
                     keyboard = quota_input_keyboard()
             elif destination == "help":
-                text, keyboard = public_help_text(language), owner_keyboard()
+                text, keyboard = public_help_text(language), public_help_keyboard(language)
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
@@ -4811,7 +4813,7 @@ class Bot:
                 chat_id,
                 public_help_text(ui_language()),
                 message_id,
-                owner_keyboard(),
+                public_help_keyboard(ui_language()),
                 parse_mode="HTML",
             )
         elif command == "/cookies":
@@ -4849,7 +4851,7 @@ class Bot:
                 chat_id,
                 public_help_text(ui_language()),
                 message_id,
-                owner_keyboard(),
+                public_help_keyboard(ui_language()),
                 parse_mode="HTML",
             )
 

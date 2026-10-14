@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.8.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.8.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -10,7 +10,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 > 請先讀這個儲存庫的 README、VERSION、bot.py、config_cli.py、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝目前 main 分支的程式。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
 
-傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「語言/Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
+傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
 以下新安裝使用 main 的最新修正；版本標籤保留發布當時的程式，不會隨 main 移動。
 
@@ -43,10 +43,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | --- | --- | --- |
 | `BOT_TIMEZONE` | UTC | 每日額度與簡報使用的 IANA 時區。 |
 | `DAILY_RESET_HOUR` | 0 | 該時區每日換日的整點，0–23。 |
-| `DAILY_REPORT_HOUR` | 22 | 向所有者發送用量與待審申請簡報的整點，0–23。 |
+| `DAILY_REPORT_HOUR` | 0 | 向所有者發送用量與待審申請簡報的整點，0–23。 |
 | `DEFAULT_DAILY_LIMIT` | 50 | 新授權普通用戶額度，1–100000；Bot 內設定優先，不批次改現有額度。 |
-| `OWNER_CONTACT_URL` | 空白 | 可選的說明頁聯絡連結，例如 https://example.com/contact；空白則不顯示。 |
-| `OWNER_CONTACT_LABEL` | 空白 | 自訂連結文字；空白用翻譯標籤，`Powered by YOUR_NAME` 只連結名字。 |
+| `OWNER_CONTACT_URL` | 空白 | 使用說明頁的「問題反饋」按鈕連結，例如 https://t.me/YOUR_USERNAME；空白則不顯示。 |
 | `WORKER_COUNT` | 2 | 貼文並行數，1–8。 |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | 可用空間低於 1 GiB 時不接受新下載。 |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | 媒體暫存達到 1 GiB 時不接受新下載；非硬配額。 |
@@ -70,15 +69,17 @@ X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；�
 
 ### 維護與驗證
 
-更新前先備份設定與狀態，再於原儲存庫目錄切換至要安裝的發布版本（以實際版本替換 `vX.Y.Z`）：
+更新前先備份設定與狀態，確認工作目錄沒有未保存的修改，再於原儲存庫目錄更新 main：
 
 ```sh
-git fetch --tags
-git checkout vX.Y.Z
+git switch main
+git pull --ff-only
 sudo bash deploy.sh
 ```
 
-不要覆寫已有本機修改。部署會重啟 Bot，但保留原有設定與用戶資料。若版本號相同、檔案卻不同，腳本會拒絕部署；請核對版本標籤，不要強行覆蓋。
+部署會重啟 Bot，但保留原有設定與用戶資料。Git 無法直接更新時先處理分歧，不重設工作目錄。若版本號相同、檔案卻不同，腳本會拒絕部署；不要強行覆蓋。舊 tag 是歷史快照，不一定包含 main 的修正，不能用同版本 tag 更新較新的 main 安裝。
+
+新安裝的簡報預設為 UTC 00:00。已有環境檔的排程不會被升級覆寫；若原先設為 22 點，需自行將 `DAILY_REPORT_HOUR` 改為 `0` 並重啟服務。
 
 檢查服務與日誌可用 `systemctl status x-tweet-telegram-bot.service` 及 `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`。分享日誌前先遮蔽私人內容。
 
@@ -96,7 +97,7 @@ sudo bash deploy.sh
 
 > まず README、VERSION、bot.py、config_cli.py、deploy.sh、systemd のサービスファイル、テストを読んで、現在の main ブランチを私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
 
-X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「語言/Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
+X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
 ### 導入
 
@@ -129,10 +130,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | --- | --- | --- |
 | `BOT_TIMEZONE` | UTC | 日次上限・レポート用の IANA タイムゾーン。 |
 | `DAILY_RESET_HOUR` | 0 | 利用日の切り替え時刻、現地の 0–23 時。 |
-| `DAILY_REPORT_HOUR` | 22 | 所有者に使用量と審査待ち申請のレポートを送る時刻、0–23 時。 |
+| `DAILY_REPORT_HOUR` | 0 | 所有者に使用量と審査待ち申請のレポートを送る時刻、0–23 時。 |
 | `DEFAULT_DAILY_LIMIT` | 50 | 新規承認ユーザーの上限、1–100000。Bot 内の設定が優先し、既存の上限は変えません。 |
-| `OWNER_CONTACT_URL` | 空欄 | 任意の問い合わせ先、例：https://example.com/contact。空欄なら非表示。 |
-| `OWNER_CONTACT_LABEL` | 空欄 | リンクの表示名。空欄は翻訳済みの標準名、`Powered by YOUR_NAME` は名前だけをリンク。 |
+| `OWNER_CONTACT_URL` | 空欄 | 使い方ページの「問い合わせ」ボタンのリンク。例：https://t.me/YOUR_USERNAME。空欄なら非表示。 |
 | `WORKER_COUNT` | 2 | 投稿処理の並列数、1–8。 |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | 空き容量が 1 GiB 未満なら新規ダウンロードを停止。 |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | メディア一時ファイルが 1 GiB に達したら受付停止。ハード上限ではありません。 |
@@ -156,15 +156,17 @@ X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い
 
 ### 保守と検証
 
-更新前に設定と状態データをバックアップし、元のリポジトリのディレクトリで導入するリリース版に切り替えます。`vX.Y.Z` は実際のバージョンに置き換えてください。
+更新前に設定と状態データをバックアップし、作業ディレクトリに未保存の変更がないことを確認してから、元のリポジトリで main を更新します。
 
 ```sh
-git fetch --tags
-git checkout vX.Y.Z
+git switch main
+git pull --ff-only
 sudo bash deploy.sh
 ```
 
-ローカル変更を上書きしないでください。導入時に Bot は再起動しますが、既存の設定とユーザーデータは保持されます。バージョンが同じなのにファイルが異なる場合は導入を拒否します。リリースのタグを確認し、無理に上書きしないでください。
+導入時に Bot は再起動しますが、既存の設定とユーザーデータは保持されます。Git がそのまま更新できない場合は、作業内容をリセットせずに差分を確認してください。同じバージョンでファイルが異なる場合、導入は拒否されます。古いタグには main の修正が含まれないことがあるため、同じバージョンのタグで新しい main の導入環境を更新しないでください。
+
+新規導入では UTC 00:00 にレポートを送信します。既存の環境ファイルの時刻は更新時に変更されません。22時から変更する場合は `DAILY_REPORT_HOUR=0` に設定してサービスを再起動してください。
 
 サービスとログは `systemctl status x-tweet-telegram-bot.service` と `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager` で確認できます。ログを共有する前に個人情報や認証情報を伏せてください。
 
@@ -182,7 +184,7 @@ If you do not write code, give the repository link and this prompt to an AI that
 
 > First read the README, VERSION, bot.py, config_cli.py, deploy.sh, systemd service file and tests, then walk me through installing the current main branch on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
 
-Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in 語言/Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
+Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
 ### Deploy
 
@@ -215,10 +217,9 @@ Settings are in `/etc/x-tweet-telegram-bot.env`, readable only by root. State is
 | --- | --- | --- |
 | `BOT_TIMEZONE` | UTC | IANA time zone for daily limits and reports. |
 | `DAILY_RESET_HOUR` | 0 | Local hour when the usage day rolls over, 0–23. |
-| `DAILY_REPORT_HOUR` | 22 | Local hour for sending the owner a report of usage and pending requests, 0–23. |
+| `DAILY_REPORT_HOUR` | 0 | Local hour for sending the owner a report of usage and pending requests, 0–23. |
 | `DEFAULT_DAILY_LIMIT` | 50 | Quota for newly approved regular users, 1–100000; the in-bot default takes priority and existing quotas stay unchanged. |
-| `OWNER_CONTACT_URL` | empty | Optional help-page contact URL, e.g. https://example.com/contact; omitted when empty. |
-| `OWNER_CONTACT_LABEL` | empty | Custom link text; empty uses the translated label, while `Powered by YOUR_NAME` links only the name. |
+| `OWNER_CONTACT_URL` | empty | Help-page Feedback button URL, e.g. https://t.me/YOUR_USERNAME; omitted when empty. |
 | `WORKER_COUNT` | 2 | Concurrent post jobs, 1–8. |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | Stop accepting downloads below 1 GiB free. |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | Stop accepting downloads at 1 GiB of media temporary files; not a hard quota. |
@@ -242,15 +243,17 @@ Runtime status shows traffic for the bot and its downloaders over the last 24 ho
 
 ### Maintain and verify
 
-Back up settings and state before updating, then switch to the release you want to install in the existing repository directory. Replace `vX.Y.Z` with the actual version:
+Back up settings and state and make sure there are no unsaved local changes, then update main in the existing repository directory:
 
 ```sh
-git fetch --tags
-git checkout vX.Y.Z
+git switch main
+git pull --ff-only
 sudo bash deploy.sh
 ```
 
-Do not overwrite local changes. Deployment restarts the bot but keeps existing settings and user data. If files differ but the version number is unchanged, the script rejects the deployment. Check the release tag rather than forcing an overwrite.
+Deployment restarts the bot but keeps existing settings and user data. If Git cannot fast-forward, resolve the differences without resetting your work. The installer rejects changed files with an unchanged version number; do not force an overwrite. Old tags are historical snapshots and may lack main's fixes. Do not use a tag of the same version to update a newer main installation.
+
+New installations report at 00:00 UTC. Upgrades do not overwrite schedules in existing environment files. To change an existing 22:00 schedule, set `DAILY_REPORT_HOUR=0` and restart the service.
 
 Check the service and logs with `systemctl status x-tweet-telegram-bot.service` and `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`. Redact private information before sharing logs.
 
