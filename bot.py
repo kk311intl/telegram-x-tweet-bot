@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.10.0"
+APP_VERSION = "3.10.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3516,6 +3516,10 @@ class Bot:
                 self.handle_document(chat_id, message_id, user_id, document)
             else:
                 self.api.set_reaction(chat_id, message_id, "🤔")
+                self.api.send_message(
+                    chat_id, public_text(language, "url_only"), message_id,
+                    start_keyboard(language, is_admin, self.acl.is_allowed(user_id)),
+                )
             return
 
         text = str(message.get("text", "")).strip()
@@ -3525,6 +3529,7 @@ class Bot:
                 "sticker", "contact", "location", "venue", "poll", "dice",
             )):
                 self.api.set_reaction(chat_id, message_id, "🤔")
+                self.api.send_message(chat_id, public_text(language, "url_only"), message_id)
             return
 
         if is_admin and text in OWNER_BUTTONS:
@@ -3799,6 +3804,7 @@ class Bot:
         url = normalize_status_url(text)
         if not url:
             self.api.set_reaction(chat_id, message_id, "🤔")
+            self.api.send_message(chat_id, public_text(language, "url_only"), message_id)
             return
         if not is_admin and not self.acl.external_access_enabled:
             self.api.send_message(

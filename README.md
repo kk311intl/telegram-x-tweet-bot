@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.10.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.10.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -12,7 +12,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
-已接收的貼文會在原訊息加上 👀，處理結束後移除；無法識別的一般內容則標示 🤔。
+已接收的貼文會在原訊息加上 👀，處理結束後移除；無法識別的一般內容標示 🤔，並保留文字提示。
 
 以下指令使用 main 的最新程式。GitHub 的「Latest Release」只代表最近一次正式發布，可能落後於 main；Release 說明與 tag 對應當時版本。
 
@@ -110,7 +110,7 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
-受け付けた投稿のメッセージに 👀 を付け、処理が終わると外します。通常の入力で内容を認識できない場合は 🤔 を付けます。
+受け付けた投稿のメッセージに 👀 を付け、処理が終わると外します。通常の入力で内容を認識できない場合は 🤔 を付け、案内文も返信します。
 
 ### 導入
 
@@ -208,7 +208,7 @@ If you do not write code, give the repository link and this prompt to an AI that
 
 Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
-Accepted posts get a 👀 reaction on the original message, removed when processing ends. Unrecognized ordinary input gets a 🤔 reaction.
+Accepted posts get a 👀 reaction on the original message, removed when processing ends. Unrecognized ordinary input gets a 🤔 reaction as well as a text prompt.
 
 ### Deploy
 

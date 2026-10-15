@@ -78,11 +78,14 @@ class ReliabilityTests(unittest.TestCase):
                     api.send_message.assert_not_called()
 
     def test_rejected_or_unpersisted_jobs_do_not_show_working_reaction(self):
-        for reason in ("unauthorized", "banned", "paused", "quota", "queue", "disk", "storage"):
-            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as folder:
+        for reason, language in ((reason, language) for reason in
+                ("unauthorized", "banned", "paused", "quota", "queue", "disk", "storage")
+                for language in bot.PUBLIC_TEXT):
+            with self.subTest(reason=reason, language=language), tempfile.TemporaryDirectory() as folder:
                 store = bot.ACLStore(Path(folder) / "acl.json", 100)
                 if reason != "unauthorized":
                     store.add(200)
+                store.set_language(200, language)
                 if reason == "banned":
                     store.ban(200)
                 if reason == "paused":
@@ -107,6 +110,14 @@ class ReliabilityTests(unittest.TestCase):
                     else:
                         service.handle_update(update)
                 service.api.set_reaction.assert_not_called()
+                if reason == "unauthorized":
+                    service.api.send_message.assert_called_once_with(200, bot.access_request_text(200, language),
+                                                                     42, bot.application_keyboard(language))
+                elif reason in {"banned", "storage"}:
+                    service.api.send_message.assert_not_called()
+                else:
+                    key = "service_paused" if reason == "paused" else "quota" if reason == "quota" else "queue_full"
+                    service.api.send_message.assert_called_once_with(200, bot.public_text(language, key, used=1, limit=1), 42)
                 self.assertFalse(store.data["pending_jobs"])
                 self.assertTrue(service.jobs.empty())
                 service.inline_executor.shutdown(wait=True)
@@ -120,6 +131,7 @@ class ReliabilityTests(unittest.TestCase):
                 for language in bot.PUBLIC_TEXT:
                     store.set_language(200, language)
                     for content in ({"text": "hello"}, {"text": "https://example.com/"},
+                                    {"text": "https://www.pixiv.net/artworks/123456"},
                                     {"photo": [{"file_id": "test"}]}, {"sticker": {"file_id": "test"}},
                                     {"voice": {"file_id": "test"}}, {"document": {"file_id": "test"}}):
                         with self.subTest(language=language, content=content):
@@ -127,7 +139,11 @@ class ReliabilityTests(unittest.TestCase):
                             service.handle_update({"message": {"message_id": 42, "from": {"id": 200},
                                                                "chat": {"id": 200}, **content}})
                             service.api.set_reaction.assert_called_once_with(200, 42, "🤔")
-                            service.api.send_message.assert_not_called()
+                            if "document" in content:
+                                service.api.send_message.assert_called_once_with(200, bot.public_text(language, "url_only"),
+                                    42, bot.start_keyboard(language, False, True))
+                            else:
+                                service.api.send_message.assert_called_once_with(200, bot.public_text(language, "url_only"), 42)
                             self.assertEqual(store.data["users"]["200"]["usage_count"], 0)
                             self.assertFalse(store.data["pending_jobs"])
                             self.assertTrue(service.jobs.empty())
@@ -3707,13 +3723,15 @@ class MenuTests(unittest.TestCase):
             self.assertNotIn("1日上限", public_copy)
             self.assertNotIn("00:00", public_copy)
 
-    def test_regular_user_document_feedback_uses_same_reaction_in_all_languages(self):
+    def test_regular_user_document_feedback_preserves_localized_guide_and_reaction(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.set_quota(200, 50)
             api = MagicMock()
             service = bot.Bot(api, store)
-            for language in ("zh-cn", "zh", "en", "ja"):
+            for language, allowed in ((language, allowed) for language in ("zh-cn", "zh", "en", "ja")
+                                     for allowed in (True, False)):
+                store.set_quota(200, 50 if allowed else 0)
                 store.set_language(200, language)
                 api.reset_mock()
                 service.handle_update({"message": {
@@ -3722,7 +3740,8 @@ class MenuTests(unittest.TestCase):
                     "chat": {"id": 200},
                     "document": {"file_id": "not-a-cookie"},
                 }})
-                api.send_message.assert_not_called()
+                api.send_message.assert_called_once_with(200, bot.public_text(language, "url_only"),
+                                                         10, bot.start_keyboard(language, False, allowed))
                 api.set_reaction.assert_called_once_with(200, 10, "🤔")
 
     def test_authorized_regular_user_hidden_command_shows_localized_guide(self):
@@ -4439,7 +4458,7 @@ class MenuTests(unittest.TestCase):
                     "text": "hello",
                 }
             })
-            api.send_message.assert_not_called()
+            api.send_message.assert_called_once_with(200, bot.public_text("zh", "url_only"), 11)
             api.set_reaction.assert_called_once_with(200, 11, "🤔")
 
             api.reset_mock()
@@ -4545,7 +4564,7 @@ class MenuTests(unittest.TestCase):
             })
 
             self.assertNotIn("50", store.data["users"])
-            api.send_message.assert_not_called()
+            api.send_message.assert_called_once_with(100, bot.public_text("zh", "url_only"), 10)
             api.set_reaction.assert_called_once_with(100, 10, "🤔")
 
     def test_owner_numeric_quota_change_requires_confirmation(self):
