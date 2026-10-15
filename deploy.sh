@@ -72,7 +72,16 @@ export UV_PYTHON_INSTALL_DIR="$INSTALL_DIR/python"
 (umask 022; uv python install 3.12)
 candidate_venv=$(mktemp -d "$INSTALL_DIR/.venv-candidate.XXXXXX")
 chmod 0755 "$candidate_venv"
+rollback_dir=""
+swapped_venv=false
+draining=false
 cleanup_candidate() {
+  if [[ $draining == true ]]; then
+    /usr/local/sbin/x-tweet-bot-config resume --deployment || true
+  fi
+  if [[ $swapped_venv == false && $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then
+    rm -rf -- "$rollback_dir"
+  fi
   if [[ -n $candidate_venv && $candidate_venv == "$INSTALL_DIR"/.venv-candidate.* ]]; then
     rm -rf -- "$candidate_venv"
   fi
@@ -92,11 +101,6 @@ PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
   PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m unittest -q test_bot.py
 )
 runuser -u x-tweet-bot -- "$candidate_venv/bin/python" -c 'import requests, PIL, yt_dlp, gallery_dl'
-
-if systemctl is-active --quiet "$SERVICE" && \
-   grep -q '^def runtime_control(' /usr/local/sbin/x-tweet-bot-config; then
-  /usr/local/sbin/x-tweet-bot-config drain
-fi
 
 deploy_targets=(
   "$INSTALL_DIR/bot.py"
@@ -122,11 +126,11 @@ for target in "${deploy_targets[@]}"; do
 done
 
 rollback_deploy() {
-  exit_code=$?
-  trap - ERR
+  exit_code=${1:-$?}
+  trap - ERR INT TERM
   if [[ $swapped_venv == true ]]; then
     systemctl stop "$SERVICE" || true
-    if [[ -L "$INSTALL_DIR/venv" ]]; then
+    if [[ -L "$INSTALL_DIR/venv" && $(readlink "$INSTALL_DIR/venv") == "$candidate_venv" ]]; then
       rm -f -- "$INSTALL_DIR/venv"
     fi
     if [[ -e "$rollback_dir/venv" || -L "$rollback_dir/venv" ]]; then
@@ -148,12 +152,27 @@ rollback_deploy() {
   fi
   exit "$exit_code"
 }
-swapped_venv=false
+if systemctl is-active --quiet "$SERVICE" && \
+   grep -q '^def runtime_control(' /usr/local/sbin/x-tweet-bot-config; then
+  draining=true
+  drain_started=$SECONDS
+  /usr/local/sbin/x-tweet-bot-config drain --deployment
+  # 3.9.0 uses one deadline for draining and handoff. Refuse a late ACK
+  # on this one-time upgrade; newer bots grant a separate handoff window.
+  if ! grep -q '^CONTROL_HANDOFF_SECONDS =' "$INSTALL_DIR/bot.py" && \
+     (( SECONDS - drain_started >= 540 )); then
+    echo "Insufficient drain handoff time; retry deployment" >&2
+    exit 1
+  fi
+fi
 trap rollback_deploy ERR
+trap 'rollback_deploy 130' INT
+trap 'rollback_deploy 143' TERM
 
 if systemctl cat "$SERVICE" >/dev/null 2>&1; then
   systemctl stop "$SERVICE"
 fi
+draining=false
 swapped_venv=true
 if [[ -e "$INSTALL_DIR/venv" || -L "$INSTALL_DIR/venv" ]]; then
   mv -- "$INSTALL_DIR/venv" "$rollback_dir/venv"
@@ -207,7 +226,7 @@ sleep 3
 systemctl is-active --quiet "$SERVICE"
 [[ $(systemctl show "$SERVICE" -p MainPID --value) =~ ^[1-9][0-9]*$ ]]
 /usr/local/sbin/x-tweet-bot-config status
-trap - ERR
+trap - ERR INT TERM
 if [[ $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then
   rm -rf -- "$rollback_dir"
 fi

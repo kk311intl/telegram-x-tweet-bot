@@ -93,11 +93,21 @@ def restart() -> None:
     subprocess.run(["systemctl", "restart", "x-tweet-telegram-bot.service"], check=True)
 
 
-def runtime_control(action: str, values: dict[str, str]) -> None:
+def runtime_control(action: str, values: dict[str, str], *, deployment: bool = False) -> None:
     # The root-only environment file never becomes readable by the Bot.
     import fcntl
-    with open("/run/lock/x-tweet-bot-control.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with open("/run/lock/x-tweet-bot-deploy.lock", "a") as deploy_lock:
+        if deployment:
+            # deploy.sh passes its already-locked descriptor to this child.
+            inherited, expected = os.fstat(9), os.fstat(deploy_lock.fileno())
+            if (inherited.st_dev, inherited.st_ino) != (expected.st_dev, expected.st_ino):
+                raise SystemExit("Missing deployment lock")
+            fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            try:
+                fcntl.flock(deploy_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SystemExit("Deployment is running; retry after it finishes") from None
         pid = subprocess.check_output([
             "systemctl", "show", "x-tweet-telegram-bot.service", "-p", "MainPID", "--value"
         ], text=True).strip()
@@ -109,22 +119,29 @@ def runtime_control(action: str, values: dict[str, str]) -> None:
             request["settings"] = {key: values.get(key, default)
                                    for key, default in RELOAD_DEFAULTS.items()}
             validate_runtime_settings(request["settings"])
-        atomic_write_text(CONTROL_PATH, json.dumps(request))
-        shutil.chown(CONTROL_PATH, user="root", group="x-tweet-bot")
-        CONTROL_PATH.chmod(0o640)
+        with open("/run/lock/x-tweet-bot-control.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            atomic_write_text(CONTROL_PATH, json.dumps(request))
+            shutil.chown(CONTROL_PATH, user="root", group="x-tweet-bot")
+            CONTROL_PATH.chmod(0o640)
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
+            current = json.loads(CONTROL_PATH.read_text(encoding="utf-8"))
+            if not isinstance(current, dict) or current.get("id") != request["id"]:
+                raise SystemExit("Runtime request superseded by another command; outcome unconfirmed")
             try:
                 result = json.loads(CONTROL_RESULT_PATH.read_text(encoding="utf-8"))
             except (FileNotFoundError, ValueError):
                 result = {}
-            if result.get("id") == request["id"] and result.get("pid") == int(pid):
+            if isinstance(result, dict) and result.get("id") == request["id"] and result.get("pid") == int(pid):
                 if not result.get("ok"):
-                    raise SystemExit("Runtime request rejected or expired; configuration unchanged")
+                    raise SystemExit("Runtime request rejected or expired before completion")
+                if action == "drain" and result.get("handoff_deadline", 0) < time.monotonic() + 30:
+                    raise SystemExit("Drain handoff window expired; retry before deploying")
                 print(f"{action}=ok")
                 return
             time.sleep(0.2)
-        raise SystemExit("Runtime request timed out; intake resumes automatically after expiry")
+        raise SystemExit("Runtime request timed out; outcome unconfirmed. Check the service before retrying")
 
 
 def default_limit_status(values: dict[str, str], state: dict) -> tuple[int, str]:
@@ -177,10 +194,10 @@ def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("Run as root")
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
-    values = load_env()
+    values = {} if command in ("drain", "resume") else load_env()
 
     if command in ("reload", "drain", "resume"):
-        runtime_control(command, values)
+        runtime_control(command, values, deployment=sys.argv[2:] == ["--deployment"])
     elif command == "set-token":
         token = getpass.getpass("Telegram Bot Token: ").strip()
         if ":" not in token or len(token) < 30:

@@ -21,8 +21,7 @@ class ReliabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
-                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"), \
-                 patch.object(bot, "MAX_VIDEO_BYTES", bot.MAX_VIDEO_BYTES):
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
                 service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
                 values = dict(bot.RELOAD_DEFAULTS, MAX_VIDEO_BYTES=2000000)
                 request = {"id": "a" * 32, "action": "reload", "expires": bot.time.time() + 60,
@@ -51,31 +50,167 @@ class ReliabilityTests(unittest.TestCase):
                     self.assertFalse(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
                 service.inline_executor.shutdown(wait=True)
 
-    def test_drain_waits_and_resumes_without_losing_durable_jobs(self):
+    def test_drain_can_resume_with_durable_jobs_pending_across_restart(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
                  patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
-                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                path = root / "acl.json"
+                store = bot.ACLStore(path, 100)
+                store.add(200)
+                job = (200, 42, 200, "https://x.com/test/status/123")
+                self.assertTrue(store.consume(200, job=job)[0])
+                service = bot.Bot(MagicMock(), store)
                 request = {"id": "c" * 32, "action": "drain", "expires": bot.time.time() + 60}
                 bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
                 self.assertTrue(service.runtime_control_tick())
                 self.assertTrue(service.runtime_control_tick())
                 self.assertFalse(service.stop_event.is_set())
-                service.control_pending["expires"] = 0
-                self.assertFalse(service.runtime_control_tick())
-                self.assertFalse(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
                 request.update(id="d" * 32, action="resume")
                 bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
                 self.assertFalse(service.runtime_control_tick())
                 self.assertTrue(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
-                # Restart must ignore old control requests.
-                replacement = bot.Bot(MagicMock(), service.acl)
+                service.stop()
+                # Restart ignores old control requests, but restores queued work.
+                restored = bot.ACLStore(path, 100)
+                replacement = bot.Bot(MagicMock(), restored)
                 self.assertFalse(replacement.runtime_control_tick())
-                service.inline_executor.shutdown(wait=True)
-                replacement.inline_executor.shutdown(wait=True)
+                self.assertFalse(restored.consume(200, job=job)[0])
+                replacement.process_url = MagicMock()
+                replacement.worker.start()
+                try:
+                    deadline = bot.time.monotonic() + 3
+                    while replacement.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                        bot.time.sleep(0.01)
+                    self.assertEqual(replacement.jobs.unfinished_tasks, 0)
+                    replacement.process_url.assert_called_once_with(*job)
+                    saved = bot.ACLStore(path, 100)
+                    self.assertEqual(saved.data["users"]["200"]["usage_count"], 1)
+                    self.assertFalse(saved.data["pending_jobs"])
+                finally:
+                    replacement.stop()
+                    replacement.worker.join(3)
+                    service.inline_executor.shutdown(wait=True)
+                    replacement.inline_executor.shutdown(wait=True)
 
-    def test_runtime_settings_reject_secrets_and_invalid_values(self):
+    def test_reload_ack_failure_preserves_applied_result_without_pausing_intake(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            values = dict(bot.RELOAD_DEFAULTS, MAX_VIDEO_BYTES=2000000)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"), \
+                 patch.dict(bot.__dict__, {key: bot.__dict__[key]
+                            for key in bot.validate_runtime_settings(values)}):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                request = {"id": "f" * 32, "action": "reload", "expires": 1060,
+                           "settings": values}
+                bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                try:
+                    with patch.object(bot.time, "time", return_value=1000), \
+                         patch.object(bot.time, "monotonic", return_value=1000), \
+                         patch.object(bot, "atomic_write_text", side_effect=OSError("disk full")):
+                        self.assertFalse(service.runtime_control_tick())
+                    self.assertEqual(bot.MAX_VIDEO_BYTES, 2000000)
+                    self.assertIsNone(service.control_pending)
+                    self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
+                    # A late acknowledgement must not reapply or relabel a completed reload.
+                    with patch.object(bot.time, "time", return_value=2000), \
+                         patch.object(bot.time, "monotonic", return_value=2000), \
+                         patch.object(bot, "validate_runtime_settings", side_effect=AssertionError("reapplied")):
+                        self.assertFalse(service.runtime_control_tick())
+                    result = json.loads(bot.CONTROL_RESULT_PATH.read_text())
+                    self.assertEqual(result["id"], request["id"])
+                    self.assertTrue(result["ok"])
+                finally:
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_drain_ack_failure_cannot_extend_handoff_pause(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                service.inline_futures.add("busy")
+                bot.CONTROL_PATH.write_text(json.dumps({"id": "1" * 32, "action": "drain",
+                                                       "expires": 1060}), encoding="utf-8")
+                try:
+                    with patch.object(bot.time, "time", return_value=1000), \
+                         patch.object(bot.time, "monotonic", return_value=1000):
+                        self.assertTrue(service.runtime_control_tick())
+                    service.inline_futures.clear()
+                    with patch.object(bot.time, "time", return_value=1059), \
+                         patch.object(bot.time, "monotonic", return_value=1059), \
+                         patch.object(bot, "atomic_write_text", side_effect=OSError("disk full")):
+                        self.assertTrue(service.runtime_control_tick())
+                    # Finishing near the request deadline still gets a separate handoff window.
+                    with patch.object(bot.time, "time", return_value=1061), \
+                         patch.object(bot.time, "monotonic", return_value=1061), \
+                         patch.object(bot, "atomic_write_text", side_effect=OSError("disk full")):
+                        self.assertTrue(service.runtime_control_tick())
+                    with patch.object(bot.time, "time", return_value=1180), \
+                         patch.object(bot.time, "monotonic", return_value=1180), \
+                         patch.object(bot, "atomic_write_text", side_effect=OSError("disk full")):
+                        self.assertFalse(service.runtime_control_tick())
+                    self.assertIsNone(service.control_pending)
+                finally:
+                    service.inline_futures.clear()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_runtime_control_wait_timeout_uses_monotonic_clock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                service.inline_futures.add("busy")
+                bot.CONTROL_PATH.write_text(json.dumps({"id": "2" * 32, "action": "drain",
+                                                       "expires": 1060}), encoding="utf-8")
+                try:
+                    with patch.object(bot.time, "time", return_value=1000), \
+                         patch.object(bot.time, "monotonic", return_value=1000):
+                        self.assertTrue(service.runtime_control_tick())
+                    with patch.object(bot.time, "time", return_value=10000), \
+                         patch.object(bot.time, "monotonic", return_value=1001):
+                        self.assertTrue(service.runtime_control_tick())
+                    with patch.object(bot.time, "time", return_value=0), \
+                         patch.object(bot.time, "monotonic", return_value=1061):
+                        self.assertFalse(service.runtime_control_tick())
+                    self.assertFalse(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                finally:
+                    service.inline_futures.clear()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_runtime_control_cli_releases_publish_lock_and_detects_replacement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            locks = {}
+            def open_lock(path, mode):
+                name = Path(path).name
+                lock = (root / name).open(mode)
+                locks[name] = lock
+                return lock
+            def replace_request(_seconds):
+                self.assertTrue(locks["x-tweet-bot-control.lock"].closed)
+                self.assertFalse(locks["x-tweet-bot-deploy.lock"].closed)
+                request = json.loads((root / "control.json").read_text())
+                request["id"] = "3" * 32
+                request["action"] = "resume"
+                (root / "control.json").write_text(json.dumps(request), encoding="utf-8")
+            with patch.dict(sys.modules, {"fcntl": MagicMock()}), \
+                 patch.object(config_cli, "open", side_effect=open_lock, create=True), \
+                 patch.object(config_cli, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(config_cli, "CONTROL_RESULT_PATH", root / "result.json"), \
+                 patch.object(config_cli.subprocess, "check_output", return_value="123\n"), \
+                 patch.object(config_cli.shutil, "chown"), \
+                 patch.object(config_cli.time, "sleep", side_effect=replace_request) as waiting:
+                with self.assertRaisesRegex(SystemExit, "[Ss]uperseded") as error:
+                    config_cli.runtime_control("drain", {})
+                self.assertNotIn("unchanged", str(error.exception))
+                self.assertEqual(waiting.call_count, 1)
+
+    def test_runtime_settings_validate_defaults_and_reject_secrets_or_invalid_values(self):
+        self.assertIsInstance(bot.validate_runtime_settings(bot.RELOAD_DEFAULTS), dict)
         for extra in ({"BOT_TOKEN": "not-a-token"}, {"MAX_QUEUE": True},
                       {"BOT_TIMEZONE": "../invalid"}, {"OWNER_CONTACT_URL": "javascript:bad"}):
             with self.assertRaises(ValueError):
@@ -87,13 +222,16 @@ class ReliabilityTests(unittest.TestCase):
             root = Path(folder)
             with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
                  patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
-                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                store = bot.ACLStore(root / "acl.json", 100)
+                store.add(200)
+                job = (200, 42, 200, "https://x.com/test/status/123")
+                self.assertTrue(store.consume(200, job=job)[0])
+                service = bot.Bot(MagicMock(), store)
                 entered, release = threading.Event(), threading.Event()
                 def process(*_args):
                     entered.set()
                     release.wait(5)
                 service.process_url = process
-                service.jobs.put((1, 2, 100, "https://example.com"))
                 service.worker.start()
                 try:
                     self.assertTrue(entered.wait(2))
@@ -104,7 +242,11 @@ class ReliabilityTests(unittest.TestCase):
                     release.set()
                     service.jobs.join()
                     self.assertTrue(service.runtime_control_tick())
-                    self.assertTrue(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                    result = json.loads(bot.CONTROL_RESULT_PATH.read_text())
+                    self.assertTrue(result["ok"])
+                    self.assertGreater(result["handoff_deadline"], bot.time.monotonic() + 110)
+                    self.assertFalse(store.data["pending_jobs"])
+                    self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
                     self.assertTrue(service.worker.is_alive())
                 finally:
                     release.set()
@@ -490,12 +632,12 @@ class ReliabilityTests(unittest.TestCase):
     def test_deploy_keeps_config_health_check_inside_rollback_protection(self):
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
         health_check = script.index("/usr/local/sbin/x-tweet-bot-config status")
-        rollback_commit = script.index("trap - ERR\nif [[ $rollback_dir")
+        rollback_commit = script.index("trap - ERR INT TERM\nif [[ $rollback_dir")
         self.assertLess(health_check, rollback_commit)
         self.assertLess(health_check, script.index('candidate_venv=""'))
         bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
         if Path(bash).exists():
-            checks = script.split("sleep 3\n", 1)[1].split("trap - ERR\n", 1)[0]
+            checks = script.split("sleep 3\n", 1)[1].split("trap - ERR INT TERM\n", 1)[0]
             checks = checks.replace("/usr/local/sbin/x-tweet-bot-config status", "config_status")
             harness = """set -e
 SERVICE=test.service
@@ -506,6 +648,49 @@ trap rollback_deploy ERR
 """ + checks + "printf 'incorrectly_committed\\n'\n"
             result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, timeout=15)
             self.assertEqual((result.returncode, result.stdout.strip()), (1, "rolled_back"), result.stderr)
+
+    def test_deploy_rollback_preserves_old_venv_before_and_after_swap(self):
+        bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
+        if not Path(bash).exists():
+            self.skipTest("Bash is required")
+        script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
+        rollback = "rollback_deploy() {\n" + script.split("rollback_deploy() {\n", 1)[1].split(
+            "\nif systemctl is-active", 1)[0]
+        harness = """set -e
+INSTALL_DIR="$PWD/install"
+rollback_dir="$INSTALL_DIR/.deploy-rollback.test"
+candidate_venv="$INSTALL_DIR/candidate"
+old_venv="$INSTALL_DIR/old"
+SERVICE=test.service
+swapped_venv=true
+deploy_targets=()
+systemctl() { return 0; }
+mkdir -p "$rollback_dir" "$candidate_venv" "$old_venv"
+if [[ $1 == swapped ]]; then
+  ln -s "$old_venv" "$rollback_dir/venv"
+  ln -s "$candidate_venv" "$INSTALL_DIR/venv"
+else
+  ln -s "$old_venv" "$INSTALL_DIR/venv"
+fi
+[[ -L "$INSTALL_DIR/venv" ]] || exit 77
+""" + rollback + """
+set +e
+(rollback_deploy 23)
+result=$?
+set -e
+[[ $result == 23 ]]
+[[ -L "$INSTALL_DIR/venv" ]]
+[[ $(readlink "$INSTALL_DIR/venv") == "$old_venv" ]]
+printf 'restored\\n'
+"""
+        for phase in ("before_move", "swapped"):
+            with tempfile.TemporaryDirectory() as folder:
+                result = subprocess.run([bash, "-c", harness, "test", phase], cwd=folder,
+                                        capture_output=True, text=True, timeout=15)
+            if result.returncode == 77:
+                self.skipTest("POSIX symlinks are required")
+            with self.subTest(phase=phase):
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, "restored"), result.stderr)
 
     def test_access_restore_rejects_transitional_or_unverifiable_service_state(self):
         blocked = [(state, pid, 0) for state, pid in (

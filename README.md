@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.9.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.9.1
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -39,7 +39,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 設定在 `/etc/x-tweet-telegram-bot.env`，僅 root 可讀；狀態在 `/var/lib/x-tweet-telegram-bot`。不要把這些檔案或其備份放進 Git。
 
-修改額度初值、聯絡連結、時區與排程、媒體大小、佇列上限、暫存限制或 Inline 快取時間後，執行 `sudo x-tweet-bot-config reload`。Bot 會暫停接收，等已接收的工作完成後一起套用；設定無效則不套用，最多等待 10 分鐘。Bot 內已儲存的預設額度仍優先，既有用戶額度不變。時區／換日調整不會重算歷史統計。Token、身份與並行數仍需重啟。熱載入只傳遞白名單設定，不讓 Bot 讀取 root 的環境檔。
+修改額度初值、聯絡連結、時區與排程、媒體大小、佇列上限、暫存限制或 Inline 快取時間後，執行 `sudo x-tweet-bot-config reload`。Bot 會暫停接收，等已接收的工作完成後一起套用；設定無效則不套用，最多等待 10 分鐘。命令逾時只代表未收到確認，不代表設定未套用。Bot 內已儲存的預設額度仍優先，既有用戶額度不變。時區／換日調整不會重算歷史統計。Token、身份與並行數仍需重啟。熱載入只傳遞白名單設定，不讓 Bot 讀取 root 的環境檔。
 
 | 設定 | 預設 | 用途 |
 | --- | --- | --- |
@@ -79,9 +79,9 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-部署先測試候選版本，再等目前工作完成才重啟，保留設定與用戶資料；等待逾時取消更新並恢復接收，切換失敗會回滾程式。這是短暫停機更新，不是程式碼原地熱替換；首次從 3.8.x 升級仍走原有重啟流程。維護時可用 `sudo x-tweet-bot-config drain` 暫停接收並等工作完成，`sudo x-tweet-bot-config resume` 恢復；暫停自請求起最多 10 分鐘。Git 無法直接更新時先處理分歧，不重設本機修改。版本號相同但檔案不同時，部署腳本會拒絕更新；先核對來源，不強行覆蓋。
+部署先測試候選版本並建立程式還原副本，再等目前工作完成才重啟，保留設定與用戶資料；等待逾時取消更新並恢復接收，切換失敗會回滾程式。這是短暫停機更新，不是程式碼原地熱替換；首次從 3.8.x 升級仍走原有重啟流程。維護時可用 `sudo x-tweet-bot-config drain` 暫停接收，最多等待工作完成 10 分鐘，成功後保留 120 秒交接期，再自動恢復接收。`sudo x-tweet-bot-config resume` 可提早恢復，也可取消手動等待中的請求；部署期間會鎖定控制操作，不允許另一個 `reload`／`resume` 打斷切換。Git 無法直接更新時先處理分歧，不重設本機修改。版本號相同但檔案不同時，部署腳本會拒絕更新；先核對來源，不強行覆蓋。
 
-新安裝的簡報預設為 UTC 00:00。已有環境檔的排程不會被升級覆寫；若原先設為 22 點，需自行將 `DAILY_REPORT_HOUR` 改為 `0` 並重啟服務。
+新安裝的簡報預設為 UTC 00:00。已有環境檔的排程不會被升級覆寫；若原先設為 22 點，需自行將 `DAILY_REPORT_HOUR` 改為 `0` 並執行 `sudo x-tweet-bot-config reload`。
 
 檢查服務與日誌可用 `systemctl status x-tweet-telegram-bot.service` 及 `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`。分享日誌前先遮蔽私人內容。
 
@@ -135,7 +135,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 設定ファイルは `/etc/x-tweet-telegram-bot.env` にあり、root のみ読み取れます。状態データは `/var/lib/x-tweet-telegram-bot` に保存されます。これらのファイルやバックアップを Git に入れないでください。
 
-初期上限、問い合わせ先、タイムゾーン・時刻、メディアサイズ、キュー上限、一時ファイル制限、Inline キャッシュ時間を変更したら `sudo x-tweet-bot-config reload` を実行します。受付を一時停止し、受付済みの処理が終わってから一括適用します。不正な設定は適用せず、待機は最大10分です。Bot 内で保存した既定上限が優先され、既存ユーザーの上限は変わりません。タイムゾーン・日付切替の変更で過去の統計は再計算しません。Token、識別情報、並列数は再起動が必要です。許可した設定だけを渡し、Bot に root の環境ファイルは読ませません。
+初期上限、問い合わせ先、タイムゾーン・時刻、メディアサイズ、キュー上限、一時ファイル制限、Inline キャッシュ時間を変更したら `sudo x-tweet-bot-config reload` を実行します。受付を一時停止し、受付済みの処理が終わってから一括適用します。不正な設定は適用せず、待機は最大10分です。コマンドの時間切れは確認応答が届かなかったことを示し、未適用とは限りません。Bot 内で保存した既定上限が優先され、既存ユーザーの上限は変わりません。タイムゾーン・日付切替の変更で過去の統計は再計算しません。Token、識別情報、並列数は再起動が必要です。許可した設定だけを渡し、Bot に root の環境ファイルは読ませません。
 
 | 設定 | 初期値 | 用途 |
 | --- | --- | --- |
@@ -175,9 +175,9 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-更新は候補版をテストし、受付済みの処理が完了してから再起動します。設定とユーザーデータは保持します。待機が時間切れになれば更新を中止して受付を再開し、切替に失敗すればプログラムを戻します。短い停止を伴う更新であり、実行中のコードの置換ではありません。3.8.x からの初回更新は従来の再起動方式です。保守時は `sudo x-tweet-bot-config drain` で受付を止めて完了を待ち、`sudo x-tweet-bot-config resume` で再開できます。停止は要求から最大10分です。Git で更新できない場合は、ローカル変更をリセットせずに差分を確認してください。同じバージョンでファイルが異なると導入は拒否されます。
+更新は候補版をテストしてプログラムの復元用コピーを作り、受付済みの処理が完了してから再起動します。設定とユーザーデータは保持します。待機が時間切れになれば更新を中止して受付を再開し、切替に失敗すればプログラムを戻します。短い停止を伴う更新であり、実行中のコードの置換ではありません。3.8.x からの初回更新は従来の再起動方式です。保守時は `sudo x-tweet-bot-config drain` で受付を止め、処理の完了を最大10分待ちます。成功後は切替用に120秒間停止を保ち、その後は自動再開します。`sudo x-tweet-bot-config resume` で早めに再開したり、手動で開始した待機中の要求を取り消したりできます。デプロイ中は排他ロックにより、別の `reload`／`resume` が切替に割り込むことを防ぎます。Git で更新できない場合は、ローカル変更をリセットせずに差分を確認してください。同じバージョンでファイルが異なると導入は拒否されます。
 
-新規導入では UTC 00:00 にレポートを送信します。既存の環境ファイルの時刻は更新時に変更されません。22時から変更する場合は `DAILY_REPORT_HOUR=0` に設定してサービスを再起動してください。
+新規導入では UTC 00:00 にレポートを送信します。既存の環境ファイルの時刻は更新時に変更されません。22時から変更する場合は `DAILY_REPORT_HOUR=0` に設定して `sudo x-tweet-bot-config reload` を実行してください。
 
 サービスとログは `systemctl status x-tweet-telegram-bot.service` と `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager` で確認できます。ログを共有する前に個人情報や認証情報を伏せてください。
 
@@ -231,7 +231,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 Settings are in `/etc/x-tweet-telegram-bot.env`, readable only by root. State is stored in `/var/lib/x-tweet-telegram-bot`. Do not put these files or their backups in Git.
 
-After changing the initial quota, contact URL, timezone/schedule, media sizes, queue limit, temporary-file limits or Inline cache lifetime, run `sudo x-tweet-bot-config reload`. Intake pauses until accepted jobs finish, then settings apply together. Invalid settings are rejected; waiting is limited to 10 minutes. The saved in-bot quota default still takes priority, and existing quotas stay unchanged. Timezone/day-boundary changes do not recalculate historical statistics. Tokens, identity and worker counts still require a restart. Only allowlisted settings are passed to the bot; it cannot read root's environment file.
+After changing the initial quota, contact URL, timezone/schedule, media sizes, queue limit, temporary-file limits or Inline cache lifetime, run `sudo x-tweet-bot-config reload`. Intake pauses until accepted jobs finish, then settings apply together. Invalid settings are rejected; waiting is limited to 10 minutes. A command timeout means no confirmation was received, not that settings were left unchanged. The saved in-bot quota default still takes priority, and existing quotas stay unchanged. Timezone/day-boundary changes do not recalculate historical statistics. Tokens, identity and worker counts still require a restart. Only allowlisted settings are passed to the bot; it cannot read root's environment file.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -271,9 +271,9 @@ git pull --ff-only
 sudo bash deploy.sh
 ```
 
-Deployment tests the candidate first, waits for accepted jobs to finish, then restarts while preserving settings and user data. A drain timeout cancels the update and resumes intake; a failed switch rolls back the program. This is a short-stop update, not in-process code replacement. The first upgrade from 3.8.x still uses the old restart flow. For maintenance, `sudo x-tweet-bot-config drain` pauses intake and waits for completion; `sudo x-tweet-bot-config resume` resumes it. Pauses expire 10 minutes after the request. If Git cannot fast-forward, resolve the differences without resetting local changes. The installer rejects changed files with an unchanged version number; check the source rather than forcing an overwrite.
+Deployment tests the candidate and saves a copy of the installed program before waiting for accepted jobs to finish, then restarts while preserving settings and user data. A drain timeout cancels the update and resumes intake; a failed switch rolls back the program. This is a short-stop update, not in-process code replacement. The first upgrade from 3.8.x still uses the old restart flow. For maintenance, `sudo x-tweet-bot-config drain` pauses intake and waits up to 10 minutes for jobs to finish. After success, intake stays paused for a 120-second handoff window, then resumes automatically. `sudo x-tweet-bot-config resume` resumes it early or cancels a pending manual request. During deployment, an exclusive lock prevents another `reload` or `resume` from interrupting the switch. If Git cannot fast-forward, resolve the differences without resetting local changes. The installer rejects changed files with an unchanged version number; check the source rather than forcing an overwrite.
 
-New installations report at 00:00 UTC. Upgrades do not overwrite schedules in existing environment files. To change an existing 22:00 schedule, set `DAILY_REPORT_HOUR=0` and restart the service.
+New installations report at 00:00 UTC. Upgrades do not overwrite schedules in existing environment files. To change an existing 22:00 schedule, set `DAILY_REPORT_HOUR=0` and run `sudo x-tweet-bot-config reload`.
 
 Check the service and logs with `systemctl status x-tweet-telegram-bot.service` and `sudo journalctl -u x-tweet-telegram-bot.service -n 50 --no-pager`. Redact private information before sharing logs.
 
