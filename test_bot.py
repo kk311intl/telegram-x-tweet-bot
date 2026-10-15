@@ -16,6 +16,48 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_photo_urls_request_original_without_changing_other_hosts(self):
+        for source, expected in (
+            ("https://pbs.twimg.com/media/image.jpg", "https://pbs.twimg.com/media/image.jpg?name=orig"),
+            ("https://pbs.twimg.com/media/image.png:large", "https://pbs.twimg.com/media/image.png?name=orig"),
+            ("https://pbs.twimg.com/media/image?format=png&name=small", "https://pbs.twimg.com/media/image?format=png&name=orig"),
+            ("https://pbs.twimg.com/media/image.jpg?name=orig", "https://pbs.twimg.com/media/image.jpg?name=orig"),
+            ("https://pbs.twimg.com/profile_images/avatar.jpg", "https://pbs.twimg.com/profile_images/avatar.jpg"),
+            ("https://example.com/media/image.jpg", None),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(bot.original_photo_url(source), expected)
+
+    def test_video_selectors_keep_best_unknown_size_and_respect_custom_limit(self):
+        from yt_dlp import YoutubeDL
+        limit = 20_000_000
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "MAX_VIDEO_BYTES", limit), \
+             patch.object(bot, "media_files", return_value=[]), \
+             patch.object(bot, "run_command", return_value=MagicMock(stdout="", returncode=0)) as runner:
+            bot.download_media("https://x.com/example/status/123", Path(temporary), allow_cookies=False)
+        gallery, video = [call.args[0] for call in runner.call_args_list]
+        selector = video[video.index("--format") + 1]
+        self.assertIn("downloader.ytdl.format=" + selector, gallery)
+        self.assertIn(f"downloader.ytdl.filesize-max={limit}", gallery)
+        self.assertIn("extractor.twitter.size=orig", gallery)
+        self.assertEqual(video[video.index("--max-filesize") + 1], str(limit))
+        formats = [{"format_id": str(h), "url": f"https://example.com/{h}.mp4", "ext": "mp4",
+                    "height": h, "vcodec": "h264", "acodec": "aac"} for h in (270, 720, 1080)]
+        with YoutubeDL({"quiet": True}) as downloader:
+            select = downloader.build_format_selector(selector)
+            def chosen():
+                return [f["height"] for f in select({"formats": formats, "has_merged_format": True, "incomplete_formats": False})]
+            self.assertEqual(chosen(), [1080])
+            formats[-1]["filesize_approx"] = limit * 10
+            self.assertEqual(chosen(), [1080])
+            formats[-1]["filesize"] = limit + 1
+            self.assertEqual(chosen(), [720])
+            formats[1]["filesize"] = limit
+            self.assertEqual(chosen(), [720])
+            for fmt in formats:
+                fmt["filesize"] = limit + 1
+            self.assertEqual(chosen(), [])
+
     def test_report_defaults_to_midnight_and_preserves_explicit_hour(self):
         root = Path(__file__).parent
         env = dict(os.environ, BOT_TIMEZONE="UTC", DAILY_RESET_HOUR="0")

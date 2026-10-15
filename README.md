@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.8.2
+# Telegram X／Twitter 貼文媒體 Bot · v3.8.3
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -59,7 +59,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 內聯分享須在 BotFather 開啟 Inline Mode。Cookies 可由所有者匯入，普通用戶是否使用則由所有者開關控制。只在需要時匯入，建議使用獨立帳號；Cookies 是登入憑證，不要提交或轉傳。
 
-圖片與影片都會附上原始檔，混合貼文亦同；影片受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
+圖片向 X 請求原圖尺寸（`orig`），不以縮圖替代原檔；原圖並非一定有 4K。影片優先選擇下載上限內的高畫質版本，大小未知時先嘗試高畫質，下載時仍檢查上限。圖片與影片均附送下載檔案，混合貼文亦同；預覽可能另行縮放。影片仍受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或媒體超限時，可能只能取得部分內容。
 
 X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。Inline 分享不變。
 
@@ -153,7 +153,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 インライン共有には BotFather で Inline Mode を有効にしてください。Cookies は所有者が取り込み、一般ユーザーに使わせるかどうかも所有者が設定します。必要な場合だけ取り込み、専用アカウントの使用をお勧めします。Cookies はログインの認証情報なので、Git に入れたり他人に転送したりしないでください。
 
-画像と動画には、両方を含む投稿でも元ファイルを添付します。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
+画像は X の原寸版（`orig`）を要求し、縮小版を元ファイルとして添付しません。必ずしも4Kではありません。動画は容量制限内の高画質版を優先し、サイズ不明の場合も高画質から試しますが、ダウンロード時の容量制限は維持します。画像・動画とも取得したファイルを添付し、混在する投稿も同様です。プレビューは縮小される場合があります。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先の投稿までは取得しません。配信元の状況やサイズ制限によって、一部しか取得できない場合があります。
 
 X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。インライン共有は変更しません。
 
@@ -247,7 +247,7 @@ Default limit applies only to regular users approved afterwards. In Bulk change,
 
 Enable Inline Mode in BotFather for inline sharing. The owner can import cookies and control whether regular users may use them. Import them only when needed, preferably from a dedicated account. Cookies are login credentials: do not commit them or share them with others.
 
-Images and videos include the original files, including in mixed-media posts. Videos are subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
+Photos request X's original-size variant (`orig`), not a thumbnail substitute; this does not always mean 4K. Videos prioritize high-quality variants within the download limit. Unknown sizes do not force low quality, but download size checks still apply. Downloaded files accompany previews, including mixed-media posts; previews may be resized. Videos remain subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Source availability and size limits may prevent complete retrieval.
 
 X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews. Inline sharing is unchanged.
 

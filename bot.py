@@ -32,7 +32,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.2"
+APP_VERSION = "3.8.3"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -2676,6 +2676,9 @@ def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
             if formats:
                 candidate["url"] = formats[0]["url"]
         media_url = candidate.get("url")
+        if candidate["type"] == "photo":
+            media_url = original_photo_url(media_url)
+            candidate["url"] = media_url
         if isinstance(media_url, str) and media_url and media_url not in seen:
             seen.add(media_url)
             results.append(candidate)
@@ -2698,6 +2701,19 @@ def trusted_twimg_url(value: Any) -> str | None:
     ):
         return None
     return candidate
+
+
+def original_photo_url(value: Any) -> str | None:
+    url = trusted_twimg_url(value)
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.hostname != "pbs.twimg.com" or not parsed.path.startswith("/media/"):
+        return url
+    path = re.sub(r":(?:orig|large|medium|small|thumb|\d+x\d+)$", "", parsed.path)
+    query = [(key, val) for key, val in parse_qsl(parsed.query) if key != "name"]
+    query.append(("name", "orig"))
+    return urlunparse(parsed._replace(path=path, query=urlencode(query)))
 
 
 def trusted_twimg_response(
@@ -2919,6 +2935,8 @@ def download_fxtwitter_media(
             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
                 break
             media_url = trusted_twimg_url(candidate.get("url"))
+            if media_type == "photo":
+                media_url = original_photo_url(media_url)
             if not media_url or media_url in seen_urls:
                 continue
             seen_urls.add(media_url)
@@ -3086,6 +3104,10 @@ def video_dimensions(path: Path) -> tuple[int, int] | None:
 def download_media(
     url: str, directory: Path, allow_cookies: bool = True
 ) -> tuple[list[Path], str, bool]:
+    # Bitrate-based estimates can greatly exceed the actual MP4 size. Only use
+    # known sizes to exclude formats; downloaders still enforce the byte limit.
+    video_format = f"best[filesize<=?{MAX_VIDEO_BYTES}]"
+
     def run_extractor(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         try:
             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
@@ -3110,6 +3132,8 @@ def download_media(
         "-o",
         "extractor.twitter.videos=ytdl",
         "-o",
+        "extractor.twitter.size=orig",
+        "-o",
         "extractor.twitter.cards=true",
         "-o",
         "extractor.twitter.quoted=false",
@@ -3120,7 +3144,9 @@ def download_media(
         "-o",
         "extractor.twitter.ratelimit=abort:15",
         "-o",
-        "downloader.ytdl.format=best[filesize<45M]/best[filesize_approx<45M]/worst",
+        f"downloader.ytdl.format={video_format}",
+        "-o",
+        f"downloader.ytdl.filesize-max={MAX_VIDEO_BYTES}",
     ]
     result = run_extractor([*command, url])
     files = media_files(directory)
@@ -3146,7 +3172,7 @@ def download_media(
             "--merge-output-format",
             "mp4",
             "--format",
-            "best[filesize<45M]/best[filesize_approx<45M]/worst",
+            video_format,
             "--output",
             str(directory / "%(id)s.%(ext)s"),
         ]
