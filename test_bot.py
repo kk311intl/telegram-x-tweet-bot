@@ -12,10 +12,76 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import bot
+import video_downloader
 import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_video_fallback_never_accepts_audio_or_interrupted_candidates(self):
+        self.assertEqual(Path(video_downloader.__file__).parent, Path(bot.__file__).parent)
+        import yt_dlp
+        from video_downloader import YoutubeDL, VideoTooLarge
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            formats = [{"format_id": name, "url": f"https://example.com/{name}.mp4", "ext": "mp4",
+                        "vcodec": codec, "acodec": "aac"} for name, codec in (("audio", "none"), ("video", "h264"))]
+            with YoutubeDL({"quiet": True, "outtmpl": str(root / "%(id)s.%(ext)s")}) as downloader, \
+                 patch.object(yt_dlp.YoutubeDL, "process_info", side_effect=VideoTooLarge()) as attempt:
+                with self.assertRaises(yt_dlp.utils.DownloadError):
+                    downloader.process_info({"id": "test", "title": "test", "formats": formats, **formats[-1]})
+                self.assertEqual(attempt.call_count, 1)
+                self.assertFalse(downloader.params["skip_unavailable_fragments"])
+            hidden = root / ".video-interrupted"
+            hidden.mkdir()
+            for filename in ("unfinished.mp4", "unfinished.mp4.part-Frag1", "unfinished.temp.mp4"):
+                (hidden / filename).write_bytes(b"partial")
+            complete = root / "complete.mp4"
+            complete.write_bytes(b"complete")
+            self.assertEqual(bot.media_files(root), [complete])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
+    def test_ffmpeg_stream_limit_retries_without_accepting_truncated_video(self):
+        import functools
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from video_downloader import YoutubeDL
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name, source in (("high", "testsrc2=size=320x240:rate=24"), ("low", "color=size=128x72:rate=24")):
+                subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source, "-t", "5",
+                                "-c:v", "mpeg2video", "-f", "mpegts", str(root / f"{name}.ts")], check=True, timeout=30)
+                (root / f"{name}.m3u8").write_text(
+                    f"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\n{name}.ts\n#EXT-X-ENDLIST\n", encoding="utf-8")
+            class Handler(SimpleHTTPRequestHandler):
+                def log_message(self, *args):
+                    pass
+            with ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=folder)) as server:
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    formats = [{"format_id": name, "url": f"http://127.0.0.1:{server.server_port}/{name}.m3u8",
+                                "ext": "mp4", "height": height, "vcodec": "mpeg2video", "acodec": "none",
+                                "protocol": "m3u8"} for name, height in (("low", 72), ("high", 240))]
+                    progress = []
+                    with YoutubeDL({"quiet": True, "noprogress": True, "proxy": "", "max_filesize": 100000,
+                                    "external_downloader": {"default": "ffmpeg"},
+                                    "outtmpl": str(root / "output" / "%(id)s.%(ext)s"),
+                                    "progress_hooks": [lambda item: progress.append(item.get("downloaded_bytes", 0))]}) as downloader:
+                        info = {"id": "test", "title": "test", "formats": formats, **formats[-1]}
+                        downloader.process_info(info)
+                    self.assertEqual(info["height"], 72)
+                    self.assertGreater(max(progress), 100000)
+                    self.assertLess(max(progress), 150000)
+                    output = root / "output" / "test.mp4"
+                    self.assertLessEqual(output.stat().st_size, 100000)
+                    duration = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                     "-of", "default=noprint_wrappers=1:nokey=1", str(output)], text=True, timeout=10))
+                    self.assertGreaterEqual(duration, 4.9)
+                    self.assertFalse(list((root / "output").glob(".video-*")))
+                finally:
+                    server.shutdown()
+                    worker.join(timeout=5)
+
     def test_unknown_video_size_retries_cleanly_and_preserves_completed_media(self):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

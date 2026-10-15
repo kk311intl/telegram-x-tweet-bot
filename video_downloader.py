@@ -13,11 +13,17 @@ class VideoTooLarge(Exception):
 
 class YoutubeDL(yt_dlp.YoutubeDL):
     def __init__(self, params=None, *args, **kwargs):
-        super().__init__({**(params or {}), "buffersize": 65536, "noresizebuffer": True}, *args, **kwargs)
+        options = {**(params or {}), "buffersize": 65536, "noresizebuffer": True}
+        limit = min(int(options.get("max_filesize") or 50_000_000), 50_000_000)
+        # External FFmpeg only reports progress on completion. Stop its output
+        # just above our acceptance limit so a truncated file cannot pass.
+        options["external_downloader_args"] = {"ffmpeg_o": ["-flush_packets", "1", "-fs", str(limit + 1)]}
+        options["skip_unavailable_fragments"] = False
+        super().__init__(options, *args, **kwargs)
 
     def process_info(self, info):
         limit = min(int(self.params.get("max_filesize") or 50_000_000), 50_000_000)
-        formats = list(info.get("formats") or [info])
+        formats = [fmt for fmt in info.get("formats") or [info] if fmt.get("vcodec") != "none"]
         selector = self.build_format_selector(f"best[filesize<=?{limit}]")
         format_keys = {key for fmt in formats for key in fmt}
         metadata = {key: value for key, value in info.items() if key not in format_keys}
@@ -64,7 +70,6 @@ class YoutubeDL(yt_dlp.YoutubeDL):
                 self.to_screen("[download] Trying the next video quality")
             raise yt_dlp.utils.DownloadError("No video quality could be downloaded within the size limit")
         finally:
-            self.params["outtmpl"] = original_template
             self._progress_hooks[:] = original_hooks
 
 

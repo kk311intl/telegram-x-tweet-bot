@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.5"
+APP_VERSION = "3.8.6"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3004,6 +3004,7 @@ def media_files(directory: Path) -> list[Path]:
         for path in directory.rglob("*")
         if path.is_file() and path.suffix.lower() not in ignored
         and ".cache" not in path.relative_to(directory).parts
+        and not any(part.startswith(".video-") for part in path.relative_to(directory).parts)
     )
 
 
