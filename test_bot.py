@@ -16,6 +16,64 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_unknown_video_size_retries_cleanly_and_preserves_completed_media(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from video_downloader import YoutubeDL
+        from yt_dlp.utils import DownloadError
+
+        limit = int(os.environ.get("TEST_VIDEO_FALLBACK_LIMIT", "131072"))
+        requests_seen = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                requests_seen.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.end_headers()  # Deliberately omit Content-Length.
+                try:
+                    remaining = limit * 3 if self.path == "/high" else 1024
+                    while remaining:
+                        block = b"H" * min(65536, remaining) if self.path == "/high" else b"L" * remaining
+                        self.wfile.write(block)
+                        remaining -= len(block)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                with tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    (root / "photo.jpg").write_bytes(b"original photo")
+                    formats = [{"format_id": name, "url": f"http://127.0.0.1:{server.server_port}/{name}",
+                                "ext": "mp4", "height": height, "vcodec": "h264", "acodec": "aac",
+                                "protocol": "http"} for name, height in (("low", 720), ("high", 1080))]
+                    progress = []
+                    with YoutubeDL({"quiet": True, "noprogress": True, "max_filesize": limit,
+                                    "proxy": "", "outtmpl": str(root / "%(id)s.%(ext)s"),
+                                    "progress_hooks": [lambda item: progress.append(item.get("downloaded_bytes", 0))]}) as downloader:
+                        info = {"id": "video", "title": "video", "extractor": "test", "formats": formats, **formats[-1]}
+                        downloader.process_info(info)
+                        self.assertEqual(info["height"], 720)
+                        self.assertEqual((root / "video.mp4").read_bytes(), b"L" * 1024)
+                        self.assertEqual(requests_seen, ["/high", "/low"])
+                        self.assertGreater(max(progress), limit)
+                        self.assertLessEqual(max(progress), limit + 65536)
+                        self.assertFalse(list(root.glob(".video-*")))
+                        self.assertEqual((root / "photo.jpg").read_bytes(), b"original photo")
+                        info = {**info, "id": "oversized", "formats": [formats[-1]]}
+                        with self.assertRaises(DownloadError):
+                            downloader.process_info(info)
+                        self.assertFalse((root / "oversized.mp4").exists())
+                        self.assertFalse(list(root.glob(".video-*")))
+            finally:
+                server.shutdown()
+                worker.join(timeout=5)
+
     def test_photo_urls_request_original_without_changing_other_hosts(self):
         for source, expected in (
             ("https://pbs.twimg.com/media/image.jpg", "https://pbs.twimg.com/media/image.jpg?name=orig"),
@@ -39,6 +97,8 @@ class ReliabilityTests(unittest.TestCase):
         selector = video[video.index("--format") + 1]
         self.assertIn("downloader.ytdl.format=" + selector, gallery)
         self.assertIn(f"downloader.ytdl.filesize-max={limit}", gallery)
+        self.assertIn(f"downloader.ytdl.module={Path(bot.__file__).with_name('video_downloader.py')}", gallery)
+        self.assertEqual(video[:2], [sys.executable, str(Path(bot.__file__).with_name("video_downloader.py"))])
         self.assertIn("extractor.twitter.size=orig", gallery)
         self.assertEqual(video[video.index("--max-filesize") + 1], str(limit))
         formats = [{"format_id": str(h), "url": f"https://example.com/{h}.mp4", "ext": "mp4",

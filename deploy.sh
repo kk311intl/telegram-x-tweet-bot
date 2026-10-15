@@ -13,6 +13,7 @@ PROJECT_FILES=(
   README.md
   requirements.txt
   bot.py
+  video_downloader.py
   test_bot.py
   config_cli.py
   deploy.sh
@@ -83,7 +84,7 @@ trap cleanup_candidate EXIT
 )
 
 PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
-  "$SOURCE_DIR/bot.py" "$SOURCE_DIR/config_cli.py" "$SOURCE_DIR/test_bot.py"
+  "$SOURCE_DIR/bot.py" "$SOURCE_DIR/video_downloader.py" "$SOURCE_DIR/config_cli.py" "$SOURCE_DIR/test_bot.py"
 (
   cd "$SOURCE_DIR"
   PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m unittest -q test_bot.py
@@ -92,6 +93,7 @@ runuser -u x-tweet-bot -- "$candidate_venv/bin/python" -c 'import requests, PIL,
 
 deploy_targets=(
   "$INSTALL_DIR/bot.py"
+  "$INSTALL_DIR/video_downloader.py"
   "$INSTALL_DIR/test_bot.py"
   "$INSTALL_DIR/verify_deploy.sh"
   "$INSTALL_DIR/requirements.txt"
@@ -152,6 +154,7 @@ fi
 ln -s "$candidate_venv" "$INSTALL_DIR/venv"
 
 install -o root -g root -m 0755 "$SOURCE_DIR/bot.py" "$INSTALL_DIR/bot.py"
+install -o root -g root -m 0644 "$SOURCE_DIR/video_downloader.py" "$INSTALL_DIR/video_downloader.py"
 install -o root -g root -m 0644 "$SOURCE_DIR/test_bot.py" "$INSTALL_DIR/test_bot.py"
 install -o root -g root -m 0755 "$SOURCE_DIR/verify_deploy.sh" "$INSTALL_DIR/verify_deploy.sh"
 install -o root -g root -m 0755 "$SOURCE_DIR/config_cli.py" /usr/local/sbin/x-tweet-bot-config

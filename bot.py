@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -32,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.3"
+APP_VERSION = "3.8.4"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3147,6 +3148,8 @@ def download_media(
         f"downloader.ytdl.format={video_format}",
         "-o",
         f"downloader.ytdl.filesize-max={MAX_VIDEO_BYTES}",
+        "-o",
+        f"downloader.ytdl.module={Path(__file__).with_name('video_downloader.py')}",
     ]
     result = run_extractor([*command, url])
     files = media_files(directory)
@@ -3164,7 +3167,8 @@ def download_media(
 
     if not files:
         fallback = [
-            "/opt/x-tweet-telegram-bot/venv/bin/yt-dlp",
+            sys.executable,
+            str(Path(__file__).with_name("video_downloader.py")),
             "--no-config",
             "--no-playlist",
             "--max-filesize", str(MAX_VIDEO_BYTES),
