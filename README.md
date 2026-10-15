@@ -8,7 +8,7 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 
 不熟悉程式時，可把儲存庫連結和以下提示詞交給能讀檔、執行指令的 AI：
 
-> 請先讀這個儲存庫的 README、VERSION、bot.py、config_cli.py、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝目前 main 分支的程式。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
+> 請先讀這個儲存庫的 README、VERSION、bot.py、video_downloader.py、config_cli.py、requirements.txt、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝目前 main 分支的程式。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
 
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
@@ -61,7 +61,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 圖片向 X 請求原圖尺寸（`orig`），不以縮圖替代原檔；原圖並非一定有 4K。影片從高畫質開始，超過下載上限就清除暫存並嘗試下一級，匿名來源與混合貼文亦同；不重新壓縮。圖片與影片均附送下載檔案，預覽可能另行縮放。影片仍受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或所有版本均超限時，可能只能取得部分內容。
 
-X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。Inline 分享不變。
+X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。
 
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
@@ -102,7 +102,7 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 プログラミングに慣れていない場合は、ファイルを読んでコマンドを実行できる AI にリポジトリのリンクと次の指示を渡せます。
 
-> まず README、VERSION、bot.py、config_cli.py、deploy.sh、systemd のサービスファイル、テストを読んで、現在の main ブランチを私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
+> まず README、VERSION、bot.py、video_downloader.py、config_cli.py、requirements.txt、deploy.sh、systemd のサービスファイル、テストを読んで、現在の main ブランチを私の Debian／Ubuntu サーバーに導入する手順を案内してください。この Bot は Python、systemd、Telegram Bot API、gallery-dl／yt-dlp、Pillow で X/Twitter の単一投稿から本文とメディアを取得します。私はコードを書けないので、コマンドの意味と期待する結果を説明してください。接続方法、Bot Token、Telegram ユーザー ID など、足りない情報だけを尋ね、ほかは文書の初期値を使ってください。Bot の作成、ログイン承認、Token／Cookies の安全な入力、SSH 鍵の確認は私が行います。認証情報をチャットや Git に貼らせないでください。既存のサービスとデータを確認し、承認なしに既存環境を上書き・再起動したり、Webhook・ユーザーデータ・認証情報を初期化したりしないでください。今の構成を使い、作り直さないでください。最後にサービス、/start、公開投稿、4言語の画面を確認し、私が Telegram で本文とメディアの受信を確かめられるよう案内してください。未確認の作業は明示してください。
 
 X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
@@ -155,7 +155,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 画像は X の原寸版（`orig`）を要求し、縮小版で代用しません。必ずしも4Kではありません。動画は高画質から試し、容量制限を超えると一時ファイルを削除して次の画質に下げます。匿名取得や画像との混在でも同様で、再圧縮はしません。取得した画像・動画を添付し、プレビューは縮小される場合があります。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先までは取得しません。配信元が利用できない場合や全画質が上限を超える場合は、一部しか取得できないことがあります。
 
-X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。インライン共有は変更しません。
+X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。
 
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
@@ -196,7 +196,7 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 If you do not write code, give the repository link and this prompt to an AI that can read files and run commands:
 
-> First read the README, VERSION, bot.py, config_cli.py, deploy.sh, systemd service file and tests, then walk me through installing the current main branch on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
+> First read the README, VERSION, bot.py, video_downloader.py, config_cli.py, requirements.txt, deploy.sh, systemd service file and tests, then walk me through installing the current main branch on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
 
 Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
@@ -249,7 +249,7 @@ Enable Inline Mode in BotFather for inline sharing. The owner can import cookies
 
 Photos request X's original-size variant (`orig`), not a thumbnail substitute; this does not always mean 4K. Videos start at high quality. If a download exceeds the limit, its temporary files are removed before trying the next quality, including anonymous sources and mixed-media posts. Videos are not re-encoded. Downloaded files accompany previews, which may be resized. Videos remain subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Unavailable sources or variants that all exceed the limit may prevent complete retrieval.
 
-X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews. Inline sharing is unchanged.
+X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews.
 
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 
