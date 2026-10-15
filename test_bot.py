@@ -97,6 +97,8 @@ class ReliabilityTests(unittest.TestCase):
         selector = video[video.index("--format") + 1]
         self.assertIn("downloader.ytdl.format=" + selector, gallery)
         self.assertIn(f"downloader.ytdl.filesize-max={limit}", gallery)
+        self.assertNotIn("--filesize-max", gallery)
+        self.assertIn(f"downloader.http.filesize-max={max(bot.MAX_MEDIA_BYTES, limit)}", gallery)
         self.assertIn(f"downloader.ytdl.module={Path(bot.__file__).with_name('video_downloader.py')}", gallery)
         self.assertEqual(video[:2], [sys.executable, str(Path(bot.__file__).with_name("video_downloader.py"))])
         self.assertIn("extractor.twitter.size=orig", gallery)
@@ -4959,7 +4961,7 @@ class MediaTests(unittest.TestCase):
             command = runner.call_args.args[0]
             self.assertNotIn("--cookies", command)
             self.assertIn("extractor.twitter.quoted=false", command)
-            self.assertIn("--filesize-max", command)
+            self.assertIn(f"downloader.http.filesize-max={max(bot.MAX_MEDIA_BYTES, bot.MAX_VIDEO_BYTES)}", command)
             self.assertIn("1-10", command)
             self.assertEqual(runner.call_args.kwargs["directory"], Path(temporary))
             self.assertEqual(len(files), 1)

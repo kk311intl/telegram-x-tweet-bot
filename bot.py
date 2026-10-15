@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.4"
+APP_VERSION = "3.8.5"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3125,7 +3125,7 @@ def download_media(
         "/opt/x-tweet-telegram-bot/venv/bin/gallery-dl",
         "--ignore-config",
         "--range", "1-10",
-        "--filesize-max", str(max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)),
+        "-o", f"downloader.http.filesize-max={max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)}",
         "--directory",
         str(directory),
         "--filename",
