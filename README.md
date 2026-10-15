@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.9.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.9.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -39,7 +39,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 設定在 `/etc/x-tweet-telegram-bot.env`，僅 root 可讀；狀態在 `/var/lib/x-tweet-telegram-bot`。不要把這些檔案或其備份放進 Git。
 
-修改額度初值、聯絡連結、時區與排程、媒體大小、佇列上限、暫存限制或 Inline 快取時間後，執行 `sudo x-tweet-bot-config reload`。Bot 會暫停接收，等已接收的工作完成後一起套用；設定無效則不套用，最多等待 10 分鐘。命令逾時只代表未收到確認，不代表設定未套用。Bot 內已儲存的預設額度仍優先，既有用戶額度不變。時區／換日調整不會重算歷史統計。Token、身份與並行數仍需重啟。熱載入只傳遞白名單設定，不讓 Bot 讀取 root 的環境檔。
+修改額度初值、聯絡連結、時區與排程、媒體大小、佇列上限、暫存限制或 Inline 快取時間後，執行 `sudo x-tweet-bot-config reload`。Bot 會暫停接收，等已接收的工作完成後一起套用；設定無效則不套用，最多等待 10 分鐘。命令逾時或等待期間服務重啟時，結果未確認，不代表設定未套用；先確認服務再重試。Bot 內已儲存的預設額度仍優先，既有用戶額度不變。時區／換日調整不會重算歷史統計。Token、身份與並行數仍需重啟。熱載入只傳遞白名單設定，不讓 Bot 讀取 root 的環境檔。
 
 | 設定 | 預設 | 用途 |
 | --- | --- | --- |
@@ -135,7 +135,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 設定ファイルは `/etc/x-tweet-telegram-bot.env` にあり、root のみ読み取れます。状態データは `/var/lib/x-tweet-telegram-bot` に保存されます。これらのファイルやバックアップを Git に入れないでください。
 
-初期上限、問い合わせ先、タイムゾーン・時刻、メディアサイズ、キュー上限、一時ファイル制限、Inline キャッシュ時間を変更したら `sudo x-tweet-bot-config reload` を実行します。受付を一時停止し、受付済みの処理が終わってから一括適用します。不正な設定は適用せず、待機は最大10分です。コマンドの時間切れは確認応答が届かなかったことを示し、未適用とは限りません。Bot 内で保存した既定上限が優先され、既存ユーザーの上限は変わりません。タイムゾーン・日付切替の変更で過去の統計は再計算しません。Token、識別情報、並列数は再起動が必要です。許可した設定だけを渡し、Bot に root の環境ファイルは読ませません。
+初期上限、問い合わせ先、タイムゾーン・時刻、メディアサイズ、キュー上限、一時ファイル制限、Inline キャッシュ時間を変更したら `sudo x-tweet-bot-config reload` を実行します。受付を一時停止し、受付済みの処理が終わってから一括適用します。不正な設定は適用せず、待機は最大10分です。時間切れや待機中のサービス再起動では結果を確認できず、未適用とは限りません。サービスを確認してから再試行してください。Bot 内で保存した既定上限が優先され、既存ユーザーの上限は変わりません。タイムゾーン・日付切替の変更で過去の統計は再計算しません。Token、識別情報、並列数は再起動が必要です。許可した設定だけを渡し、Bot に root の環境ファイルは読ませません。
 
 | 設定 | 初期値 | 用途 |
 | --- | --- | --- |
@@ -231,7 +231,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 Settings are in `/etc/x-tweet-telegram-bot.env`, readable only by root. State is stored in `/var/lib/x-tweet-telegram-bot`. Do not put these files or their backups in Git.
 
-After changing the initial quota, contact URL, timezone/schedule, media sizes, queue limit, temporary-file limits or Inline cache lifetime, run `sudo x-tweet-bot-config reload`. Intake pauses until accepted jobs finish, then settings apply together. Invalid settings are rejected; waiting is limited to 10 minutes. A command timeout means no confirmation was received, not that settings were left unchanged. The saved in-bot quota default still takes priority, and existing quotas stay unchanged. Timezone/day-boundary changes do not recalculate historical statistics. Tokens, identity and worker counts still require a restart. Only allowlisted settings are passed to the bot; it cannot read root's environment file.
+After changing the initial quota, contact URL, timezone/schedule, media sizes, queue limit, temporary-file limits or Inline cache lifetime, run `sudo x-tweet-bot-config reload`. Intake pauses until accepted jobs finish, then settings apply together. Invalid settings are rejected; waiting is limited to 10 minutes. A timeout or service restart while waiting leaves the outcome unconfirmed, not necessarily unchanged; check the service before retrying. The saved in-bot quota default still takes priority, and existing quotas stay unchanged. Timezone/day-boundary changes do not recalculate historical statistics. Tokens, identity and worker counts still require a restart. Only allowlisted settings are passed to the bot; it cannot read root's environment file.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |

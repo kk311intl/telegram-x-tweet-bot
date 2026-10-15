@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.9.1"
+APP_VERSION = "3.9.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -3271,11 +3271,8 @@ class Bot:
         for job in self.acl.data["pending_jobs"].values():
             self.jobs.put_nowait(tuple(job))
         self.stop_event = threading.Event()
-        try:
-            with CONTROL_PATH.open("rb") as stream:
-                self.control_seen = stream.read(65537)
-        except OSError:
-            self.control_seen = b""
+        self.control_instance = os.environ.get("INVOCATION_ID") or os.urandom(16).hex()
+        self.control_seen = b""
         self.control_pending = None
         self.control_result = None
         self.control_result_retry_at = 0.0
@@ -3408,20 +3405,23 @@ class Bot:
             self.control_seen = raw
             try:
                 request = json.loads(raw) if len(raw) <= 65536 else None
-                if (not isinstance(request, dict)
-                        or request.get("action") not in {"reload", "drain", "resume"}
-                        or not isinstance(request.get("id"), str)
-                        or not re.fullmatch(r"[0-9a-f]{32}", request["id"])
-                        or type(request.get("expires")) not in (int, float)
-                        or not time.time() < request["expires"] <= time.time() + 610):
+                if not isinstance(request, dict):
                     raise ValueError("Invalid control request")
-                self.control_pending = {
-                    "id": request["id"], "action": request["action"],
-                    "deadline": time.monotonic() + request["expires"] - time.time(),
-                    "settings": request.get("settings"),
-                }
-                self.control_result = None
-                self.control_result_retry_at = 0.0
+                # A request may arrive before __init__; only this invocation may act on it.
+                if request.get("pid") == os.getpid() and request.get("instance") == self.control_instance:
+                    if (request.get("action") not in {"reload", "drain", "resume"}
+                            or not isinstance(request.get("id"), str)
+                            or not re.fullmatch(r"[0-9a-f]{32}", request["id"])
+                            or type(request.get("expires")) not in (int, float)
+                            or not time.time() < request["expires"] <= time.time() + 610):
+                        raise ValueError("Invalid control request")
+                    self.control_pending = {
+                        "id": request["id"], "action": request["action"],
+                        "deadline": time.monotonic() + request["expires"] - time.time(),
+                        "settings": request.get("settings"),
+                    }
+                    self.control_result = None
+                    self.control_result_retry_at = 0.0
             except (ValueError, TypeError):
                 LOG.warning("Invalid runtime control request ignored")
         request = self.control_pending
@@ -3446,7 +3446,8 @@ class Bot:
                         globals().update(settings)
                         with self.inline_cache_lock:
                             self.inline_cache.clear()
-                self.control_result = {"id": request["id"], "pid": os.getpid(), "ok": success}
+                self.control_result = {"id": request["id"], "pid": os.getpid(),
+                                       "instance": self.control_instance, "ok": success}
                 self.control_result_retry_at = 0.0
                 if action == "drain" and success:
                     request["handoff_deadline"] = time.monotonic() + CONTROL_HANDOFF_SECONDS

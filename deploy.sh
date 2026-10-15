@@ -226,15 +226,15 @@ sleep 3
 systemctl is-active --quiet "$SERVICE"
 [[ $(systemctl show "$SERVICE" -p MainPID --value) =~ ^[1-9][0-9]*$ ]]
 /usr/local/sbin/x-tweet-bot-config status
-trap - ERR INT TERM
+# Health checks passed: the candidate is now the live environment.
+trap - EXIT ERR INT TERM
 if [[ $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then
-  rm -rf -- "$rollback_dir"
+  rm -rf -- "$rollback_dir" || echo "Warning: could not remove old deployment files" >&2
 fi
 if [[ $previous_venv_target == "$INSTALL_DIR"/.venv-candidate.* && \
       $previous_venv_target != "$candidate_venv" ]]; then
-  rm -rf -- "$previous_venv_target"
+  rm -rf -- "$previous_venv_target" || echo "Warning: could not remove old virtual environment" >&2
 fi
-candidate_venv=""
 
 echo "service=$(systemctl is-active "$SERVICE")"
 echo "Configure later with: x-tweet-bot-config set-token"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -93,6 +94,23 @@ def restart() -> None:
     subprocess.run(["systemctl", "restart", "x-tweet-telegram-bot.service"], check=True)
 
 
+def service_identity() -> tuple[int, str]:
+    try:
+        output = subprocess.check_output([
+            "systemctl", "show", "x-tweet-telegram-bot.service",
+            "--property=MainPID,InvocationID,ActiveState",
+        ], text=True, stderr=subprocess.PIPE, timeout=10)
+        state = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        pid = int(state.get("MainPID", "0"))
+        instance = state.get("InvocationID", "")
+        if (pid > 0 and state.get("ActiveState") in {"active", "activating"}
+                and re.fullmatch(r"[0-9a-f]{32}", instance)):
+            return pid, instance
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    raise SystemExit("Could not verify a running Bot instance; outcome unconfirmed")
+
+
 def runtime_control(action: str, values: dict[str, str], *, deployment: bool = False) -> None:
     # The root-only environment file never becomes readable by the Bot.
     import fcntl
@@ -108,13 +126,9 @@ def runtime_control(action: str, values: dict[str, str], *, deployment: bool = F
                 fcntl.flock(deploy_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise SystemExit("Deployment is running; retry after it finishes") from None
-        pid = subprocess.check_output([
-            "systemctl", "show", "x-tweet-telegram-bot.service", "-p", "MainPID", "--value"
-        ], text=True).strip()
-        if not pid.isdigit() or int(pid) == 0:
-            raise SystemExit("Bot is not running")
+        pid, instance = service_identity()
         request = {"id": secrets.token_hex(16), "action": action,
-                   "expires": time.time() + 600}
+                   "pid": pid, "instance": instance, "expires": time.time() + 600}
         if action == "reload":
             request["settings"] = {key: values.get(key, default)
                                    for key, default in RELOAD_DEFAULTS.items()}
@@ -125,6 +139,7 @@ def runtime_control(action: str, values: dict[str, str], *, deployment: bool = F
             shutil.chown(CONTROL_PATH, user="root", group="x-tweet-bot")
             CONTROL_PATH.chmod(0o640)
         deadline = time.monotonic() + 600
+        identity_check_at = time.monotonic() + 5
         while time.monotonic() < deadline:
             current = json.loads(CONTROL_PATH.read_text(encoding="utf-8"))
             if not isinstance(current, dict) or current.get("id") != request["id"]:
@@ -133,7 +148,13 @@ def runtime_control(action: str, values: dict[str, str], *, deployment: bool = F
                 result = json.loads(CONTROL_RESULT_PATH.read_text(encoding="utf-8"))
             except (FileNotFoundError, ValueError):
                 result = {}
-            if isinstance(result, dict) and result.get("id") == request["id"] and result.get("pid") == int(pid):
+            acknowledged = (isinstance(result, dict) and result.get("id") == request["id"]
+                            and result.get("pid") == pid and result.get("instance") == instance)
+            if acknowledged or time.monotonic() >= identity_check_at:
+                if service_identity() != (pid, instance):
+                    raise SystemExit("Bot restarted; outcome unconfirmed. Retry against the current instance")
+                identity_check_at = time.monotonic() + 5
+            if acknowledged:
                 if not result.get("ok"):
                     raise SystemExit("Runtime request rejected or expired before completion")
                 if action == "drain" and result.get("handoff_deadline", 0) < time.monotonic() + 30:

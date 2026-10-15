@@ -25,7 +25,7 @@ class ReliabilityTests(unittest.TestCase):
                 service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
                 values = dict(bot.RELOAD_DEFAULTS, MAX_VIDEO_BYTES=2000000)
                 request = {"id": "a" * 32, "action": "reload", "expires": bot.time.time() + 60,
-                           "settings": values}
+                           "settings": values, "pid": os.getpid(), "instance": service.control_instance}
                 bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
                 service.jobs.put((1, 2, 3, "url"))
                 before = bot.MAX_VIDEO_BYTES
@@ -61,7 +61,8 @@ class ReliabilityTests(unittest.TestCase):
                 job = (200, 42, 200, "https://x.com/test/status/123")
                 self.assertTrue(store.consume(200, job=job)[0])
                 service = bot.Bot(MagicMock(), store)
-                request = {"id": "c" * 32, "action": "drain", "expires": bot.time.time() + 60}
+                request = {"id": "c" * 32, "action": "drain", "expires": bot.time.time() + 60,
+                           "pid": os.getpid(), "instance": service.control_instance}
                 bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
                 self.assertTrue(service.runtime_control_tick())
                 self.assertTrue(service.runtime_control_tick())
@@ -104,7 +105,7 @@ class ReliabilityTests(unittest.TestCase):
                             for key in bot.validate_runtime_settings(values)}):
                 service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
                 request = {"id": "f" * 32, "action": "reload", "expires": 1060,
-                           "settings": values}
+                           "settings": values, "pid": os.getpid(), "instance": service.control_instance}
                 bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
                 try:
                     with patch.object(bot.time, "time", return_value=1000), \
@@ -133,7 +134,7 @@ class ReliabilityTests(unittest.TestCase):
                 service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
                 service.inline_futures.add("busy")
                 bot.CONTROL_PATH.write_text(json.dumps({"id": "1" * 32, "action": "drain",
-                                                       "expires": 1060}), encoding="utf-8")
+                    "expires": 1060, "pid": os.getpid(), "instance": service.control_instance}), encoding="utf-8")
                 try:
                     with patch.object(bot.time, "time", return_value=1000), \
                          patch.object(bot.time, "monotonic", return_value=1000):
@@ -165,7 +166,7 @@ class ReliabilityTests(unittest.TestCase):
                 service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
                 service.inline_futures.add("busy")
                 bot.CONTROL_PATH.write_text(json.dumps({"id": "2" * 32, "action": "drain",
-                                                       "expires": 1060}), encoding="utf-8")
+                    "expires": 1060, "pid": os.getpid(), "instance": service.control_instance}), encoding="utf-8")
                 try:
                     with patch.object(bot.time, "time", return_value=1000), \
                          patch.object(bot.time, "monotonic", return_value=1000):
@@ -201,13 +202,171 @@ class ReliabilityTests(unittest.TestCase):
                  patch.object(config_cli, "open", side_effect=open_lock, create=True), \
                  patch.object(config_cli, "CONTROL_PATH", root / "control.json"), \
                  patch.object(config_cli, "CONTROL_RESULT_PATH", root / "result.json"), \
-                 patch.object(config_cli.subprocess, "check_output", return_value="123\n"), \
+                 patch.object(config_cli, "service_identity", return_value=(123, "a" * 32)), \
                  patch.object(config_cli.shutil, "chown"), \
                  patch.object(config_cli.time, "sleep", side_effect=replace_request) as waiting:
                 with self.assertRaisesRegex(SystemExit, "[Ss]uperseded") as error:
                     config_cli.runtime_control("drain", {})
                 self.assertNotIn("unchanged", str(error.exception))
                 self.assertEqual(waiting.call_count, 1)
+
+    def test_runtime_control_accepts_current_request_written_before_bot_initializes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            instance = "a" * 32
+            request = {"id": "b" * 32, "action": "drain", "expires": bot.time.time() + 60,
+                       "pid": os.getpid(), "instance": instance}
+            (root / "control.json").write_text(json.dumps(request), encoding="utf-8")
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"), \
+                 patch.dict(os.environ, {"INVOCATION_ID": instance}):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                try:
+                    self.assertTrue(service.runtime_control_tick())
+                    result = json.loads(bot.CONTROL_RESULT_PATH.read_text())
+                    self.assertTrue(result["ok"])
+                    for key in ("id", "pid", "instance"):
+                        self.assertEqual(result[key], request[key])
+                finally:
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_runtime_control_ignores_requests_for_another_process_or_invocation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"), \
+                 patch.dict(os.environ, {"INVOCATION_ID": "a" * 32}):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                try:
+                    for pid, instance in ((os.getpid() + 1, service.control_instance), (os.getpid(), "b" * 32)):
+                        with self.subTest(pid=pid, instance=instance):
+                            bot.CONTROL_PATH.write_text(json.dumps({"id": "c" * 32,
+                                "action": "drain", "expires": bot.time.time() + 60,
+                                "pid": pid, "instance": instance}), encoding="utf-8")
+                            self.assertFalse(service.runtime_control_tick())
+                            self.assertIsNone(service.control_pending)
+                            self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
+                    service.inline_futures.add("busy")
+                    request = {"id": "d" * 32, "action": "drain", "expires": bot.time.time() + 60,
+                               "pid": os.getpid(), "instance": service.control_instance}
+                    bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                    self.assertTrue(service.runtime_control_tick())
+                    pending = service.control_pending
+                    request.update(id="e" * 32, action="resume", instance="b" * 32)
+                    bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                    self.assertTrue(service.runtime_control_tick())
+                    self.assertIs(service.control_pending, pending)
+                    self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
+                finally:
+                    service.inline_futures.clear()
+                    service.inline_executor.shutdown(wait=True)
+
+    def test_runtime_control_cli_rechecks_instance_before_accepting_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            def open_lock(path, mode):
+                return (root / Path(path).name).open(mode)
+            def publish(path, text):
+                path.write_text(text, encoding="utf-8")
+                if acknowledged:
+                    result = json.loads(text)
+                    result.update(ok=True, handoff_deadline=1000)
+                    (root / "result.json").write_text(json.dumps(result), encoding="utf-8")
+            for replacement, acknowledged in ((identity, ack) for identity in
+                    ((124, "a" * 32), (123, "b" * 32)) for ack in (True, False)):
+                with self.subTest(replacement=replacement, acknowledged=acknowledged), \
+                     patch.dict(sys.modules, {"fcntl": MagicMock()}), \
+                     patch.object(config_cli, "open", side_effect=open_lock, create=True), \
+                     patch.object(config_cli, "CONTROL_PATH", root / "control.json"), \
+                     patch.object(config_cli, "CONTROL_RESULT_PATH", root / "result.json"), \
+                     patch.object(config_cli, "atomic_write_text", side_effect=publish), \
+                     patch.object(config_cli, "service_identity", side_effect=[(123, "a" * 32), replacement]), \
+                     patch.object(config_cli.time, "monotonic", side_effect=range(100)), \
+                     patch.object(config_cli.time, "sleep"), \
+                     patch.object(config_cli.shutil, "chown"), patch("builtins.print") as output:
+                    with self.assertRaisesRegex(SystemExit, "[Rr]estart|[Cc]hang|[Rr]eplac"):
+                        config_cli.runtime_control("drain", {})
+                    output.assert_not_called()
+
+    def test_runtime_control_service_identity_requires_running_pid_and_invocation(self):
+        for state, pid, instance in (("active", "123", "a" * 32), ("inactive", "0", ""),
+                                    ("activating", "123", "a" * 32), ("active", "0", "a" * 32),
+                                    ("active", "123", "invalid"), ("deactivating", "123", "a" * 32)):
+            with self.subTest(state=state, pid=pid, instance=instance), \
+                 patch.object(config_cli.subprocess, "check_output",
+                    return_value=f"MainPID={pid}\nInvocationID={instance}\nActiveState={state}\n") as query:
+                if state in {"active", "activating"} and pid == "123" and instance == "a" * 32:
+                    self.assertEqual(config_cli.service_identity(), (123, instance))
+                else:
+                    with self.assertRaises(SystemExit):
+                        config_cli.service_identity()
+                self.assertEqual(query.call_count, 1)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux flock and inherited file descriptors")
+    def test_runtime_control_real_locks_allow_resume_and_inherited_deployment_fd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            child = """import builtins, json, sys, time
+from pathlib import Path
+from unittest.mock import patch
+import bot
+import config_cli
+root, mode = Path(sys.argv[1]), sys.argv[2]
+write = config_cli.atomic_write_text
+def open_lock(path, mode):
+    return builtins.open(root / Path(path).name, mode)
+def publish(path, text):
+    write(path, text)
+    result = json.loads(text)
+    if result['action'] == 'resume':
+        result.update(ok=True)
+        write(root / 'result.json', json.dumps(result))
+with patch.object(config_cli, 'open', side_effect=open_lock, create=True), \\
+     patch.object(config_cli, 'CONTROL_PATH', root / 'control.json'), \\
+     patch.object(config_cli, 'CONTROL_RESULT_PATH', root / 'result.json'), \\
+     patch.object(config_cli, 'atomic_write_text', side_effect=publish), \\
+     patch.object(config_cli, 'service_identity', return_value=(123, 'a' * 32)), \\
+     patch.object(config_cli.shutil, 'chown'):
+    if mode == 'wait':
+        try:
+            config_cli.runtime_control('drain', {})
+        except SystemExit as error:
+            assert 'superseded' in str(error), str(error)
+        else:
+            raise AssertionError('drain was not cancelled')
+    else:
+        if mode == 'deployment':
+            try:
+                config_cli.runtime_control('resume', {})
+            except SystemExit as error:
+                assert 'Deployment is running' in str(error), str(error)
+            else:
+                raise AssertionError('exclusive deployment lock was ignored')
+        config_cli.runtime_control('resume', {}, deployment=mode == 'deployment')
+"""
+            command = [sys.executable, "-c", child, str(root)]
+            waiting = subprocess.Popen(command + ["wait"], cwd=Path(__file__).parent,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = bot.time.monotonic() + 5
+                while not (root / "control.json").exists() and bot.time.monotonic() < deadline:
+                    if waiting.poll() is not None:
+                        break
+                    bot.time.sleep(0.02)
+                self.assertTrue((root / "control.json").exists())
+                result = subprocess.run(command + ["resume"], cwd=Path(__file__).parent,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                stdout, stderr = waiting.communicate(timeout=5)
+                self.assertEqual(waiting.returncode, 0, stdout + stderr)
+            finally:
+                if waiting.poll() is None:
+                    waiting.kill()
+                    waiting.communicate()
+            result = subprocess.run(["bash", "-c", 'exec 9> "$1"; flock -n 9; shift; exec "$@"', "test",
+                str(root / "x-tweet-bot-deploy.lock"), *command, "deployment"],
+                cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_runtime_settings_validate_defaults_and_reject_secrets_or_invalid_values(self):
         self.assertIsInstance(bot.validate_runtime_settings(bot.RELOAD_DEFAULTS), dict)
@@ -236,7 +395,8 @@ class ReliabilityTests(unittest.TestCase):
                 try:
                     self.assertTrue(entered.wait(2))
                     bot.CONTROL_PATH.write_text(json.dumps({"id": "e" * 32,
-                        "action": "drain", "expires": bot.time.time() + 60}), encoding="utf-8")
+                        "action": "drain", "expires": bot.time.time() + 60,
+                        "pid": os.getpid(), "instance": service.control_instance}), encoding="utf-8")
                     self.assertTrue(service.runtime_control_tick())
                     self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
                     release.set()
@@ -632,12 +792,11 @@ class ReliabilityTests(unittest.TestCase):
     def test_deploy_keeps_config_health_check_inside_rollback_protection(self):
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
         health_check = script.index("/usr/local/sbin/x-tweet-bot-config status")
-        rollback_commit = script.index("trap - ERR INT TERM\nif [[ $rollback_dir")
+        rollback_commit = script.index("trap - EXIT ERR INT TERM")
         self.assertLess(health_check, rollback_commit)
-        self.assertLess(health_check, script.index('candidate_venv=""'))
         bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
         if Path(bash).exists():
-            checks = script.split("sleep 3\n", 1)[1].split("trap - ERR INT TERM\n", 1)[0]
+            checks = script.split("sleep 3\n", 1)[1].split("trap - EXIT ERR INT TERM\n", 1)[0]
             checks = checks.replace("/usr/local/sbin/x-tweet-bot-config status", "config_status")
             harness = """set -e
 SERVICE=test.service
@@ -648,6 +807,57 @@ trap rollback_deploy ERR
 """ + checks + "printf 'incorrectly_committed\\n'\n"
             result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, timeout=15)
             self.assertEqual((result.returncode, result.stdout.strip()), (1, "rolled_back"), result.stderr)
+
+    def test_deploy_cleanup_failure_or_termination_preserves_the_live_environment(self):
+        bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
+        if not Path(bash).exists():
+            self.skipTest("Bash is required")
+        script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
+        cleanup = "cleanup_candidate() {\n" + script.split("cleanup_candidate() {\n", 1)[1].split(
+            "\ntrap cleanup_candidate EXIT", 1)[0]
+        committed = script.split("/usr/local/sbin/x-tweet-bot-config status\n", 1)[1].split(
+            '\necho "service=', 1)[0]
+        harness = """set -u
+INSTALL_DIR="$PWD/install"
+candidate_venv="$INSTALL_DIR/.venv-candidate.live"
+previous_venv_target="$INSTALL_DIR/.venv-candidate.old"
+rollback_dir="$INSTALL_DIR/.deploy-rollback.test"
+swapped_venv=true
+draining=false
+mode=$1
+mkdir -p "$candidate_venv" "$previous_venv_target" "$rollback_dir"
+printf 'live\\n' > "$candidate_venv/marker"
+ln -s "$candidate_venv" "$INSTALL_DIR/venv"
+[[ -L "$INSTALL_DIR/venv" ]] || exit 77
+""" + cleanup + """
+(
+  set -e
+  trap cleanup_candidate EXIT
+  rm() {
+    if [[ ${@: -1} == "$rollback_dir" ]]; then
+      if [[ $mode == term ]]; then kill -TERM "$BASHPID"; fi
+      return 1
+    fi
+    command rm "$@"
+  }
+""" + committed + """
+)
+result=$?
+if [[ $mode == term ]]; then [[ $result == 143 ]] || exit 1
+else [[ $result == 0 ]] || exit 1; fi
+[[ -L "$INSTALL_DIR/venv" && -f "$INSTALL_DIR/venv/marker" ]] || exit 1
+printf 'preserved\\n'
+"""
+        for mode in ("failure", "term"):
+            with tempfile.TemporaryDirectory() as folder:
+                result = subprocess.run([bash, "-c", harness, "test", mode], cwd=folder,
+                                        capture_output=True, text=True, timeout=15)
+            if result.returncode == 77:
+                self.skipTest("POSIX symlinks are required")
+            with self.subTest(mode=mode):
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, "preserved"), result.stderr)
+                if mode == "failure":
+                    self.assertIn("Warning: could not remove old deployment files", result.stderr)
 
     def test_deploy_rollback_preserves_old_venv_before_and_after_swap(self):
         bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
