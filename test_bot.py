@@ -17,6 +17,163 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_message_reaction_follows_durable_job_lifecycle_and_recovery(self):
+        for restored, failed in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(restored=restored, failed=failed), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "acl.json"
+                store = bot.ACLStore(path, 100)
+                store.add(200)
+                job = (200, 42, 200, "https://x.com/test/status/123")
+                if restored:
+                    self.assertTrue(store.consume(200, job=job)[0])
+                    store = bot.ACLStore(path, 100)
+                api = MagicMock()
+                reaction_api = bot.TelegramAPI("YOUR_API_TOKEN")
+                reaction_api.call = MagicMock(side_effect=RuntimeError("reaction unavailable"))
+                service = bot.Bot(api, store)
+                events = []
+                def reaction(chat_id, message_id, emoji=None):
+                    self.assertEqual((chat_id, message_id), (200, 42))
+                    if emoji == "👀":
+                        self.assertTrue(bot.ACLStore(path, 100).data["pending_jobs"])
+                        self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+                        self.assertTrue(service.jobs.empty())
+                    reaction_api.set_reaction(chat_id, message_id, emoji)
+                    events.append(("reaction", emoji))
+                def process(*args):
+                    self.assertEqual(args, job)
+                    events.append(("process", None))
+                    if failed:
+                        raise RuntimeError("test failure")
+                finish = store.finish_job
+                def finish_job(*args):
+                    events.append(("finish", None))
+                    finish(*args)
+                api.set_reaction.side_effect = reaction
+                service.process_url = process
+                with patch.object(store, "finish_job", side_effect=finish_job), \
+                     patch.object(bot, "media_disk_available", return_value=True):
+                    if not restored:
+                        update = {"message": {"message_id": 42, "from": {"id": 200},
+                                              "chat": {"id": 200}, "text": job[3]}}
+                        service.handle_update(update)
+                        service.handle_update(update)
+                    service.worker.start()
+                    try:
+                        deadline = bot.time.monotonic() + 3
+                        while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                            bot.time.sleep(0.01)
+                        self.assertEqual(service.jobs.unfinished_tasks, 0)
+                    finally:
+                        service.stop()
+                        service.worker.join(2)
+                        service.inline_executor.shutdown(wait=True)
+                expected = [] if restored else [("reaction", "👀")]
+                self.assertEqual(events, expected + [("process", None), ("reaction", None), ("finish", None)])
+                self.assertFalse(store.data["pending_jobs"])
+                self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+                if failed:
+                    api.send_message.assert_called_once_with(200, bot.public_text("zh", "failed"), 42)
+                else:
+                    api.send_message.assert_not_called()
+
+    def test_rejected_or_unpersisted_jobs_do_not_show_working_reaction(self):
+        for reason in ("unauthorized", "banned", "paused", "quota", "queue", "disk", "storage"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as folder:
+                store = bot.ACLStore(Path(folder) / "acl.json", 100)
+                if reason != "unauthorized":
+                    store.add(200)
+                if reason == "banned":
+                    store.ban(200)
+                if reason == "paused":
+                    store.toggle_external_access(100)
+                if reason == "quota":
+                    store.set_quota(200, 1)
+                    store.consume(200)
+                service = bot.Bot(MagicMock(), store)
+                original = store.consume
+                def consume(*args, **kwargs):
+                    if reason == "storage":
+                        raise OSError("test storage failure")
+                    return original(*args, **kwargs)
+                with patch.object(bot, "media_disk_available", return_value=reason != "disk"), \
+                     patch.object(service.jobs, "qsize", return_value=bot.MAX_QUEUE if reason == "queue" else 0), \
+                     patch.object(store, "consume", side_effect=consume):
+                    update = {"message": {"message_id": 42, "from": {"id": 200}, "chat": {"id": 200},
+                                          "text": "https://x.com/test/status/123"}}
+                    if reason == "storage":
+                        with self.assertRaises(OSError):
+                            service.handle_update(update)
+                    else:
+                        service.handle_update(update)
+                service.api.set_reaction.assert_not_called()
+                self.assertFalse(store.data["pending_jobs"])
+                self.assertTrue(service.jobs.empty())
+                service.inline_executor.shutdown(wait=True)
+
+    def test_invalid_messages_react_without_charging_or_interfering_with_management(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = bot.ACLStore(Path(folder) / "acl.json", 100)
+            store.add(200)
+            service = bot.Bot(MagicMock(), store)
+            try:
+                for language in bot.PUBLIC_TEXT:
+                    store.set_language(200, language)
+                    for content in ({"text": "hello"}, {"text": "https://example.com/"},
+                                    {"photo": [{"file_id": "test"}]}, {"sticker": {"file_id": "test"}},
+                                    {"voice": {"file_id": "test"}}, {"document": {"file_id": "test"}}):
+                        with self.subTest(language=language, content=content):
+                            service.api.reset_mock()
+                            service.handle_update({"message": {"message_id": 42, "from": {"id": 200},
+                                                               "chat": {"id": 200}, **content}})
+                            service.api.set_reaction.assert_called_once_with(200, 42, "🤔")
+                            service.api.send_message.assert_not_called()
+                            self.assertEqual(store.data["users"]["200"]["usage_count"], 0)
+                            self.assertFalse(store.data["pending_jobs"])
+                            self.assertTrue(service.jobs.empty())
+                service.api.reset_mock()
+                for user_id in (100, 200):
+                    for text in ("/start", "/help"):
+                        service.handle_update({"message": {"message_id": 43, "from": {"id": user_id},
+                                                           "chat": {"id": user_id}, "text": text}})
+                service.pending_user_searches.add(100)
+                service.handle_update({"message": {"message_id": 44, "from": {"id": 100},
+                                                   "chat": {"id": 100}, "text": "200"}})
+                with patch.object(service, "handle_document") as upload:
+                    service.handle_update({"message": {"message_id": 45, "from": {"id": 100},
+                        "chat": {"id": 100}, "document": {"file_id": "test"}}})
+                    upload.assert_called_once_with(100, 45, 100, {"file_id": "test"})
+                service.api.set_reaction.assert_not_called()
+            finally:
+                service.inline_executor.shutdown(wait=True)
+
+    def test_reactions_are_best_effort_with_short_timeout_and_no_rate_limit_retry(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        session = MagicMock()
+        api.local.session = session
+        for emoji in ("👀", "🤔", None):
+            response = MagicMock(status_code=200)
+            response.json.return_value = {"ok": True, "result": True}
+            session.post.return_value = response
+            self.assertIsNone(api.set_reaction(200, 42, emoji))
+            args, kwargs = session.post.call_args
+            self.assertTrue(args[0].endswith("/setMessageReaction"))
+            self.assertEqual(kwargs["timeout"], (2, 3))
+            self.assertEqual(kwargs["data"]["chat_id"], 200)
+            self.assertEqual(kwargs["data"]["message_id"], 42)
+            self.assertEqual(json.loads(kwargs["data"]["reaction"]),
+                             [{"type": "emoji", "emoji": emoji}] if emoji else [])
+        for status in (400, 403, 429, 503, "timeout"):
+            with self.subTest(status=status), patch.object(bot.time, "sleep") as sleep:
+                session.reset_mock()
+                response = MagicMock(status_code=status)
+                response.json.return_value = {"ok": False, "parameters": {"retry_after": 1}}
+                session.post.return_value = response
+                session.post.side_effect = bot.requests.Timeout("test timeout") if status == "timeout" else None
+                self.assertIsNone(api.set_reaction(200, 42, "👀"))
+                session.post.assert_called_once()
+                sleep.assert_not_called()
+
     def test_runtime_reload_waits_for_jobs_and_inline_then_applies_atomically(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -3550,7 +3707,7 @@ class MenuTests(unittest.TestCase):
             self.assertNotIn("1日上限", public_copy)
             self.assertNotIn("00:00", public_copy)
 
-    def test_regular_user_document_feedback_is_localized(self):
+    def test_regular_user_document_feedback_uses_same_reaction_in_all_languages(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.set_quota(200, 50)
@@ -3565,10 +3722,8 @@ class MenuTests(unittest.TestCase):
                     "chat": {"id": 200},
                     "document": {"file_id": "not-a-cookie"},
                 }})
-                self.assertEqual(
-                    api.send_message.call_args.args[1],
-                    bot.public_text(language, "url_only"),
-                )
+                api.send_message.assert_not_called()
+                api.set_reaction.assert_called_once_with(200, 10, "🤔")
 
     def test_authorized_regular_user_hidden_command_shows_localized_guide(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4284,10 +4439,8 @@ class MenuTests(unittest.TestCase):
                     "text": "hello",
                 }
             })
-            self.assertEqual(
-                api.send_message.call_args.args[1],
-                bot.public_text("zh", "invalid_url"),
-            )
+            api.send_message.assert_not_called()
+            api.set_reaction.assert_called_once_with(200, 11, "🤔")
 
             api.reset_mock()
             service.handle_callback({
@@ -4392,7 +4545,8 @@ class MenuTests(unittest.TestCase):
             })
 
             self.assertNotIn("50", store.data["users"])
-            self.assertIn("有效的 X/Twitter", api.send_message.call_args.args[1])
+            api.send_message.assert_not_called()
+            api.set_reaction.assert_called_once_with(100, 10, "🤔")
 
     def test_owner_numeric_quota_change_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as temporary:

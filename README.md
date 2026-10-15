@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.9.2
+# Telegram X／Twitter 貼文媒體 Bot · v3.10.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -11,6 +11,8 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 > 請先讀這個儲存庫的 README、VERSION、bot.py、video_downloader.py、config_cli.py、requirements.txt、deploy.sh、systemd 服務檔及測試，再帶我在自己的 Debian／Ubuntu 主機安裝目前 main 分支的程式。這個 Bot 用 Python、systemd、Telegram Bot API、gallery-dl／yt-dlp 和 Pillow 取得 X/Twitter 單篇貼文的文字與媒體。我不會寫程式，請解釋命令及預期結果，只問尚缺的主機登入方式、Bot Token、Telegram 用戶 ID 等必要資料，其餘使用文件預設。建立 Bot、登入授權、安全輸入 Token／Cookies 和確認 SSH 金鑰由我親自完成；不要讓我把憑證貼到聊天或 Git。先檢查既有服務與資料，未經確認不得覆寫、重啟或重設已有部署、Webhook、用戶資料或憑證。沿用現有程式，不改寫架構。最後檢查服務、/start、公開貼文及四種介面語言，帶我在 Telegram 確認收到文字與媒體；無法驗證的步驟請明說。
 
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
+
+已接收的貼文會在原訊息加上 👀，處理結束後移除；無法識別的一般內容則標示 🤔。
 
 以下指令使用 main 的最新程式。GitHub 的「Latest Release」只代表最近一次正式發布，可能落後於 main；Release 說明與 tag 對應當時版本。
 
@@ -108,6 +110,8 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
+受け付けた投稿のメッセージに 👀 を付け、処理が終わると外します。通常の入力で内容を認識できない場合は 🤔 を付けます。
+
 ### 導入
 
 Debian／Ubuntu、systemd、git、Python 3.10+、root または sudo 権限が必要です。サーバーから Telegram とメディア配信元に接続できる必要があります。導入スクリプトは Python 3.12 と不足している ffmpeg を用意し、別の環境でテストしてから切り替えます。サービスや設定の確認に失敗した場合はプログラムを元に戻します。ロングポーリングを使うため、Webhook や受信ポートの開放は不要です。
@@ -203,6 +207,8 @@ If you do not write code, give the repository link and this prompt to an AI that
 > First read the README, VERSION, bot.py, video_downloader.py, config_cli.py, requirements.txt, deploy.sh, systemd service file and tests, then walk me through installing the current main branch on my Debian/Ubuntu server. This bot uses Python, systemd, the Telegram Bot API, gallery-dl/yt-dlp and Pillow to retrieve text and media from a single X/Twitter post. I do not write code, so explain the commands and expected results. Ask only for missing server access, the bot token, my Telegram user ID or other required information; use the documented defaults otherwise. I will create the bot, approve logins, enter tokens/cookies securely and confirm SSH keys myself. Do not ask me to paste credentials into chat or Git. Check existing services and data first; do not overwrite, restart or reset an existing deployment, webhook, user data or credentials without approval. Use the project as it is, without redesigning it. Check the service, /start, a public post and all four interface languages, and guide me through confirming text and media reception in Telegram. Say clearly when a step could not be verified.
 
 Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
+
+Accepted posts get a 👀 reaction on the original message, removed when processing ends. Unrecognized ordinary input gets a 🤔 reaction.
 
 ### Deploy
 

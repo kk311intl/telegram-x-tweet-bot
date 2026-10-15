@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.9.2"
+APP_VERSION = "3.10.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -311,7 +311,6 @@ PUBLIC_TEXT = {
         "apply_allowed": "已获取使用权限。",
         "apply_auto_approved": "申请已通过，可以开始使用。",
         "service_paused": "目前暂停使用，请稍后再试。",
-        "invalid_url": "请发送有效的 X/Twitter 单篇推文链接。",
         "queue_full": "目前较忙，请稍后再试。",
         "quota": "今日使用已达到预设上限，请稍后再试或联系管理员。",
         "approved": "申请已通过，可以开始使用。",
@@ -348,7 +347,6 @@ PUBLIC_TEXT = {
         "apply_allowed": "已取得使用權限。",
         "apply_auto_approved": "申請已通過，可以開始使用。",
         "service_paused": "目前暫停使用，請稍後再試。",
-        "invalid_url": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "queue_full": "目前較忙，請稍後再試。",
         "quota": "今日使用已達到預設上限，請稍後再試或聯繫管理員。",
         "approved": "申請已通過，可以開始使用。",
@@ -385,7 +383,6 @@ PUBLIC_TEXT = {
         "apply_allowed": "You already have access.",
         "apply_auto_approved": "Access approved. You can start using the bot.",
         "service_paused": "Service temporarily paused. Try again later.",
-        "invalid_url": "Send a valid single-post X/Twitter URL.",
         "queue_full": "The bot is busy. Try again later.",
         "quota": "You have reached the preset usage limit for today. Try again later or contact an administrator.",
         "approved": "Access approved. You can start using the bot.",
@@ -422,7 +419,6 @@ PUBLIC_TEXT = {
         "apply_allowed": "すでに利用が許可されています。",
         "apply_auto_approved": "申請が承認されました。利用を開始できます。",
         "service_paused": "利用を一時停止しています。しばらくしてから再試行してください。",
-        "invalid_url": "有効な X/Twitter の単一投稿URLを送信してください。",
         "queue_full": "ただいま混み合っています。しばらくしてから再試行してください。",
         "quota": "本日の利用回数が設定された上限に達しました。しばらくしてから再試行するか、管理者にお問い合わせください。",
         "approved": "申請が承認されました。利用を開始できます。",
@@ -2092,7 +2088,7 @@ class TelegramAPI:
                 if response.status_code >= 400:
                     raise TelegramAPIError(method, response.status_code)
                 raise RuntimeError(f"Telegram {method} returned an invalid response")
-            if response.status_code == 429 and attempt == 0 and method != "sendChatAction":
+            if response.status_code == 429 and attempt == 0 and method not in {"sendChatAction", "setMessageReaction"}:
                 parameters = payload.get("parameters")
                 retry_after = parameters.get("retry_after", 0) if isinstance(parameters, dict) else 0
                 try:
@@ -2287,6 +2283,16 @@ class TelegramAPI:
             # Chat actions are cosmetic. A transient Telegram failure must not
             # abort media retrieval or consume the user's request without output.
             LOG.warning("Could not send Telegram chat action: %s", error)
+
+    def set_reaction(self, chat_id: int, message_id: int, emoji: str | None = None) -> None:
+        try:
+            self.call("setMessageReaction", {
+                "chat_id": chat_id, "message_id": message_id,
+                "reaction": json.dumps([{"type": "emoji", "emoji": emoji}] if emoji else []),
+            }, timeout=(2, 3))
+        except RuntimeError as error:
+            # Reactions are cosmetic; unavailable reactions must not block a job.
+            LOG.debug("Could not update Telegram reaction: %s", error)
 
     def answer_callback(self, callback_id: str, text: str, alert: bool = False) -> None:
         data = {
@@ -3509,20 +3515,16 @@ class Bot:
             if is_admin:
                 self.handle_document(chat_id, message_id, user_id, document)
             else:
-                self.api.send_message(
-                    chat_id,
-                    public_text(language, "url_only"),
-                    message_id,
-                    start_keyboard(
-                        language,
-                        is_admin,
-                        self.acl.is_allowed(user_id),
-                    ),
-                )
+                self.api.set_reaction(chat_id, message_id, "🤔")
             return
 
         text = str(message.get("text", "")).strip()
         if not text:
+            if any(key in message for key in (
+                "photo", "video", "animation", "audio", "voice", "video_note",
+                "sticker", "contact", "location", "venue", "poll", "dice",
+            )):
+                self.api.set_reaction(chat_id, message_id, "🤔")
             return
 
         if is_admin and text in OWNER_BUTTONS:
@@ -3796,7 +3798,7 @@ class Bot:
 
         url = normalize_status_url(text)
         if not url:
-            self.api.send_message(chat_id, public_text(language, "invalid_url"), message_id)
+            self.api.set_reaction(chat_id, message_id, "🤔")
             return
         if not is_admin and not self.acl.external_access_enabled:
             self.api.send_message(
@@ -3820,6 +3822,7 @@ class Bot:
                 message_id,
             )
             return
+        self.api.set_reaction(chat_id, message_id, "👀")
         self.jobs.put_nowait(job)
 
     def consume_inline_once(self, user_id: int, url: str) -> bool:
@@ -5026,6 +5029,8 @@ class Bot:
                 except Exception:
                     LOG.exception("Tweet processing failed")
                     needs_notice = True
+                finally:
+                    self.api.set_reaction(chat_id, message_id)
                 # Retry the failure notice, not partially delivered media. Keep
                 # the durable job on shutdown so the next start can recover it.
                 while True:
