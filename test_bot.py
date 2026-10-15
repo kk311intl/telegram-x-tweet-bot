@@ -17,6 +17,101 @@ import config_cli
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_runtime_reload_waits_for_jobs_and_inline_then_applies_atomically(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"), \
+                 patch.object(bot, "MAX_VIDEO_BYTES", bot.MAX_VIDEO_BYTES):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                values = dict(bot.RELOAD_DEFAULTS, MAX_VIDEO_BYTES=2000000)
+                request = {"id": "a" * 32, "action": "reload", "expires": bot.time.time() + 60,
+                           "settings": values}
+                bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                service.jobs.put((1, 2, 3, "url"))
+                before = bot.MAX_VIDEO_BYTES
+                self.assertTrue(service.runtime_control_tick())
+                self.assertEqual(bot.MAX_VIDEO_BYTES, before)
+                service.jobs.get_nowait()
+                service.jobs.task_done()
+                service.inline_futures.add("busy")
+                self.assertTrue(service.runtime_control_tick())
+                service.inline_futures.clear()
+                # Restore all globals even if deployment environment differs.
+                with patch.dict(bot.__dict__, {key: bot.__dict__[key]
+                                for key in bot.validate_runtime_settings(values)}):
+                    self.assertFalse(service.runtime_control_tick())
+                    self.assertEqual(bot.MAX_VIDEO_BYTES, 2000000)
+                    self.assertTrue(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                    request["id"] = "b" * 32
+                    request["settings"]["MAX_VIDEO_BYTES"] = 50000001
+                    bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                    self.assertFalse(service.runtime_control_tick())
+                    self.assertEqual(bot.MAX_VIDEO_BYTES, 2000000)
+                    self.assertFalse(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                service.inline_executor.shutdown(wait=True)
+
+    def test_drain_waits_and_resumes_without_losing_durable_jobs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                request = {"id": "c" * 32, "action": "drain", "expires": bot.time.time() + 60}
+                bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                self.assertTrue(service.runtime_control_tick())
+                self.assertTrue(service.runtime_control_tick())
+                self.assertFalse(service.stop_event.is_set())
+                service.control_pending["expires"] = 0
+                self.assertFalse(service.runtime_control_tick())
+                self.assertFalse(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                request.update(id="d" * 32, action="resume")
+                bot.CONTROL_PATH.write_text(json.dumps(request), encoding="utf-8")
+                self.assertFalse(service.runtime_control_tick())
+                self.assertTrue(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                # Restart must ignore old control requests.
+                replacement = bot.Bot(MagicMock(), service.acl)
+                self.assertFalse(replacement.runtime_control_tick())
+                service.inline_executor.shutdown(wait=True)
+                replacement.inline_executor.shutdown(wait=True)
+
+    def test_runtime_settings_reject_secrets_and_invalid_values(self):
+        for extra in ({"BOT_TOKEN": "not-a-token"}, {"MAX_QUEUE": True},
+                      {"BOT_TIMEZONE": "../invalid"}, {"OWNER_CONTACT_URL": "javascript:bad"}):
+            with self.assertRaises(ValueError):
+                bot.validate_runtime_settings(dict(bot.RELOAD_DEFAULTS, **extra))
+
+    def test_drain_allows_running_worker_to_finish_before_acknowledging(self):
+        import threading
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(bot, "CONTROL_PATH", root / "control.json"), \
+                 patch.object(bot, "CONTROL_RESULT_PATH", root / "result.json"):
+                service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+                entered, release = threading.Event(), threading.Event()
+                def process(*_args):
+                    entered.set()
+                    release.wait(5)
+                service.process_url = process
+                service.jobs.put((1, 2, 100, "https://example.com"))
+                service.worker.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    bot.CONTROL_PATH.write_text(json.dumps({"id": "e" * 32,
+                        "action": "drain", "expires": bot.time.time() + 60}), encoding="utf-8")
+                    self.assertTrue(service.runtime_control_tick())
+                    self.assertFalse(bot.CONTROL_RESULT_PATH.exists())
+                    release.set()
+                    service.jobs.join()
+                    self.assertTrue(service.runtime_control_tick())
+                    self.assertTrue(json.loads(bot.CONTROL_RESULT_PATH.read_text())["ok"])
+                    self.assertTrue(service.worker.is_alive())
+                finally:
+                    release.set()
+                    service.stop()
+                    service.worker.join(6)
+                    service.inline_executor.shutdown(wait=True)
+
     def test_video_fallback_never_accepts_audio_or_interrupted_candidates(self):
         self.assertEqual(Path(video_downloader.__file__).parent, Path(bot.__file__).parent)
         import yt_dlp

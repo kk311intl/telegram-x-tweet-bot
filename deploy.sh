@@ -25,6 +25,8 @@ if [[ $EUID -ne 0 ]]; then
   echo "Run as root" >&2
   exit 1
 fi
+exec 9>/run/lock/x-tweet-bot-deploy.lock
+flock -n 9 || { echo "Another deployment is running" >&2; exit 1; }
 
 if [[ -f "$PROJECT_DIR/VERSION" ]] && \
    [[ "$(<"$PROJECT_DIR/VERSION")" == "$(<"$SOURCE_DIR/VERSION")" ]]; then
@@ -90,6 +92,11 @@ PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m py_compile \
   PYTHONPATH="$SOURCE_DIR" "$candidate_venv/bin/python" -m unittest -q test_bot.py
 )
 runuser -u x-tweet-bot -- "$candidate_venv/bin/python" -c 'import requests, PIL, yt_dlp, gallery_dl'
+
+if systemctl is-active --quiet "$SERVICE" && \
+   grep -q '^def runtime_control(' /usr/local/sbin/x-tweet-bot-config; then
+  /usr/local/sbin/x-tweet-bot-config drain
+fi
 
 deploy_targets=(
   "$INSTALL_DIR/bot.py"

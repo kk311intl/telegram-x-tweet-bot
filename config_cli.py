@@ -8,6 +8,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -18,7 +19,8 @@ COOKIE_PATH = Path("/var/lib/x-tweet-telegram-bot/cookies.txt")
 COOKIE_ALERT_PATH = Path("/var/lib/x-tweet-telegram-bot/cookie-alert.json")
 APP_DIR = Path("/opt/x-tweet-telegram-bot")
 sys.path.insert(0, str(APP_DIR))
-from bot import ACLStore, atomic_write_text, validate_cookie_file, MAX_COOKIE_BYTES
+from bot import (ACLStore, atomic_write_text, validate_cookie_file, MAX_COOKIE_BYTES,
+                 RELOAD_DEFAULTS, validate_runtime_settings, CONTROL_PATH, CONTROL_RESULT_PATH)
 
 
 def load_env() -> dict[str, str]:
@@ -91,6 +93,40 @@ def restart() -> None:
     subprocess.run(["systemctl", "restart", "x-tweet-telegram-bot.service"], check=True)
 
 
+def runtime_control(action: str, values: dict[str, str]) -> None:
+    # The root-only environment file never becomes readable by the Bot.
+    import fcntl
+    with open("/run/lock/x-tweet-bot-control.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pid = subprocess.check_output([
+            "systemctl", "show", "x-tweet-telegram-bot.service", "-p", "MainPID", "--value"
+        ], text=True).strip()
+        if not pid.isdigit() or int(pid) == 0:
+            raise SystemExit("Bot is not running")
+        request = {"id": secrets.token_hex(16), "action": action,
+                   "expires": time.time() + 600}
+        if action == "reload":
+            request["settings"] = {key: values.get(key, default)
+                                   for key, default in RELOAD_DEFAULTS.items()}
+            validate_runtime_settings(request["settings"])
+        atomic_write_text(CONTROL_PATH, json.dumps(request))
+        shutil.chown(CONTROL_PATH, user="root", group="x-tweet-bot")
+        CONTROL_PATH.chmod(0o640)
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            try:
+                result = json.loads(CONTROL_RESULT_PATH.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                result = {}
+            if result.get("id") == request["id"] and result.get("pid") == int(pid):
+                if not result.get("ok"):
+                    raise SystemExit("Runtime request rejected or expired; configuration unchanged")
+                print(f"{action}=ok")
+                return
+            time.sleep(0.2)
+        raise SystemExit("Runtime request timed out; intake resumes automatically after expiry")
+
+
 def default_limit_status(values: dict[str, str], state: dict) -> tuple[int, str]:
     if "default_daily_limit" in state:
         limit = state["default_daily_limit"]
@@ -143,7 +179,9 @@ def main() -> int:
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
     values = load_env()
 
-    if command == "set-token":
+    if command in ("reload", "drain", "resume"):
+        runtime_control(command, values)
+    elif command == "set-token":
         token = getpass.getpass("Telegram Bot Token: ").strip()
         if ":" not in token or len(token) < 30:
             raise SystemExit("Token format is invalid")
@@ -267,7 +305,7 @@ def main() -> int:
     else:
         raise SystemExit(
             "Commands: status, set-token, set-owner, set-cookies, clear-cookies, "
-            "new-claim-code, refresh-identity, export-access, import-access"
+            "new-claim-code, refresh-identity, export-access, import-access, reload, drain, resume"
         )
     return 0
 

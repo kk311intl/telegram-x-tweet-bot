@@ -33,7 +33,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.8.6"
+APP_VERSION = "3.9.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -107,6 +107,56 @@ INLINE_CACHE_SECONDS = env_int("INLINE_CACHE_SECONDS", 60, 0, 3600)
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
 DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 0, 0, 23)
 DAILY_RESET_HOUR = env_int("DAILY_RESET_HOUR", 0, 0, 23)
+
+# Only non-secret, scalar settings may change between jobs. Executors and
+# identity remain restart-only. Defaults are captured before any reload.
+RELOAD_LIMITS = {
+    "MAX_QUEUE": (1, 100), "MAX_MEDIA_BYTES": (1024 ** 2, 50_000_000),
+    "MAX_VIDEO_BYTES": (1024 ** 2, 50_000_000),
+    "MAX_TOTAL_BYTES": (1024 ** 2, 500 * 1024 ** 2),
+    "MIN_FREE_DISK_BYTES": (64 * 1024 ** 2, 20 * 1024 ** 3),
+    "TEMP_SOFT_LIMIT_BYTES": (64 * 1024 ** 2, 100 * 1024 ** 3),
+    "TEMP_RETENTION_HOURS": (1, 720), "DEFAULT_DAILY_LIMIT": (1, 100000),
+    "INLINE_CACHE_SECONDS": (0, 3600),
+    "DAILY_REPORT_HOUR": (0, 23), "DAILY_RESET_HOUR": (0, 23),
+}
+RELOAD_DEFAULTS = {key: globals()[key] for key in RELOAD_LIMITS}
+RELOAD_DEFAULTS.update(OWNER_CONTACT_URL=OWNER_CONTACT_URL, BOT_TIMEZONE=BOT_TIMEZONE_NAME)
+CONTROL_PATH = Path("/etc/x-tweet-telegram-bot/control.json")
+CONTROL_RESULT_PATH = STATE_DIR / "control-result.json"
+
+
+def validate_runtime_settings(values: dict) -> dict:
+    if not isinstance(values, dict) or set(values) != set(RELOAD_DEFAULTS):
+        raise ValueError("Invalid runtime setting keys")
+    result = {}
+    for key, (minimum, maximum) in RELOAD_LIMITS.items():
+        value = values[key]
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError(f"Invalid {key}")
+        try:
+            number = int(value)
+        except ValueError:
+            raise ValueError(f"Invalid {key}") from None
+        if not minimum <= number <= maximum:
+            raise ValueError(f"Invalid {key}")
+        result[key] = number
+    name = values["BOT_TIMEZONE"]
+    if not isinstance(name, str):
+        raise ValueError("Invalid BOT_TIMEZONE")
+    try:
+        result["BOT_TIMEZONE"] = timezone.utc if name == "UTC" else ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("Invalid BOT_TIMEZONE") from None
+    result["BOT_TIMEZONE_NAME"] = name
+    contact = values["OWNER_CONTACT_URL"]
+    if not isinstance(contact, str) or len(contact) > 2048 or (
+        contact and (urlparse(contact).scheme != "https" or not urlparse(contact).netloc
+                     or any(char.isspace() for char in contact))
+    ):
+        raise ValueError("Invalid OWNER_CONTACT_URL")
+    result["OWNER_CONTACT_URL"] = contact
+    return result
 
 HTTP_LOCAL = threading.local()
 MEDIA_DISK_LOCK = threading.Lock()
@@ -1598,7 +1648,7 @@ def searched_user_keyboard(
     owner_id: int,
     can_modify: bool = True,
     allow_admin: bool = False,
-    default_daily_limit: int = DEFAULT_DAILY_LIMIT,
+    default_daily_limit: int | None = None,
 ) -> dict[str, Any]:
     user_id = int(record["user_id"])
     if user_id == owner_id:
@@ -1838,8 +1888,10 @@ def format_duration(seconds: float) -> str:
 
 
 def quota_choices_keyboard(
-    user_id: int, allow_admin: bool = True, default_daily_limit: int = DEFAULT_DAILY_LIMIT
+    user_id: int, allow_admin: bool = True, default_daily_limit: int | None = None
 ) -> dict[str, Any]:
+    if default_daily_limit is None:
+        default_daily_limit = DEFAULT_DAILY_LIMIT
     rows = [
             [
                 {"text": admin_text("default_quota").format(limit=default_daily_limit), "callback_data": f"quota:{user_id}:{default_daily_limit}"},
@@ -3228,6 +3280,12 @@ class Bot:
         for job in self.acl.data["pending_jobs"].values():
             self.jobs.put_nowait(tuple(job))
         self.stop_event = threading.Event()
+        try:
+            with CONTROL_PATH.open("rb") as stream:
+                self.control_seen = stream.read(65537)
+        except OSError:
+            self.control_seen = b""
+        self.control_pending = None
         self.workers = [
             threading.Thread(
                 target=self._worker,
@@ -3302,6 +3360,15 @@ class Bot:
         offset = load_update_offset()
         while not self.stop_event.is_set():
             try:
+                try:
+                    paused = self.runtime_control_tick()
+                except OSError:
+                    LOG.warning("Runtime control acknowledgement failed; retrying")
+                    self.stop_event.wait(1)
+                    continue
+                if paused:
+                    self.stop_event.wait(0.2)
+                    continue
                 updates = self.api.call(
                     "getUpdates",
                     {
@@ -3339,6 +3406,61 @@ class Bot:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def runtime_control_tick(self) -> bool:
+        """Main polling thread only: apply settings with no job using globals."""
+        try:
+            with CONTROL_PATH.open("rb") as stream:
+                raw = stream.read(65537)
+        except FileNotFoundError:
+            raw = b""
+        except OSError:
+            # A root writer may still be assigning the new file's group.
+            raw = self.control_seen
+        if raw != self.control_seen:
+            self.control_seen = raw
+            self.control_pending = None
+            try:
+                request = json.loads(raw) if len(raw) <= 65536 else None
+                if (not isinstance(request, dict)
+                        or request.get("action") not in {"reload", "drain", "resume"}
+                        or not isinstance(request.get("id"), str)
+                        or not re.fullmatch(r"[0-9a-f]{32}", request["id"])
+                        or type(request.get("expires")) not in (int, float)
+                        or not time.time() < request["expires"] <= time.time() + 610):
+                    raise ValueError("Invalid control request")
+                self.control_pending = request
+            except (ValueError, TypeError):
+                LOG.warning("Invalid runtime control request ignored")
+        request = self.control_pending
+        if request is None:
+            return False
+        action = request["action"]
+        expired = time.time() >= request["expires"]
+        if action != "resume" and not expired:
+            with self.inline_futures_lock:
+                busy = bool(self.inline_futures)
+            if busy or self.jobs.unfinished_tasks:
+                return True
+        success = not expired
+        if action == "reload" and success:
+            try:
+                settings = validate_runtime_settings(request.get("settings"))
+            except (ValueError, TypeError):
+                success = False
+            else:
+                globals().update(settings)
+                with self.inline_cache_lock:
+                    self.inline_cache.clear()
+        if not request.get("acknowledged") or expired:
+            atomic_write_text(CONTROL_RESULT_PATH, json.dumps({
+                "id": request["id"], "pid": os.getpid(), "ok": success,
+            }))
+            request["acknowledged"] = True
+        if action == "drain" and success:
+            return True
+        self.control_pending = None
+        return False
 
     def can_process(self, user_id: int) -> bool:
         return self.acl.is_allowed(user_id) and (
