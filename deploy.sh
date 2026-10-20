@@ -10,6 +10,7 @@ SERVICE=x-tweet-telegram-bot.service
 PROJECT_FILES=(
   VERSION
   LICENSE
+  LICENSE.downloader
   README.md
   requirements.txt
   bot.py

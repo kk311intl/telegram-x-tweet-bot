@@ -1,3 +1,6 @@
+Project source is licensed under GPL-3.0-only, except video_downloader.py,
+which is a separate GPL-2.0-or-later program (see LICENSE.downloader).
+
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

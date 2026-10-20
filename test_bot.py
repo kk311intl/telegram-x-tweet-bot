@@ -3,11 +3,15 @@ import json
 import io
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -16,7 +20,493 @@ import video_downloader
 import config_cli
 
 
+@contextmanager
+def stalled_http_server(tls=False):
+    stopped = bot.threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def handle(self):
+            try:
+                super().handle()
+            except (ConnectionResetError, BrokenPipeError):
+                pass  # The client deliberately aborts these test connections.
+
+        def do_POST(self):
+            stopped.wait(3)  # Leave the upload unread so the sender blocks.
+
+        def do_GET(self):
+            if self.path == "/step":
+                stopped.wait(0.18)
+            self.send_response(500 if self.path == "/error" else 200)
+            if self.path in {"/ok", "/step"}:
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                return
+            self.send_header("Content-Length", "1000")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                while not stopped.wait(0.03):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+            except OSError:
+                pass
+
+    with tempfile.TemporaryDirectory() as temporary:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if tls:
+            cert, key = Path(temporary) / "cert.pem", Path(temporary) / "key.pem"
+            subprocess.run([shutil.which("openssl"), "req", "-x509", "-newkey", "rsa:2048",
+                            "-nodes", "-days", "1", "-subj", "/CN=localhost",
+                            "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", str(key),
+                            "-out", str(cert)], check=True, capture_output=True)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+        else:
+            server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        worker = bot.threading.Thread(target=lambda: server.serve_forever(poll_interval=0.02), daemon=True)
+        worker.start()
+        try:
+            yield f"{'https' if tls else 'http'}://127.0.0.1:{server.server_port}", str(cert) if tls else True
+        finally:
+            stopped.set()
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
+
 class ReliabilityTests(unittest.TestCase):
+    def test_stalled_upload_is_interrupted_at_wall_clock_deadline(self):
+        for tls in (False, True):
+            if tls and not shutil.which("openssl"):
+                continue  # HTTPS is also exercised on the deployment platform.
+            with self.subTest(tls=tls), stalled_http_server(tls) as (url, verify), \
+                 patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15):
+                with bot.requests.Session() as session:
+                    session.trust_env = False
+                    session.mount("https://" if tls else "http://", bot.DeadlineAdapter())
+                    self.assertEqual(session.get(url + "/ok", timeout=(2, 2), verify=verify).content, b"ok")
+                    start = bot.time.monotonic()
+                    with self.assertRaises(bot.NetworkTimeout):
+                        session.post(url, data=io.BytesIO(b"x" * (8 * 1024 * 1024)), timeout=(2, 2), verify=verify)
+                    self.assertLess(bot.time.monotonic() - start, 1.5)
+
+    def test_slow_trickle_response_cannot_reset_request_deadline(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream), stalled_http_server() as (url, verify), patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15):
+                with bot.requests.Session() as session:
+                    session.trust_env = False
+                    session.mount("http://", bot.DeadlineAdapter())
+                    start = bot.time.monotonic()
+                    with self.assertRaises(bot.NetworkTimeout):
+                        with session.get(url, timeout=(2, 2), stream=stream, verify=verify) as response:
+                            list(response.iter_content(1024))
+                    self.assertLess(bot.time.monotonic() - start, 1.5)
+
+    def test_session_remains_usable_after_timeout(self):
+        with stalled_http_server() as (url, _verify), patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15):
+            with bot.requests.Session() as session:
+                session.trust_env = False
+                session.mount("http://", bot.DeadlineAdapter())
+                with self.assertRaises(bot.NetworkTimeout):
+                    session.get(url, timeout=(2, 2))
+                self.assertEqual(session.get(url + "/ok", timeout=(2, 2)).content, b"ok")
+
+    def test_parallel_download_timeout_cancels_peers_and_queued_items(self):
+        tweet = {"media": {"all": [{"type": "photo", "url": f"https://pbs.twimg.com/media/{n}.jpg"}
+                                    for n in range(4)]}}
+        with tempfile.TemporaryDirectory() as directory, stalled_http_server() as (url, _verify), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 2), \
+             patch.object(bot, "MIN_FREE_DISK_BYTES", 0):
+            started = []
+            def response(media_url, timeout):
+                started.append(media_url)
+                # The peer has a longer deadline; it must be cancelled early.
+                request_timeout = (0.05, 0.1) if media_url.endswith("0.jpg?name=orig") else (1, 1)
+                return bot.http_session().get(url, timeout=request_timeout, stream=True)
+            with patch.object(bot, "trusted_twimg_response", side_effect=response):
+                start = bot.time.monotonic()
+                with self.assertRaises(bot.NetworkTimeout):
+                    bot.download_fxtwitter_media(tweet, Path(directory))
+                self.assertLess(bot.time.monotonic() - start, 1.5)
+                self.assertLessEqual(len(started), 2)
+
+    def test_network_timeout_does_not_expose_underlying_request_url(self):
+        import traceback
+        deadline = bot.RequestDeadline(60)
+        try:
+            deadline.expires = 0
+            try:
+                raise bot.requests.ConnectionError("https://api.telegram.org/botYOUR_API_TOKEN/sendVideo")
+            except bot.requests.RequestException:
+                with self.assertRaises(bot.NetworkTimeout) as raised:
+                    deadline.check()
+            self.assertTrue(raised.exception.__suppress_context__)
+            self.assertNotIn("YOUR_API_TOKEN", "".join(traceback.format_exception(raised.exception)))
+        finally:
+            deadline.close()
+
+    def test_parallel_timeout_also_interrupts_peer_dns_resolution(self):
+        tweet = {"media": {"all": [{"type": "photo", "url": f"https://pbs.twimg.com/media/{n}.jpg"}
+                                    for n in range(2)]}}
+        with tempfile.TemporaryDirectory() as directory, stalled_http_server() as (url, _verify), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 2), \
+             patch.object(bot, "DNS_LOOKUP_SCRIPT", "import time; time.sleep(5)"), \
+             patch.object(bot, "MIN_FREE_DISK_BYTES", 0):
+            def response(media_url, timeout):
+                if media_url.endswith("0.jpg?name=orig"):
+                    return bot.http_session().get(url, timeout=(0.05, 0.1), stream=True)
+                session = bot.http_session()
+                session.trust_env = False
+                return session.get("http://slow-dns.invalid/", timeout=(1, 1), stream=True)
+            with patch.object(bot, "trusted_twimg_response", side_effect=response):
+                start = bot.time.monotonic()
+                with self.assertRaises(bot.NetworkTimeout):
+                    bot.download_fxtwitter_media(tweet, Path(directory))
+                self.assertLess(bot.time.monotonic() - start, 1.5)
+
+    @unittest.skipUnless(shutil.which("openssl"), "TLS test needs openssl")
+    def test_tls_response_close_connection_is_interrupted(self):
+        with stalled_http_server(tls=True) as (url, verify), patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.2):
+            with bot.requests.Session() as session:
+                session.trust_env = False
+                session.mount("https://", bot.DeadlineAdapter())
+                start = bot.time.monotonic()
+                with self.assertRaises(bot.NetworkTimeout):
+                    with session.get(url, timeout=(2, 2), stream=True, verify=verify) as response:
+                        list(response.iter_content(1024))
+                self.assertLess(bot.time.monotonic() - start, 1.5)
+
+    def test_dns_deadline_reaps_resolver_without_leaving_worker_blocked(self):
+        children = []
+        original_popen = bot.subprocess.Popen
+        def popen(*args, **kwargs):
+            child = original_popen(*args, **kwargs)
+            children.append(child)
+            return child
+        with patch.object(bot, "DNS_LOOKUP_SCRIPT", "import time; time.sleep(5)"), \
+             patch.object(bot.subprocess, "Popen", side_effect=popen), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15), bot.requests.Session() as session:
+            session.trust_env = False
+            session.mount("http://", bot.DeadlineAdapter())
+            start = bot.time.monotonic()
+            with self.assertRaises(bot.NetworkTimeout):
+                session.get("http://slow-dns.invalid/", timeout=(2, 2))
+            self.assertLess(bot.time.monotonic() - start, 1.5)
+        self.assertTrue(children)
+        self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_tls_handshake_is_interrupted_before_connection_is_ready(self):
+        stopped = bot.threading.Event()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            def accept():
+                with listener.accept()[0]:
+                    stopped.wait(3)
+            worker = bot.threading.Thread(target=accept, daemon=True)
+            worker.start()
+            try:
+                with patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15), bot.requests.Session() as session:
+                    session.trust_env = False
+                    session.mount("https://", bot.DeadlineAdapter())
+                    start = bot.time.monotonic()
+                    with self.assertRaises(bot.NetworkTimeout):
+                        session.get(f"https://127.0.0.1:{listener.getsockname()[1]}", timeout=(2, 2))
+                    self.assertLess(bot.time.monotonic() - start, 1.5)
+            finally:
+                stopped.set()
+                worker.join(timeout=2)
+
+    def test_extractor_total_timeout_retains_its_separate_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            start = bot.time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                bot.run_command([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.15, directory=Path(directory))
+            self.assertLess(bot.time.monotonic() - start, 1.5)
+
+    def test_extractor_allows_multiple_healthy_transfers_beyond_one_deadline(self):
+        with tempfile.TemporaryDirectory() as directory, stalled_http_server() as (url, _verify), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.3):
+            script = ("import requests,video_downloader; video_downloader.install_network_deadlines(); "
+                      f"[requests.get({url + '/step'!r}, timeout=2) for _ in range(3)]; print('done')")
+            result = bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("done", result.stdout)
+
+    def test_extractor_timeout_ends_job_instead_of_retrying_another_source(self):
+        for library in ("requests", "yt_dlp"):
+            with self.subTest(library=library), tempfile.TemporaryDirectory() as directory, \
+                 stalled_http_server() as (url, _verify), patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.2):
+                operation = (f"requests.get({url!r}, timeout=5).content" if library == "requests" else
+                             f"yt_dlp.YoutubeDL().urlopen({url!r}).read()")
+                script = ("import requests,yt_dlp,video_downloader; video_downloader.install_network_deadlines(); " + operation)
+                with self.assertRaises(bot.NetworkTimeout):
+                    bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+
+    def test_extractor_streams_finish_without_stale_timers(self):
+        for library in ("requests", "yt_dlp"):
+            with self.subTest(library=library), tempfile.TemporaryDirectory() as directory, \
+                 stalled_http_server() as (url, _verify), patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.3):
+                operation = (f"with requests.get({url + '/ok'!r}, stream=True) as response:\n"
+                             "    list(response.iter_content(1))\n" if library == "requests" else
+                             f"with yt_dlp.YoutubeDL().urlopen({url + '/ok'!r}) as response:\n"
+                             "    response.read()\n")
+                script = ("import requests,yt_dlp,time,video_downloader\n"
+                          "video_downloader.install_network_deadlines()\n" + operation +
+                          "time.sleep(0.5)\nprint('done')")
+                result = bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+                self.assertEqual(result.returncode, 0)
+                self.assertIn("done", result.stdout)
+
+    def test_extractor_dns_deadline_also_stops_child(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.15):
+            script = ("import socket,time,requests,video_downloader\n"
+                      "video_downloader.install_network_deadlines()\n"
+                      "socket.getaddrinfo=lambda *a,**k: time.sleep(5)\n"
+                      "session=requests.Session(); session.trust_env=False\n"
+                      "session.get('http://slow-dns.invalid', timeout=5)\n")
+            with self.assertRaises(bot.NetworkTimeout):
+                bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+
+    def test_extractor_error_response_body_is_still_bounded(self):
+        with tempfile.TemporaryDirectory() as directory, stalled_http_server() as (url, _verify), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.2):
+            script = ("import yt_dlp,video_downloader\n"
+                      "from yt_dlp.networking.exceptions import HTTPError\n"
+                      "video_downloader.install_network_deadlines()\n"
+                      f"try: yt_dlp.YoutubeDL().urlopen({url + '/error'!r})\n"
+                      "except HTTPError as error: error.response.read()\n")
+            with self.assertRaises(bot.NetworkTimeout):
+                bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+
+    def test_zero_length_read_does_not_cancel_extractor_deadline(self):
+        with tempfile.TemporaryDirectory() as directory, stalled_http_server() as (url, _verify), \
+             patch.object(bot, "NETWORK_TIMEOUT_SECONDS", 0.2):
+            script = ("import yt_dlp,video_downloader\n"
+                      "video_downloader.install_network_deadlines()\n"
+                      f"response=yt_dlp.YoutubeDL().urlopen({url!r})\n"
+                      "response.read(0)\nresponse.read()\n")
+            with self.assertRaises(bot.NetworkTimeout):
+                bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+
+    def test_deadline_closes_its_duplicate_but_preserves_reusable_socket(self):
+        with socket.socket() as connection:
+            deadline = bot.RequestDeadline(60)
+            deadline.track(connection, duplicate=True)
+            duplicates = list(deadline.owned_sockets)
+            deadline.close()
+            self.assertGreaterEqual(connection.fileno(), 0)
+            self.assertTrue(all(item.fileno() == -1 for item in duplicates))
+
+    @unittest.skipIf(os.name == "nt", "process-group cleanup is verified on Linux")
+    def test_extractor_timeout_kills_downloader_descendants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "child.pid"
+            script = ("import subprocess,sys,os,time\n"
+                      "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])\n"
+                      f"open({str(pid_path)!r},'w').write(str(child.pid))\n"
+                      "os._exit(124)\n")
+            with self.assertRaises(bot.NetworkTimeout):
+                bot.run_command([sys.executable, "-c", script], timeout=8, directory=Path(directory))
+            child = int(pid_path.read_text())
+            state = Path(f"/proc/{child}/stat")
+            deadline = bot.time.monotonic() + 1
+            while True:
+                try:
+                    running = state.read_text().split()[2] != "Z"
+                except FileNotFoundError:
+                    running = False
+                if not running or bot.time.monotonic() >= deadline:
+                    break
+                bot.time.sleep(0.01)  # SIGKILL delivery is asynchronous.
+            self.assertFalse(running)
+
+    def test_gallery_entry_does_not_apply_video_size_wrapper_twice(self):
+        script = ("import types,yt_dlp,runpy,sys\n"
+                  "from unittest.mock import MagicMock\n"
+                  "gallery_dl=types.ModuleType('gallery_dl')\n"
+                  "gallery_dl.main=MagicMock(return_value=7)\n"
+                  "sys.modules['gallery_dl']=gallery_dl\n"
+                  "original=yt_dlp.YoutubeDL\n"
+                  f"sys.argv=[{str(Path(video_downloader.__file__))!r},'--gallery-dl']\n"
+                  "try: runpy.run_path(sys.argv[0],run_name='__main__')\n"
+                  "except SystemExit as error: assert error.code==7\n"
+                  "gallery_dl.main.assert_called_once()\n"
+                  "assert yt_dlp.YoutubeDL is original\n")
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_downloader_is_independent_and_shares_only_exit_code_protocol(self):
+        result = subprocess.run([sys.executable, "-c",
+                                 "import sys,video_downloader; assert 'bot' not in sys.modules; "
+                                 "print(video_downloader.NETWORK_TIMEOUT_EXIT_CODE)"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(int(result.stdout), bot.NETWORK_TIMEOUT_EXIT_CODE)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "entrypoint media test needs FFmpeg")
+    def test_extractor_entrypoints_download_original_media(self):
+        import functools
+        from http.server import SimpleHTTPRequestHandler
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bot.Image.new("RGB", (4, 4), "red").save(root / "image.jpg")
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=1",
+                            "-t", "1", "-c:v", "libx264", str(root / "clip.mp4")], check=True, timeout=15)
+            class Handler(SimpleHTTPRequestHandler):
+                def log_message(self, *args): pass
+            server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=directory))
+            worker = bot.threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                for gallery, source in ((True, "image.jpg"), (False, "clip.mp4")):
+                    with self.subTest(gallery=gallery):
+                        output = root / ("gallery" if gallery else "video")
+                        output.mkdir()
+                        url = f"http://127.0.0.1:{server.server_port}/{source}"
+                        options = (["--gallery-dl", "--ignore-config", "--directory", str(output),
+                                    "--filename", "{filename}.{extension}", url] if gallery else
+                                   ["--no-config", "--no-playlist", "--proxy", "", "--output", str(output / "clip.mp4"), url])
+                        result = bot.run_command([sys.executable, str(Path(video_downloader.__file__)), *options],
+                                                 timeout=15, directory=output)
+                        self.assertEqual(result.returncode, 0, result.stdout[-1500:])
+                        files = bot.media_files(output)
+                        self.assertEqual(len(files), 1, result.stdout[-1500:])
+                        self.assertEqual(files[0].read_bytes(), (root / source).read_bytes())
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(timeout=2)
+
+    def test_timed_out_job_notifies_in_all_languages_and_releases_next_job(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as directory:
+                store = bot.ACLStore(Path(directory) / "acl.json", 100)
+                store.add(200)
+                store.set_language(200, language)
+                jobs = [(200, n, 200, "https://x.com/test/status/123") for n in (42, 43)]
+                for job in jobs:
+                    store.consume(200, job=job)
+                service = bot.Bot(MagicMock(), store)
+                service.process_url = MagicMock(side_effect=[bot.NetworkTimeout("test"), None])
+                service.workers[0].start()
+                deadline = bot.time.monotonic() + 2
+                while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                    bot.time.sleep(0.01)
+                service.stop()
+                service.workers[0].join(timeout=2)
+                service.inline_executor.shutdown(wait=True)
+                self.assertEqual(service.jobs.unfinished_tasks, 0)
+                self.assertFalse(store.data["pending_jobs"])
+                self.assertEqual(store.data["users"]["200"]["usage_count"], 2)
+                service.api.send_message.assert_called_once_with(
+                    200, bot.public_text(language, "network_timeout"), 42, timeout=(2, 3))
+                self.assertEqual(service.process_url.call_count, 2)
+                self.assertEqual(service.api.set_reaction.call_count, 2)
+
+    def test_undeliverable_timeout_notice_does_not_keep_job_pending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            store.consume(100, job=(100, 42, 100, "https://x.com/test/status/123"))
+            api = MagicMock()
+            api.send_message.side_effect = RuntimeError("network unavailable")
+            service = bot.Bot(api, store)
+            service.process_url = MagicMock(side_effect=bot.NetworkTimeout("test"))
+            service.workers[0].start()
+            deadline = bot.time.monotonic() + 2
+            while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                bot.time.sleep(0.01)
+            service.stop()
+            service.workers[0].join(timeout=2)
+            service.inline_executor.shutdown(wait=True)
+            self.assertFalse(store.data["pending_jobs"])
+            self.assertEqual(service.jobs.unfinished_tasks, 0)
+            api.send_message.assert_called_once()
+
+    def test_timeout_notice_does_not_sleep_or_retry_on_rate_limit(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        response = MagicMock(status_code=429)
+        response.json.return_value = {"ok": False, "parameters": {"retry_after": 30}}
+        session = MagicMock()
+        session.post.return_value = response
+        with patch.object(api, "session", return_value=session), patch.object(bot.time, "sleep") as sleep:
+            with self.assertRaises(bot.TelegramAPIError):
+                api.send_message(100, "timeout", timeout=(2, 3))
+        sleep.assert_not_called()
+        session.post.assert_called_once()
+
+    def test_timeout_during_shutdown_is_finalized_without_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = bot.ACLStore(Path(directory) / "acl.json", 100)
+            store.consume(100, job=(100, 42, 100, "https://x.com/test/status/123"))
+            service = bot.Bot(MagicMock(), store)
+            def process(*_args):
+                service.stop()
+                raise bot.NetworkTimeout("test")
+            service.process_url = process
+            service.workers[0].start()
+            service.workers[0].join(timeout=2)
+            service.inline_executor.shutdown(wait=True)
+            self.assertFalse(service.workers[0].is_alive())
+            self.assertEqual(service.jobs.unfinished_tasks, 0)
+            self.assertFalse(store.data["pending_jobs"])
+            service.api.send_message.assert_not_called()
+
+    def test_preview_timeout_cleans_temporary_files_and_does_not_send_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = bot.ACLStore(root / "acl.json", 100)
+            service = bot.Bot(MagicMock(), store)
+            service.api.send_previews.side_effect = bot.NetworkTimeout("test")
+            def download(_tweet, destination):
+                path = destination / "image.jpg"
+                path.write_bytes(b"image")
+                return [path], 0
+            tweet = {"id": "123", "text": "test", "media": {"all": [
+                {"type": "photo", "url": "https://pbs.twimg.com/test.jpg"}]}}
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "media_disk_available", return_value=True), \
+                 patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                with self.assertRaises(bot.NetworkTimeout):
+                    service.process_url(100, 42, 100, "https://x.com/test/status/123")
+            service.api.send_documents.assert_not_called()
+            service.api.send_message.assert_not_called()
+            self.assertFalse(list(root.glob("tweet-*")))
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_document_timeout_does_not_fall_back_to_another_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+            service.api.send_documents.side_effect = bot.NetworkTimeout("test")
+            tweet = {"id": "123", "text": "test", "media": {"all": [
+                {"type": "video", "url": "https://video.twimg.com/test.mp4"}]}}
+            def download(_tweet, destination):
+                path = destination / "video.mp4"
+                path.write_bytes(b"video")
+                return [path], 0
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "media_disk_available", return_value=True), \
+                 patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "video_dimensions", return_value=(100, 100)):
+                with self.assertRaises(bot.NetworkTimeout):
+                    service.process_url(100, 42, 100, "https://x.com/test/status/123")
+            service.api.send_documents.assert_called_once()
+            service.api.send_message.assert_not_called()
+            self.assertFalse(list(root.glob("tweet-*")))
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
     def test_message_reaction_follows_durable_job_lifecycle_and_recovery(self):
         for restored, failed in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(restored=restored, failed=failed), tempfile.TemporaryDirectory() as folder:
@@ -73,7 +563,7 @@ class ReliabilityTests(unittest.TestCase):
                 self.assertFalse(store.data["pending_jobs"])
                 self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
                 if failed:
-                    api.send_message.assert_called_once_with(200, bot.public_text("zh", "failed"), 42)
+                    api.send_message.assert_called_once_with(200, bot.public_text("zh", "failed"), 42, timeout=(2, 3))
                 else:
                     api.send_message.assert_not_called()
 

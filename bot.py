@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -11,6 +12,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -33,7 +35,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.10.1"
+APP_VERSION = "3.10.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -94,6 +96,270 @@ USER_ROLE_FILTERS = ("all", "ordinary", "admin", "pending", "blocked", "initiali
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
+NETWORK_TIMEOUT_SECONDS = 60
+NETWORK_TIMEOUT_EXIT_CODE = 124
+DNS_LOOKUP_SCRIPT = (
+    "import json,socket,sys; host,port=json.load(sys.stdin); "
+    "print(json.dumps(list(dict.fromkeys("
+    "r[4][0] + ('%' + str(r[4][3]) if len(r[4]) > 3 and r[4][3] else '') "
+    "for r in socket.getaddrinfo(host,port,0,socket.SOCK_STREAM)))))"
+)
+CURRENT_NETWORK_REQUEST: ContextVar[Any] = ContextVar("network_request", default=None)
+CURRENT_NETWORK_GROUP: ContextVar[Any] = ContextVar("network_group", default=None)
+
+
+class NetworkTimeout(RuntimeError):
+    pass
+
+
+class NetworkGroup:
+    """Cancel sibling downloads when any request exceeds its deadline."""
+    def __init__(self) -> None:
+        self.pending: set[RequestDeadline] = set()
+        self.lock = threading.Lock()
+        self.cancelled = False
+
+    def add(self, deadline) -> None:
+        with self.lock:
+            if self.cancelled:
+                raise NetworkTimeout("Media download was cancelled")
+            self.pending.add(deadline)
+
+    def discard(self, deadline) -> None:
+        with self.lock:
+            self.pending.discard(deadline)
+
+    def abort(self) -> None:
+        with self.lock:
+            self.cancelled = True
+            pending = list(self.pending)
+        for deadline in pending:
+            deadline.abort()
+
+
+class RequestDeadline:
+    def __init__(self, seconds: float) -> None:
+        self.expires = time.monotonic() + seconds
+        self.sockets: set[socket.socket] = set()
+        self.owned_sockets: set[socket.socket] = set()
+        self.resolvers: set[subprocess.Popen] = set()
+        self.lock = threading.Lock()
+        self.done = False
+        self.expired = False
+        self.timer = threading.Timer(seconds, self.abort)
+        self.timer.daemon = True
+        self.group = CURRENT_NETWORK_GROUP.get()
+        if self.group is not None:
+            self.group.add(self)
+        self.timer.start()
+
+    def check(self) -> None:
+        if self.expired or time.monotonic() >= self.expires:
+            self.abort()
+            if self.group is not None:
+                self.group.abort()
+            raise NetworkTimeout("Network operation exceeded its time limit") from None
+
+    def remaining(self) -> float:
+        self.check()
+        return max(0.001, self.expires - time.monotonic())
+
+    def track(self, connection, duplicate: bool = False) -> None:
+        if connection is not None:
+            if duplicate:
+                connection = connection.dup()
+            with self.lock:
+                self.sockets.add(connection)
+                if duplicate:
+                    self.owned_sockets.add(connection)
+        self.check()
+
+    def abort(self) -> None:
+        with self.lock:
+            if self.done:
+                return
+            self.expired = True
+            for process in self.resolvers:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            # Closing a Session does not interrupt a socket currently in use.
+            for connection in self.sockets:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+            self.sockets.clear()
+            self.owned_sockets.clear()
+
+    def close(self) -> None:
+        with self.lock:
+            self.done = True
+            self.sockets.clear()
+            for connection in self.owned_sockets:
+                connection.close()
+            self.owned_sockets.clear()
+        self.timer.cancel()
+        if self.group is not None:
+            self.group.discard(self)
+
+    def read(self, operation):
+        def bounded(*args, **kwargs):
+            self.check()
+            try:
+                result = operation(*args, **kwargs)
+            except Exception:
+                self.check()
+                raise
+            self.check()
+            return result
+        return bounded
+
+
+def resolve_addresses(host: str, port: int, deadline: RequestDeadline) -> list[str]:
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return [host]
+    except ValueError:
+        pass
+    # A Python thread cannot cancel getaddrinfo. Reap a bounded resolver process
+    # instead, without replacing DNS globally or leaving stuck resolver threads.
+    process = subprocess.Popen(
+        [sys.executable, "-c", DNS_LOOKUP_SCRIPT],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True,
+    )
+    with deadline.lock:
+        deadline.resolvers.add(process)
+    try:
+        output, _ = process.communicate(json.dumps([host, port]), timeout=deadline.remaining())
+    except subprocess.TimeoutExpired:
+        deadline.abort()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()  # Reap the resolver and close its stdin/stdout pipes.
+        with deadline.lock:
+            deadline.resolvers.discard(process)
+    deadline.check()
+    if process.returncode:
+        raise OSError("Name resolution failed")
+    addresses = json.loads(output)
+    if not isinstance(addresses, list) or not addresses:
+        raise OSError("Name resolution returned no addresses")
+    return addresses
+
+
+class DeadlineConnection:
+    def _new_conn(self):
+        deadline = CURRENT_NETWORK_REQUEST.get()
+        if deadline is None:
+            return super()._new_conn()
+        host, timeout = self._dns_host, self.timeout
+        socks_options = getattr(self, "_socks_options", None)
+        proxy = socks_options.get("proxy_host") if socks_options else None
+        addresses = resolve_addresses(proxy or host, self.port, deadline)
+        targets = (resolve_addresses(host, self.port, deadline)
+                   if socks_options and not socks_options.get("rdns") else [host])
+        try:
+            for address in addresses:
+                for target in targets:
+                    self._dns_host = target if socks_options else address
+                    if socks_options:
+                        self._socks_options = {**socks_options, "proxy_host": address}
+                    self.timeout = min(timeout or deadline.remaining(), deadline.remaining())
+                    try:
+                        connection = super()._new_conn()
+                    except (OSError, StreamHTTPError) as error:
+                        deadline.check()
+                        last_error = error
+                        continue
+                    # TLS wrapping detaches the original socket. A duplicate
+                    # lets the deadline interrupt the TCP/TLS handshake too.
+                    deadline.track(connection, duplicate=True)
+                    connection.settimeout(min(self.timeout, deadline.remaining()))
+                    return connection
+            raise last_error
+        finally:
+            self._dns_host, self.timeout = host, timeout
+            if socks_options:
+                self._socks_options = socks_options
+
+    def connect(self) -> None:
+        super().connect()
+        deadline = CURRENT_NETWORK_REQUEST.get()
+        if deadline is not None:
+            deadline.track(self.sock)
+
+    def request(self, *args, **kwargs):
+        deadline = CURRENT_NETWORK_REQUEST.get()
+        if deadline is not None:
+            deadline.track(self.sock)
+        return super().request(*args, **kwargs)
+
+
+def deadline_pools(manager) -> None:
+    # Preserve the transport (including proxies); only track its live socket.
+    manager.pool_classes_by_scheme = {
+        scheme: type("DeadlinePool", (pool,), {
+            "ConnectionCls": type("DeadlineConnection", (DeadlineConnection, pool.ConnectionCls), {}),
+        })
+        for scheme, pool in manager.pool_classes_by_scheme.items()
+    }
+
+
+class DeadlineAdapter(requests.adapters.HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs) -> None:
+        super().init_poolmanager(*args, **kwargs)
+        deadline_pools(self.poolmanager)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        manager = super().proxy_manager_for(*args, **kwargs)
+        if not issubclass(manager.pool_classes_by_scheme["https"].ConnectionCls, DeadlineConnection):
+            deadline_pools(manager)
+        return manager
+
+    def send(self, request, **kwargs):
+        timeout = kwargs.get("timeout")
+        seconds = NETWORK_TIMEOUT_SECONDS
+        if isinstance(timeout, tuple):
+            seconds = min(seconds, sum(value or seconds for value in timeout))
+        deadline = RequestDeadline(seconds)
+        token = CURRENT_NETWORK_REQUEST.set(deadline)
+        streaming = False
+        response = None
+        try:
+            response = super().send(request, **kwargs)
+            deadline.check()
+            if kwargs.get("stream"):
+                for name in ("read", "read1"):
+                    operation = getattr(response.raw, name, None)
+                    if callable(operation):
+                        setattr(response.raw, name, deadline.read(operation))
+                original_close = response.close
+                def close():
+                    deadline.close()
+                    original_close()
+                response.close = close
+                streaming = True
+            else:
+                response.content
+                deadline.check()
+            return response
+        except Exception:
+            if response is not None:
+                response.close()
+            deadline.check()
+            raise
+        finally:
+            CURRENT_NETWORK_REQUEST.reset(token)
+            if not streaming:
+                deadline.close()
 
 # Only non-secret, scalar settings may change between jobs. Executors and
 # identity remain restart-only. Startup and reload share defaults and bounds.
@@ -166,6 +432,8 @@ def http_session() -> requests.Session:
     """Reuse DNS, TCP and TLS state within each bounded worker thread."""
     if not hasattr(HTTP_LOCAL, "session"):
         session = requests.Session()
+        session.mount("https://", DeadlineAdapter())
+        session.mount("http://", DeadlineAdapter())
         session.headers["User-Agent"] = f"{APP_NAME}/{APP_VERSION}"
         HTTP_LOCAL.session = session
     return HTTP_LOCAL.session
@@ -315,6 +583,7 @@ PUBLIC_TEXT = {
         "quota": "今日使用已达到预设上限，请稍后再试或联系管理员。",
         "approved": "申请已通过，可以开始使用。",
         "failed": "处理失败，请稍后重试。",
+        "network_timeout": "处理超时，已停止此任务，请稍后重试。",
         "post_unavailable": "无法获取这条推文，请确认推文可公开浏览或稍后再试。",
         "url_only": "请发送有效的 X/Twitter 单篇推文链接。",
         "inline_apply": "开启机器人申请使用权限",
@@ -351,6 +620,7 @@ PUBLIC_TEXT = {
         "quota": "今日使用已達到預設上限，請稍後再試或聯繫管理員。",
         "approved": "申請已通過，可以開始使用。",
         "failed": "處理失敗，請稍後重試。",
+        "network_timeout": "處理逾時，已停止此任務，請稍後重試。",
         "post_unavailable": "無法取得這則貼文，請確認貼文可公開瀏覽或稍後再試。",
         "url_only": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "inline_apply": "開啟機器人申請使用權限",
@@ -387,6 +657,7 @@ PUBLIC_TEXT = {
         "quota": "You have reached the preset usage limit for today. Try again later or contact an administrator.",
         "approved": "Access approved. You can start using the bot.",
         "failed": "Processing failed. Try again later.",
+        "network_timeout": "Processing timed out and was stopped. Try again later.",
         "post_unavailable": "Couldn't get this post. Check that it is public or try again later.",
         "url_only": "Send a valid single-post X/Twitter URL.",
         "inline_apply": "Open the Bot to request access",
@@ -423,6 +694,7 @@ PUBLIC_TEXT = {
         "quota": "本日の利用回数が設定された上限に達しました。しばらくしてから再試行するか、管理者にお問い合わせください。",
         "approved": "申請が承認されました。利用を開始できます。",
         "failed": "処理に失敗しました。しばらくしてから再試行してください。",
+        "network_timeout": "処理がタイムアウトしたため中止しました。しばらくしてから再試行してください。",
         "post_unavailable": "投稿を取得できません。公開されているか確認するか、しばらくしてから再試行してください。",
         "url_only": "有効な X/Twitter の単一投稿URLを送信してください。",
         "inline_apply": "Botを開いて利用を申請",
@@ -2042,6 +2314,8 @@ class TelegramAPI:
     def session(self) -> requests.Session:
         if not hasattr(self.local, "session"):
             self.local.session = requests.Session()
+            self.local.session.mount("https://", DeadlineAdapter())
+            self.local.session.mount("http://", DeadlineAdapter())
             self.local.session.headers["User-Agent"] = f"{APP_NAME}/{APP_VERSION}"
         return self.local.session
 
@@ -2051,6 +2325,7 @@ class TelegramAPI:
         data: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
         timeout: tuple[int, int] = (10, 70),
+        retry_rate_limit: bool = True,
     ) -> Any:
         positions = [(value[1], value[1].tell()) for value in (files or {}).values()]
         for attempt in range(2):
@@ -2088,7 +2363,7 @@ class TelegramAPI:
                 if response.status_code >= 400:
                     raise TelegramAPIError(method, response.status_code)
                 raise RuntimeError(f"Telegram {method} returned an invalid response")
-            if response.status_code == 429 and attempt == 0 and method not in {"sendChatAction", "setMessageReaction"}:
+            if response.status_code == 429 and attempt == 0 and retry_rate_limit and method not in {"sendChatAction", "setMessageReaction"}:
                 parameters = payload.get("parameters")
                 retry_after = parameters.get("retry_after", 0) if isinstance(parameters, dict) else 0
                 try:
@@ -2134,6 +2409,7 @@ class TelegramAPI:
         reply_to: int | None = None,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
+        timeout: tuple[int, int] | None = None,
     ) -> Any:
         data: dict[str, Any] = {
             "chat_id": chat_id,
@@ -2148,7 +2424,8 @@ class TelegramAPI:
             data["reply_markup"] = keyboard_json(reply_markup)
         if parse_mode:
             data["parse_mode"] = parse_mode
-        return self.call("sendMessage", data)
+        options = {"timeout": timeout, "retry_rate_limit": False} if timeout else {}
+        return self.call("sendMessage", data, **options)
 
     def remove_reply_keyboard(self, chat_id: int) -> None:
         result = self.send_message(
@@ -2475,7 +2752,8 @@ def run_command(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=os.name != "nt",
-            env={**os.environ, "HOME": str(STATE_DIR), "XDG_CACHE_HOME": str(directory / ".cache")},
+            env={**os.environ, "HOME": str(STATE_DIR), "XDG_CACHE_HOME": str(directory / ".cache"),
+                 "X_TWEET_NETWORK_TIMEOUT": str(NETWORK_TIMEOUT_SECONDS)},
         )
         try:
             deadline = time.monotonic() + timeout
@@ -2501,7 +2779,7 @@ def run_command(
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(command, timeout)
         finally:
-            if process.poll() is None:
+            if process.poll() is None or process.returncode == NETWORK_TIMEOUT_EXIT_CODE:
                 if os.name == "nt":
                     process.kill()
                 else:
@@ -2510,6 +2788,8 @@ def run_command(
                     except ProcessLookupError:
                         pass
                 process.wait()
+        if process.returncode == NETWORK_TIMEOUT_EXIT_CODE:
+            raise NetworkTimeout("Media network operation exceeded its time limit") from None
         output.seek(0, os.SEEK_END)
         output.seek(max(0, output.tell() - 65536))
         return subprocess.CompletedProcess(
@@ -2966,8 +3246,9 @@ def download_fxtwitter_media(
 ) -> tuple[list[Path], int]:
     total = 0
     budget_lock = threading.Lock()
+    group = NetworkGroup()
     deadline = time.monotonic() + 240
-    def download_item(entry: tuple[int, dict[str, Any]]) -> tuple[Path | None, bool]:
+    def download_entry(entry: tuple[int, dict[str, Any]]) -> tuple[Path | None, bool]:
         nonlocal total
         index, item = entry
         media_type = str(item.get("type") or "")
@@ -3035,6 +3316,18 @@ def download_fxtwitter_media(
                     total -= size
                 LOG.warning("FxTwitter media candidate failed", exc_info=True)
         return None, item_oversized and media_type in {"video", "gif"}
+
+    def download_item(entry):
+        token = CURRENT_NETWORK_GROUP.set(group)
+        try:
+            if group.cancelled:
+                raise NetworkTimeout("Media download was cancelled")
+            return download_entry(entry)
+        except NetworkTimeout:
+            group.abort()
+            raise
+        finally:
+            CURRENT_NETWORK_GROUP.reset(token)
 
     entries = list(enumerate(fxtwitter_media(tweet), start=1))
     if len(entries) < 2:
@@ -3172,7 +3465,7 @@ def download_media(
             return subprocess.CompletedProcess(arguments, 1, diagnostic)
 
     command = [
-        "/opt/x-tweet-telegram-bot/venv/bin/gallery-dl",
+        sys.executable, str(Path(__file__).with_name("video_downloader.py")), "--gallery-dl",
         "--ignore-config",
         "--range", "1-10",
         "-o", f"downloader.http.filesize-max={max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)}",
@@ -5030,8 +5323,13 @@ class Bot:
                 continue
             try:
                 needs_notice = False
+                notice_key = "failed"
                 try:
                     self.process_url(chat_id, message_id, user_id, url)
+                except NetworkTimeout:
+                    LOG.warning("Network operation timed out; stopping the media job")
+                    needs_notice = True
+                    notice_key = "network_timeout"
                 except Exception:
                     LOG.exception("Tweet processing failed")
                     needs_notice = True
@@ -5039,15 +5337,20 @@ class Bot:
                     self.api.set_reaction(chat_id, message_id)
                 # Retry the failure notice, not partially delivered media. Keep
                 # the durable job on shutdown so the next start can recover it.
+                notice_deadline = time.monotonic() + (5 if notice_key == "network_timeout" else NETWORK_TIMEOUT_SECONDS)
                 while True:
                     try:
                         if needs_notice and self.can_process(user_id):
                             if self.stop_event.is_set():
+                                if notice_key == "network_timeout":
+                                    needs_notice = False
+                                    continue
                                 break
                             self.api.send_message(
                                 chat_id,
-                                public_text(self.acl.language(user_id), "failed"),
+                                public_text(self.acl.language(user_id), notice_key),
                                 message_id,
+                                timeout=(2, 3),
                             )
                             needs_notice = False
                         self.acl.finish_job(chat_id, message_id)
@@ -5059,6 +5362,14 @@ class Bot:
                         LOG.exception("Could not send failure response; retrying")
                     except Exception:
                         LOG.exception("Could not finish failed job; retrying")
+                    if notice_key == "network_timeout" and needs_notice:
+                        needs_notice = False
+                        continue  # A failed timeout notice must not keep the job alive.
+                    if time.monotonic() >= notice_deadline:
+                        if needs_notice:
+                            needs_notice = False
+                            continue
+                        break  # Preserve durable state if local finalization fails.
                     if self.stop_event.wait(5):
                         break
             finally:
@@ -5200,6 +5511,8 @@ class Bot:
                         chat_id, previews, caption, parse_mode="HTML",
                         tweet_id=effective_url.rsplit("/", 1)[-1],
                     )
+                except NetworkTimeout:
+                    raise
                 except (OSError, requests.RequestException, RuntimeError):
                     LOG.exception("Could not send media previews")
                     if not self.can_process(user_id):
@@ -5222,6 +5535,8 @@ class Bot:
                 return
             try:
                 self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
+            except NetworkTimeout:
+                raise
             except (OSError, requests.RequestException, RuntimeError):
                 LOG.exception("Could not send original media files")
                 if not self.can_process(user_id):

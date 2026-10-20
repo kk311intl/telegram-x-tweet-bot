@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.10.1
+# Telegram X／Twitter 貼文媒體 Bot · v3.10.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -67,6 +67,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。
 
+單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。外部下載器逐次傳輸計時，整輪仍保留 240 秒上限。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。排隊時間不計入，多次正常傳輸合計可超過一分鐘。
+
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
 「運行狀態」顯示 Bot 與下載器最近 24 小時的流量，按分鐘估算，重啟後保留。紀錄不足 24 小時會註明；無法取得時不會用整臺主機的流量代替。此功能需要 systemd 的 `IPAccounting=yes`。
@@ -100,7 +102,7 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 下載測試不使用 Cookies、不發送 Telegram 訊息，結束後會清除暫存。最後仍須在 Telegram 確認文字與媒體接收。
 
-原始碼 © 2026 kk311intl，採 [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl 各自沿用上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
+Bot 原始碼 © 2026 kk311intl，採 [GPL-3.0-only](LICENSE)；獨立下載器 `video_downloader.py` 採 [GPL-2.0-or-later](LICENSE.downloader)，與 Bot 透過子程序溝通。依賴沿用各自的上游授權；再分發含依賴的執行包時，須另行確認其授權要求。
 
 ## 日本語
 
@@ -165,6 +167,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。
 
+DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。メディアの再送は続けません。外部ダウンローダーも通信ごとに計時し、全体には240秒の上限を残しています。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。待機列の時間は含まず、正常な通信の合計が1分を超えることはあります。
+
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
 「稼働状況」の通信量は Bot とダウンローダーの直近24時間分を、分単位で概算したものです。再起動後も記録を保持し、24時間分に満たない場合はその旨を表示します。取得できない場合にサーバー全体の通信量で代用することはありません。systemd の `IPAccounting=yes` が必要です。
@@ -198,7 +202,7 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 ダウンロードの確認には Cookies を使わず、Telegram にメッセージも送りません。一時ファイルは終了後に削除されます。最後に Telegram で本文とメディアの受信を確認してください。
 
-ソースコード © 2026 kk311intl のライセンスは [GNU GPL v3.0 only](LICENSE)（`GPL-3.0-only`）です。requests、requests-toolbelt、Pillow、yt-dlp、gallery-dl はそれぞれ元のライセンスに従います。依存パッケージを含めて再配布する場合は、それらのライセンス要件も確認してください。
+Bot のソースコード © 2026 kk311intl は [GPL-3.0-only](LICENSE) です。独立したダウンローダー `video_downloader.py` は [GPL-2.0-or-later](LICENSE.downloader) で、Bot から子プロセスとして実行します。依存パッケージはそれぞれ元のライセンスに従います。同梱して再配布する場合は、それらの要件も確認してください。
 
 ## English
 
@@ -263,6 +267,8 @@ Photos request X's original-size variant (`orig`), not a thumbnail substitute; t
 
 X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews.
 
+Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files without continuing to resend media. External downloaders time each transfer separately and retain a 240-second overall limit. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Queue time is excluded; several healthy transfers may take more than a minute in total.
+
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 
 Runtime status shows traffic for the bot and its downloaders over the last 24 hours, estimated by minute and retained across restarts. It indicates when less than 24 hours of data are available. If counters are unavailable, it does not substitute server-wide traffic. This requires systemd's `IPAccounting=yes`.
@@ -296,4 +302,4 @@ sudo env TEST_URL='https://x.com/example/status/123456789' /opt/x-tweet-telegram
 
 The download check uses no cookies, sends no Telegram messages and removes its temporary files afterwards. Finally, confirm text and media reception in Telegram.
 
-Source © 2026 kk311intl is licensed under [GNU GPL v3.0 only](LICENSE) (`GPL-3.0-only`). requests, requests-toolbelt, Pillow, yt-dlp and gallery-dl retain their upstream licenses. Check their license requirements when redistributing a bundled build.
+Bot source © 2026 kk311intl is licensed under [GPL-3.0-only](LICENSE). The separate downloader, `video_downloader.py`, uses [GPL-2.0-or-later](LICENSE.downloader) and runs as a subprocess. Dependencies retain their upstream licenses; check their requirements when redistributing a bundled build.
