@@ -18,6 +18,8 @@ update-offset.json
 cookies.txt
 cookie-alert.json
 traffic.json
+runtime-ready.json
+control-result.json
 private-backups/
 *.tar.gz
 *.sqlite*

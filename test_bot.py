@@ -82,6 +82,265 @@ def stalled_http_server(tls=False):
             worker.join(timeout=2)
 
 
+class WorkflowTests(unittest.TestCase):
+    def test_first_poll_and_ready_marker_do_not_wait_for_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            api = MagicMock()
+            service = bot.Bot(api, bot.ACLStore(root / "acl.json", 100))
+            entered, release = bot.threading.Event(), bot.threading.Event()
+            def metadata():
+                entered.set()
+                release.wait(3)
+            api.configure_commands.side_effect = metadata
+            api.call.return_value = [{"update_id": 1}]
+            service.handle_update = MagicMock(side_effect=lambda _: service.stop())
+            try:
+                with patch.object(bot, "READY_PATH", root / "ready.json"), \
+                     patch.object(bot, "cleanup_stale_media"), patch.object(service.traffic, "sample"), \
+                     patch.object(bot, "load_update_offset", return_value=0), patch.object(bot, "save_update_offset"):
+                    service.start()
+                self.assertTrue(entered.wait(1))
+                service.handle_update.assert_called_once()
+                self.assertFalse(release.is_set())
+                ready = json.loads((root / "ready.json").read_text())
+                self.assertEqual((ready["pid"], ready["instance"], ready["version"]),
+                                 (os.getpid(), service.control_instance, bot.APP_VERSION))
+                self.assertEqual(api.call.call_args.args[1]["timeout"], 0)
+            finally:
+                service.stop()
+                release.set()
+                service.metadata_worker.join(2)
+                for worker in service.workers:
+                    worker.join(2)
+                service.traffic_worker.join(2)
+                service.inline_executor.shutdown(wait=True)
+
+    def test_failed_poll_does_not_publish_readiness_or_start_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+            service.api.call.side_effect = RuntimeError("unavailable")
+            try:
+                with patch.object(bot, "READY_PATH", root / "ready.json"), \
+                     patch.object(bot, "cleanup_stale_media"), patch.object(service.traffic, "sample"), \
+                     patch.object(bot, "load_update_offset", return_value=0), \
+                     patch.object(bot.time, "sleep", side_effect=lambda _: service.stop()), \
+                     patch.object(bot.LOG, "exception"):
+                    service.start()
+                self.assertFalse((root / "ready.json").exists())
+                service.api.configure_commands.assert_not_called()
+            finally:
+                service.stop()
+                for worker in service.workers:
+                    worker.join(2)
+                service.traffic_worker.join(2)
+                service.inline_executor.shutdown(wait=True)
+
+    def test_duplicate_posts_and_per_user_limit_do_not_consume_quota(self):
+        for language in bot.PUBLIC_TEXT:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as folder, \
+                 patch.object(bot, "MAX_USER_PENDING", 2), patch.object(bot, "media_disk_available", return_value=True):
+                store = bot.ACLStore(Path(folder) / "acl.json", 100)
+                for user in (200, 300):
+                    store.add(user)
+                    store.set_language(user, language)
+                service = bot.Bot(MagicMock(), store)
+                def send(user, message, author, post):
+                    service.handle_update({"message": {"message_id": message, "from": {"id": user},
+                        "chat": {"id": user}, "text": f"https://x.com/{author}/status/{post}"}})
+                send(200, 1, "one", 123)
+                send(200, 2, "another", 123)
+                self.assertEqual(service.api.send_message.call_args.args[1], bot.public_text(language, "already_processing"))
+                send(200, 3, "one", 124)
+                send(200, 4, "one", 125)
+                self.assertEqual(service.api.send_message.call_args.args[1], bot.public_text(language, "user_queue_full"))
+                send(300, 5, "one", 125)
+                self.assertEqual(store.data["users"]["200"]["usage_count"], 2)
+                self.assertEqual(store.data["users"]["300"]["usage_count"], 1)
+                self.assertEqual(len(store.data["pending_jobs"]), 3)
+                service.stop()
+                service.inline_executor.shutdown(wait=True)
+
+    def test_confirmed_delivery_stage_survives_restart_without_resending_preview(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_disk_available", return_value=True):
+            root = Path(folder)
+            store = bot.ACLStore(root / "acl.json", 100)
+            job = (100, 42, 100, "https://x.com/example/status/123")
+            store.consume(100, job=job)
+            tweet = {"id": "123", "text": "example", "media": {"all": [
+                {"type": "photo", "url": "https://pbs.twimg.com/test.jpg"}]}}
+            def download(_tweet, directory, **_options):
+                path = directory / "fxtwitter_1.jpg"
+                path.write_bytes(b"image")
+                return [path], 0
+            service = bot.Bot(MagicMock(), store)
+            service.api.send_documents.side_effect = KeyboardInterrupt()
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                with self.assertRaises(KeyboardInterrupt):
+                    service.process_url(*job)
+                reloaded = bot.ACLStore(root / "acl.json", 100)
+                self.assertEqual(reloaded.job_stage(100, 42), "preview")
+                replacement = bot.Bot(MagicMock(), reloaded)
+                replacement.process_url(*job)
+                replacement.api.send_previews.assert_not_called()
+                replacement.api.send_documents.assert_called_once()
+                self.assertEqual(reloaded.job_stage(100, 42), "documents")
+                replacement.api.reset_mock()
+                replacement.process_url(*job)
+                replacement.api.send_documents.assert_not_called()
+                reloaded.finish_job(100, 42)
+                self.assertFalse(reloaded.data["job_progress"])
+                self.assertEqual(reloaded.data["users"]["100"]["usage_count"], 1)
+            for item in (service, replacement):
+                item.stop()
+                item.inline_executor.shutdown(wait=True)
+
+    def test_invalid_or_orphaned_job_progress_is_rejected(self):
+        for progress in ([], {"200:42": "done"}, {"200:43": "preview"}, {"200:42": True}):
+            payload = {"pending_jobs": {"200:42": [200, 42, 200, "https://x.com/example/status/123"]},
+                       "job_progress": progress}
+            with self.subTest(progress=progress), self.assertRaises(ValueError):
+                bot.ACLStore.__new__(bot.ACLStore)._apply_state(payload, 1)
+
+    def test_extractor_sources_share_one_budget(self):
+        clock = [10.0]
+        def extract(command, timeout, directory):
+            clock[0] += 100
+            return subprocess.CompletedProcess(command, 1, "No media")
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+             patch.object(bot, "media_files", return_value=[]), patch.object(bot, "COOKIES_PATH") as cookies, \
+             patch.object(bot, "run_command", side_effect=extract) as command:
+            cookies.exists.return_value = True
+            bot.download_media("https://x.com/example/status/123", Path(folder))
+        self.assertEqual([call.kwargs["timeout"] for call in command.call_args_list], [240, 140, 40])
+
+    def test_metadata_and_direct_http_cannot_restart_an_exhausted_fetch_budget(self):
+        token = bot.CURRENT_FETCH_DEADLINE.set(100)
+        try:
+            with patch.object(bot.time, "monotonic", return_value=96):
+                self.assertEqual(bot.media_http_timeout(), (2, 2))
+            with patch.object(bot.time, "monotonic", return_value=101), \
+                 patch.object(bot, "http_session") as session, patch.object(bot.LOG, "exception"):
+                self.assertIsNone(bot.fetch_fxtwitter("https://x.com/example/status/123"))
+                self.assertEqual(bot.fetch_tweet_text("https://x.com/example/status/123"), ("", "", ""))
+                session.return_value.get.assert_not_called()
+        finally:
+            bot.CURRENT_FETCH_DEADLINE.reset(token)
+
+    def test_unsupported_extractor_does_not_repeat_with_cookies(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_files", return_value=[]), \
+             patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+             patch.object(bot, "COOKIES_PATH") as cookies, patch.object(bot, "run_command") as command:
+            cookies.exists.return_value = True
+            command.return_value = subprocess.CompletedProcess([], 1, "Unsupported URL")
+            bot.download_media("https://x.com/example/status/123", Path(folder))
+        self.assertEqual(command.call_count, 2)
+        self.assertTrue(all("--cookies" not in call.args[0] for call in command.call_args_list))
+
+    def test_selective_recovery_is_one_gallery_pass(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_files", return_value=[]), \
+             patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
+             patch.object(bot, "run_command", return_value=subprocess.CompletedProcess([], 1, "No media")) as command:
+            bot.download_media("https://x.com/example/status/123", Path(folder), allow_cookies=False, indices={2, 4})
+        command.assert_called_once()
+        arguments = command.call_args.args[0]
+        self.assertIn("--gallery-dl", arguments)
+        self.assertEqual(arguments[arguments.index("--range") + 1], "2,4")
+
+    def test_partial_recovery_preserves_source_order_and_completed_files(self):
+        tweet = {"id": "123", "text": "example", "media": {"all": [
+            {"type": "photo", "url": f"https://pbs.twimg.com/{index}.jpg"} for index in range(3)]}}
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_disk_available", return_value=True):
+            root = Path(folder)
+            service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+            def download(_tweet, directory, **_options):
+                files = [directory / f"fxtwitter_{index}.jpg" for index in (1, 3)]
+                for path in files: path.write_bytes(b"original")
+                return files, 0
+            def recover(url, directory, **options):
+                self.assertEqual(options["indices"], {2})
+                path = directory / "123_2.jpg"
+                path.write_bytes(b"recovered")
+                return [path], "gallery-dl", False
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "download_media", side_effect=recover) as fallback, \
+                 patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                service.process_url(100, 42, 100, "https://x.com/example/status/123")
+            self.assertEqual([path.name for path in service.api.send_previews.call_args.args[1]],
+                             ["fxtwitter_1.jpg", "123_2.jpg", "fxtwitter_3.jpg"])
+            fallback.assert_called_once()
+            service.api.send_message.assert_not_called()
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+    def test_deploy_readiness_rejects_stale_or_mismatched_markers(self):
+        import re
+        script = (Path(__file__).parent / "deploy.sh").read_text()
+        check = re.search(r"wait_for_readiness\(\).*?<<'PY'\n(.*?)\nPY", script, re.S).group(1)
+        check = check.replace("+ 90", "+ 0.05").replace("time.sleep(0.2)", "time.sleep(0.001)")
+        prefix = ("import subprocess\nsubprocess.check_output=lambda *a,**k: "
+                  "'MainPID=123\\nInvocationID=abc\\nActiveState=active\\n'\n")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ready.json"
+            valid = {"pid": 123, "instance": "abc", "version": bot.APP_VERSION}
+            for changes in ({}, {"pid": 122}, {"instance": "old"}, {"version": "0.0.0"}):
+                path.write_text(json.dumps(dict(valid, **changes)))
+                result = subprocess.run([sys.executable, "-", str(path), bot.APP_VERSION, "test.service"],
+                                        input=prefix + check, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode == 0, not changes, result.stderr)
+
+    def test_bootstrap_without_token_keeps_waiting_but_configured_bot_must_be_ready(self):
+        bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
+        if not Path(bash).is_file():
+            self.skipTest("Bash is required")
+        script = (Path(__file__).parent / "deploy.sh").read_text()
+        checks = "config_status=" + script.split("\nconfig_status=", 1)[1].split("# Health checks passed", 1)[0]
+        checks = checks.replace("/usr/local/sbin/x-tweet-bot-config status", "config_status")
+        for configured in (False, True):
+            status = "configured" if configured else "not configured"
+            prefix = ("set -e\nSERVICE=test.service\n"
+                      "systemctl() { if [[ $1 == show ]]; then printf '123\\n'; fi; }\n"
+                      f"config_status() {{ printf 'token={status}\\n'; }}\n"
+                      "wait_for_readiness() { printf 'ready_called\\n'; return 7; }\n")
+            result = subprocess.run([bash, "-c", prefix + checks], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 7 if configured else 0, result.stderr)
+            self.assertEqual("ready_called" in result.stdout, configured)
+
+    def test_recovery_updates_only_the_recovered_oversized_item(self):
+        tweet = {"id": "123", "text": "example", "media": {"all": [
+            {"type": "photo", "url": "https://pbs.twimg.com/1.jpg"},
+            {"type": "video", "url": "https://video.twimg.com/2.mp4"},
+            {"type": "video", "url": "https://video.twimg.com/3.mp4"}]}}
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_disk_available", return_value=True):
+            root = Path(folder)
+            service = bot.Bot(MagicMock(), bot.ACLStore(root / "acl.json", 100))
+            def download(_tweet, directory, *, outcomes):
+                outcomes.update({1: "ok", 2: "oversized", 3: "failed"})
+                photo = directory / "fxtwitter_1.jpg"
+                photo.write_bytes(b"photo")
+                return [photo], 1
+            def recover(url, directory, **options):
+                self.assertEqual(options["indices"], {2, 3})
+                video = directory / "123_2.mp4"
+                video.write_bytes(b"video")
+                duplicate = directory / "123_2.mov"
+                duplicate.write_bytes(b"duplicate")
+                return [video, duplicate], "gallery-dl", False
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "download_media", side_effect=recover), \
+                 patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                service.process_url(100, 42, 100, "https://x.com/example/status/123")
+            service.api.send_message.assert_called_once_with(100, bot.public_text("zh", "media_skipped"))
+            service.stop()
+            service.inline_executor.shutdown(wait=True)
+
+
 class ReliabilityTests(unittest.TestCase):
     def test_stalled_upload_is_interrupted_at_wall_clock_deadline(self):
         for tls in (False, True):
@@ -466,7 +725,7 @@ class ReliabilityTests(unittest.TestCase):
             store = bot.ACLStore(root / "acl.json", 100)
             service = bot.Bot(MagicMock(), store)
             service.api.send_previews.side_effect = bot.NetworkTimeout("test")
-            def download(_tweet, destination):
+            def download(_tweet, destination, **_options):
                 path = destination / "image.jpg"
                 path.write_bytes(b"image")
                 return [path], 0
@@ -491,7 +750,7 @@ class ReliabilityTests(unittest.TestCase):
             service.api.send_documents.side_effect = bot.NetworkTimeout("test")
             tweet = {"id": "123", "text": "test", "media": {"all": [
                 {"type": "video", "url": "https://video.twimg.com/test.mp4"}]}}
-            def download(_tweet, destination):
+            def download(_tweet, destination, **_options):
                 path = destination / "video.mp4"
                 path.write_bytes(b"video")
                 return [path], 0
@@ -664,7 +923,7 @@ class ReliabilityTests(unittest.TestCase):
             self.assertIsNone(api.set_reaction(200, 42, emoji))
             args, kwargs = session.post.call_args
             self.assertTrue(args[0].endswith("/setMessageReaction"))
-            self.assertEqual(kwargs["timeout"], (2, 3))
+            self.assertEqual(kwargs["timeout"], (0.5, 0.5))
             self.assertEqual(kwargs["data"]["chat_id"], 200)
             self.assertEqual(kwargs["data"]["message_id"], 42)
             self.assertEqual(json.loads(kwargs["data"]["reaction"]),
@@ -1445,7 +1704,8 @@ with patch.object(config_cli, 'open', side_effect=open_lock, create=True), \\
                 with self.subTest(files=files), patch.object(bot, "TMP_DIR", Path(directory)), \
                      patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
                      patch.object(bot, "download_fxtwitter_media", return_value=(files, 0)), \
-                     patch.object(bot, "run_command") as command:
+                     patch.object(bot, "run_command") as command, \
+                     patch.object(bot, "download_media", return_value=([], "", False)):
                     service.process_url(100, 10, 100, "https://x.com/example/status/123")
                 command.assert_not_called()
                 self.assertEqual(api.send_previews.call_args.args[1], files)
@@ -1459,7 +1719,7 @@ with patch.object(config_cli, 'open', side_effect=open_lock, create=True), \\
         self.assertLess(health_check, rollback_commit)
         bash = shutil.which("bash") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/bin/bash.exe")
         if Path(bash).exists():
-            checks = script.split("sleep 3\n", 1)[1].split("trap - EXIT ERR INT TERM\n", 1)[0]
+            checks = "config_status=" + script.split("\nconfig_status=", 1)[1].split("trap - EXIT ERR INT TERM\n", 1)[0]
             checks = checks.replace("/usr/local/sbin/x-tweet-bot-config status", "config_status")
             harness = """set -e
 SERVICE=test.service
@@ -1478,7 +1738,7 @@ trap rollback_deploy ERR
         script = (Path(__file__).parent / "deploy.sh").read_text(encoding="utf-8")
         cleanup = "cleanup_candidate() {\n" + script.split("cleanup_candidate() {\n", 1)[1].split(
             "\ntrap cleanup_candidate EXIT", 1)[0]
-        committed = script.split("/usr/local/sbin/x-tweet-bot-config status\n", 1)[1].split(
+        committed = script.split("# Health checks passed: the candidate is now the live environment.\n", 1)[1].split(
             '\necho "service=', 1)[0]
         harness = """set -u
 INSTALL_DIR="$PWD/install"
@@ -5735,9 +5995,13 @@ class MediaTests(unittest.TestCase):
                          patch.object(bot.time, "monotonic", clock), \
                          patch.object(bot.shutil, "disk_usage", return_value=MagicMock(free=10**12)), \
                          patch.object(bot, "prepare_image", side_effect=lambda path: path), \
-                         patch.object(bot, "download_media") as fallback, patch.object(bot.LOG, "warning"):
+                         patch.object(bot, "download_media", return_value=([], "", False)) as fallback, patch.object(bot.LOG, "warning"):
                         service.process_url(200, 1, 200, "https://x.com/example/status/123")
-                    fallback.assert_not_called()
+                    if failure == "deadline":
+                        fallback.assert_not_called()
+                    else:
+                        fallback.assert_called_once()
+                        self.assertEqual(fallback.call_args.kwargs["indices"], {2})
                     service.api.send_previews.assert_called_once()
                     self.assertEqual(len(service.api.send_previews.call_args.args[1]), 1)
                     self.assertIn("example text", service.api.send_previews.call_args.args[2])
@@ -6917,7 +7181,7 @@ class PerformanceSafetyTests(unittest.TestCase):
             script.index('chmod 0755 "$candidate_venv"'),
             script.index('ln -s "$candidate_venv" "$INSTALL_DIR/venv"'),
         )
-        self.assertIn('sleep 3\nsystemctl is-active --quiet "$SERVICE"', script)
+        self.assertIn('wait_for_readiness\nfi\nsystemctl is-active --quiet "$SERVICE"', script)
         self.assertIn('systemctl show "$SERVICE" -p MainPID --value', script)
         self.assertIn('systemctl is-active --quiet "$SERVICE"', script)
 

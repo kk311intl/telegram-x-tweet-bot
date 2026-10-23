@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.10.2
+# Telegram X／Twitter 貼文媒體 Bot · v3.11.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -51,6 +51,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DEFAULT_DAILY_LIMIT` | 50 | 新授權普通用戶額度，1–100000；Bot 內設定優先，不批次改現有額度。 |
 | `OWNER_CONTACT_URL` | 空白 | 使用說明頁的「問題反饋」按鈕連結，例如 https://t.me/YOUR_USERNAME；空白則不顯示。 |
 | `WORKER_COUNT` | 2 | 貼文並行數，1–8。 |
+| `MAX_USER_PENDING` | 3 | 每位用戶最多同時處理或排隊的貼文數，1–100；相同貼文尚未完成時不重複接收或扣額度。 |
+| `MEDIA_FETCH_SECONDS` | 240 | 抓取媒體與切換來源共用的秒數，60–900；不包含排隊與 Telegram 發送。 |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | 可用空間低於 1 GiB 時不接受新下載。 |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | 媒體暫存達到 1 GiB 時不接受新下載；非硬配額。 |
 | `TEMP_RETENTION_HOURS` | 24 | 清理過期且未使用的媒體暫存；啟動時及每小時檢查。 |
@@ -67,7 +69,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。
 
-單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。外部下載器逐次傳輸計時，整輪仍保留 240 秒上限。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。排隊時間不計入，多次正常傳輸合計可超過一分鐘。
+單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。各來源與畫質退避共用 `MEDIA_FETCH_SECONDS`，預設 240 秒，不會換來源就重新計時。來源順序可對應時，部分失敗的媒體最多補抓一次並保留原順序。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。多次正常傳輸合計可超過一分鐘。
+
+預覽與文件送達後分別記錄進度；重啟恢復任務時跳過已確認成功的階段，不再扣額度。Telegram 未回傳確認便斷線的情況，仍無法保證不重複。啟動先恢復接收，再於背景同步選單與描述；部署須確認工作線程及首次輪詢成功後才完成切換。
 
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
@@ -151,6 +155,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DEFAULT_DAILY_LIMIT` | 50 | 新規承認ユーザーの上限、1–100000。Bot 内の設定が優先し、既存の上限は変えません。 |
 | `OWNER_CONTACT_URL` | 空欄 | 使い方ページの「問い合わせ」ボタンのリンク。例：https://t.me/YOUR_USERNAME。空欄なら非表示。 |
 | `WORKER_COUNT` | 2 | 投稿処理の並列数、1–8。 |
+| `MAX_USER_PENDING` | 3 | 1人あたりの処理中・待機中の投稿数、1–100。同じ投稿の処理が終わるまでは重複受付・課金しません。 |
+| `MEDIA_FETCH_SECONDS` | 240 | メディア取得と配信元切り替えで共有する秒数、60–900。待機列と Telegram への送信は含みません。 |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | 空き容量が 1 GiB 未満なら新規ダウンロードを停止。 |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | メディア一時ファイルが 1 GiB に達したら受付停止。ハード上限ではありません。 |
 | `TEMP_RETENTION_HOURS` | 24 | 未使用の古いメディア一時ファイルを起動時と1時間ごとに確認・削除。 |
@@ -167,7 +173,9 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。
 
-DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。メディアの再送は続けません。外部ダウンローダーも通信ごとに計時し、全体には240秒の上限を残しています。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。待機列の時間は含まず、正常な通信の合計が1分を超えることはあります。
+DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。配信元や画質を切り替えても `MEDIA_FETCH_SECONDS`（初期値240秒）の残り時間を共有します。元の順序を特定できる場合は取得できなかったメディアだけを1回補完します。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。正常な通信の合計が1分を超えることはあります。
+
+プレビューと添付ファイルの送信確認をそれぞれ保存し、再起動後は確認済みの段階を省略します。利用回数も再加算しません。ただし Telegram の応答前に切断された場合は重複を完全には防げません。起動時は先に受付を再開し、メニューと説明を背景で同期します。更新は処理スレッドの起動と最初のポーリング成功を確認してから確定します。
 
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
@@ -251,6 +259,8 @@ After changing the initial quota, contact URL, timezone/schedule, media sizes, q
 | `DEFAULT_DAILY_LIMIT` | 50 | Quota for newly approved regular users, 1–100000; the in-bot default takes priority and existing quotas stay unchanged. |
 | `OWNER_CONTACT_URL` | empty | Help-page Feedback button URL, e.g. https://t.me/YOUR_USERNAME; omitted when empty. |
 | `WORKER_COUNT` | 2 | Concurrent post jobs, 1–8. |
+| `MAX_USER_PENDING` | 3 | Queued and running posts per user, 1–100. A post already in progress is not accepted or charged again. |
+| `MEDIA_FETCH_SECONDS` | 240 | Seconds shared by media fetching and source changes, 60–900; excludes queue time and Telegram sends. |
 | `MIN_FREE_DISK_BYTES` | 1073741824 | Stop accepting downloads below 1 GiB free. |
 | `TEMP_SOFT_LIMIT_BYTES` | 1073741824 | Stop accepting downloads at 1 GiB of media temporary files; not a hard quota. |
 | `TEMP_RETENTION_HOURS` | 24 | Check and remove expired, unused media temporary files at startup and hourly. |
@@ -267,7 +277,9 @@ Photos request X's original-size variant (`orig`), not a thumbnail substitute; t
 
 X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews.
 
-Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files without continuing to resend media. External downloaders time each transfer separately and retain a 240-second overall limit. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Queue time is excluded; several healthy transfers may take more than a minute in total.
+Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files. Sources and video-quality fallbacks share `MEDIA_FETCH_SECONDS` (240 seconds by default); changing sources does not reset it. Missing media get one selective recovery pass when source order can be matched. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Several healthy transfers may take more than a minute in total.
+
+Confirmed preview and document delivery stages are saved separately, so recovery after a restart skips completed stages without charging again. A connection lost before Telegram confirms delivery can still cause duplicates. Startup begins intake before synchronizing menus and descriptions in the background. Deployment completes only after workers start and the first successful poll is confirmed.
 
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 

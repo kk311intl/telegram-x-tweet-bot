@@ -223,10 +223,50 @@ python3 -m py_compile "$INSTALL_DIR/bot.py" /usr/local/sbin/x-tweet-bot-config
 systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
-sleep 3
+
+wait_for_readiness() {
+  "$INSTALL_DIR/venv/bin/python" - "$STATE_DIR/runtime-ready.json" "$(<"$SOURCE_DIR/VERSION")" "$SERVICE" <<'PY'
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+path, version, service = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+deadline = time.monotonic() + 90
+identity = None
+while time.monotonic() < deadline:
+    state = dict(line.split("=", 1) for line in subprocess.check_output(
+        ["systemctl", "show", service, "-p", "MainPID", "-p", "InvocationID", "-p", "ActiveState"],
+        text=True, stderr=subprocess.DEVNULL, timeout=5).splitlines() if "=" in line)
+    current = (int(state.get("MainPID", "0")), state.get("InvocationID", ""))
+    if current[0] <= 0 or not current[1] or state.get("ActiveState") != "active":
+        raise SystemExit("Bot stopped before becoming ready")
+    if identity is not None and current != identity:
+        raise SystemExit("Bot restarted before readiness was confirmed")
+    identity = current
+    try:
+        ready = json.loads(path.read_text())
+    except (OSError, ValueError):
+        ready = {}
+    if (isinstance(ready, dict) and ready.get("pid") == current[0]
+            and ready.get("instance") == current[1] and ready.get("version") == version):
+        print("runtime_ready=yes")
+        break
+    time.sleep(0.2)
+else:
+    raise SystemExit("Bot did not complete its first successful poll within 90 seconds")
+PY
+}
+config_status=$(/usr/local/sbin/x-tweet-bot-config status)
+printf '%s\n' "$config_status"
+if grep -Fxq 'token=not configured' <<<"$config_status"; then
+  echo "runtime_ready=waiting_for_token"
+else
+  wait_for_readiness
+fi
 systemctl is-active --quiet "$SERVICE"
 [[ $(systemctl show "$SERVICE" -p MainPID --value) =~ ^[1-9][0-9]*$ ]]
-/usr/local/sbin/x-tweet-bot-config status
 # Health checks passed: the candidate is now the live environment.
 trap - EXIT ERR INT TERM
 if [[ $rollback_dir == "$INSTALL_DIR"/.deploy-rollback.* ]]; then

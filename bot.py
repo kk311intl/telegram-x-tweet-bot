@@ -35,7 +35,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.10.2"
+APP_VERSION = "3.11.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -106,6 +106,7 @@ DNS_LOOKUP_SCRIPT = (
 )
 CURRENT_NETWORK_REQUEST: ContextVar[Any] = ContextVar("network_request", default=None)
 CURRENT_NETWORK_GROUP: ContextVar[Any] = ContextVar("network_group", default=None)
+CURRENT_FETCH_DEADLINE: ContextVar[float | None] = ContextVar("fetch_deadline", default=None)
 
 
 class NetworkTimeout(RuntimeError):
@@ -365,6 +366,8 @@ class DeadlineAdapter(requests.adapters.HTTPAdapter):
 # identity remain restart-only. Startup and reload share defaults and bounds.
 RELOAD_INTS = {
     "MAX_QUEUE": (12, 1, 100),
+    "MAX_USER_PENDING": (3, 1, 100),
+    "MEDIA_FETCH_SECONDS": (240, 60, 900),
     "MAX_MEDIA_BYTES": (50_000_000, 1024 ** 2, 50_000_000),
     "MAX_VIDEO_BYTES": (TELEGRAM_VIDEO_MAX_BYTES, 1024 ** 2, TELEGRAM_VIDEO_MAX_BYTES),
     "MAX_TOTAL_BYTES": (160 * 1024 ** 2, 1024 ** 2, 500 * 1024 ** 2),
@@ -381,6 +384,7 @@ RELOAD_DEFAULTS.update(OWNER_CONTACT_URL="", BOT_TIMEZONE="UTC")
 CONTROL_HANDOFF_SECONDS = 120
 CONTROL_PATH = Path("/etc/x-tweet-telegram-bot/control.json")
 CONTROL_RESULT_PATH = STATE_DIR / "control-result.json"
+READY_PATH = STATE_DIR / "runtime-ready.json"
 
 
 def validate_runtime_settings(values: dict) -> dict:
@@ -584,6 +588,8 @@ PUBLIC_TEXT = {
         "approved": "申请已通过，可以开始使用。",
         "failed": "处理失败，请稍后重试。",
         "network_timeout": "处理超时，已停止此任务，请稍后重试。",
+        "already_processing": "这条推文仍在处理中。",
+        "user_queue_full": "你还有任务正在处理，请稍后再试。",
         "post_unavailable": "无法获取这条推文，请确认推文可公开浏览或稍后再试。",
         "url_only": "请发送有效的 X/Twitter 单篇推文链接。",
         "inline_apply": "开启机器人申请使用权限",
@@ -621,6 +627,8 @@ PUBLIC_TEXT = {
         "approved": "申請已通過，可以開始使用。",
         "failed": "處理失敗，請稍後重試。",
         "network_timeout": "處理逾時，已停止此任務，請稍後重試。",
+        "already_processing": "這則貼文仍在處理中。",
+        "user_queue_full": "你還有任務正在處理，請稍後再試。",
         "post_unavailable": "無法取得這則貼文，請確認貼文可公開瀏覽或稍後再試。",
         "url_only": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "inline_apply": "開啟機器人申請使用權限",
@@ -658,6 +666,8 @@ PUBLIC_TEXT = {
         "approved": "Access approved. You can start using the bot.",
         "failed": "Processing failed. Try again later.",
         "network_timeout": "Processing timed out and was stopped. Try again later.",
+        "already_processing": "This post is still being processed.",
+        "user_queue_full": "You have tasks in progress. Try again shortly.",
         "post_unavailable": "Couldn't get this post. Check that it is public or try again later.",
         "url_only": "Send a valid single-post X/Twitter URL.",
         "inline_apply": "Open the Bot to request access",
@@ -695,6 +705,8 @@ PUBLIC_TEXT = {
         "approved": "申請が承認されました。利用を開始できます。",
         "failed": "処理に失敗しました。しばらくしてから再試行してください。",
         "network_timeout": "処理がタイムアウトしたため中止しました。しばらくしてから再試行してください。",
+        "already_processing": "この投稿はまだ処理中です。",
+        "user_queue_full": "処理中の投稿があります。しばらくしてから再試行してください。",
         "post_unavailable": "投稿を取得できません。公開されているか確認するか、しばらくしてから再試行してください。",
         "url_only": "有効な X/Twitter の単一投稿URLを送信してください。",
         "inline_apply": "Botを開いて利用を申請",
@@ -966,6 +978,7 @@ class ACLStore:
             "ordinary_user_cookies_enabled": True,
             "auto_approve_enabled": False,
             "pending_jobs": {},
+            "job_progress": {},
         }
         self._load()
         if env_owner_id and not self.data.get("owner_id"):
@@ -1040,6 +1053,7 @@ class ACLStore:
             ),
             "auto_approve_enabled": bool(raw.get("auto_approve_enabled", False)),
             "pending_jobs": raw.get("pending_jobs", {}),
+            "job_progress": raw.get("job_progress", {}),
         }
         if "default_daily_limit" in raw:
             limit = raw["default_daily_limit"]
@@ -1108,6 +1122,11 @@ class ACLStore:
                     or not isinstance(job[3], str)
                     or normalize_status_url(job[3]) != job[3]):
                 raise ValueError("invalid pending job")
+        progress = data["job_progress"]
+        if (not isinstance(progress, dict)
+                or any(key not in jobs or value not in ("preview", "documents")
+                       for key, value in progress.items())):
+            raise ValueError("invalid job progress")
         self.data = data
 
     @classmethod
@@ -1120,8 +1139,30 @@ class ACLStore:
 
     def finish_job(self, chat_id: int, message_id: int) -> None:
         with self.lock:
-            self.data["pending_jobs"].pop(f"{chat_id}:{message_id}", None)
+            key = f"{chat_id}:{message_id}"
+            self.data["pending_jobs"].pop(key, None)
+            self.data["job_progress"].pop(key, None)
             self._save()
+
+    def job_stage(self, chat_id: int, message_id: int) -> str:
+        with self.lock:
+            return self.data["job_progress"].get(f"{chat_id}:{message_id}", "")
+
+    def checkpoint_job(self, chat_id: int, message_id: int, stage: str) -> None:
+        if stage not in ("preview", "documents"):
+            raise ValueError("invalid job stage")
+        with self.lock:
+            key = f"{chat_id}:{message_id}"
+            if key in self.data["pending_jobs"]:
+                self.data["job_progress"][key] = stage
+                self._save()
+
+    def job_admission(self, user_id: int, url: str) -> str:
+        with self.lock:
+            jobs = [job for job in self.data["pending_jobs"].values() if job[2] == user_id]
+            if any(job[3].rsplit("/", 1)[-1] == url.rsplit("/", 1)[-1] for job in jobs):
+                return "already_processing"
+            return "user_queue_full" if len(jobs) >= MAX_USER_PENDING else ""
 
     def _load(self) -> None:
         if not self.path.exists() and not self.backup_path.exists():
@@ -2324,7 +2365,7 @@ class TelegramAPI:
         method: str,
         data: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
-        timeout: tuple[int, int] = (10, 70),
+        timeout: tuple[float, float] = (10, 70),
         retry_rate_limit: bool = True,
     ) -> Any:
         positions = [(value[1], value[1].tell()) for value in (files or {}).values()]
@@ -2566,7 +2607,7 @@ class TelegramAPI:
             self.call("setMessageReaction", {
                 "chat_id": chat_id, "message_id": message_id,
                 "reaction": json.dumps([{"type": "emoji", "emoji": emoji}] if emoji else []),
-            }, timeout=(2, 3))
+            }, timeout=(0.5, 0.5))
         except RuntimeError as error:
             # Reactions are cosmetic; unavailable reactions must not block a job.
             LOG.debug("Could not update Telegram reaction: %s", error)
@@ -2741,7 +2782,7 @@ class TelegramAPI:
 
 
 def run_command(
-    command: list[str], timeout: int, directory: Path
+    command: list[str], timeout: float, directory: Path
 ) -> subprocess.CompletedProcess[str]:
     LOG.info("Running extractor: %s", command[0])
     with tempfile.NamedTemporaryFile(
@@ -2870,13 +2911,23 @@ def tweet_html(
     return heading + html.escape(suffix_text)
 
 
+def media_http_timeout(deadline: float | None = None) -> tuple[float, float]:
+    deadline = CURRENT_FETCH_DEADLINE.get() if deadline is None else deadline
+    if deadline is None:
+        return 10, 30
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("Media fetch budget exhausted")
+    return min(10, remaining / 2), min(30, remaining / 2)
+
+
 def fetch_tweet_text(url: str) -> tuple[str, str, str]:
     try:
         response = http_session().get(
             "https://publish.twitter.com/oembed?" + urlencode(
                 {"url": url, "omit_script": "true", "dnt": "true"}
             ),
-            timeout=(10, 30),
+            timeout=media_http_timeout(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -2910,7 +2961,7 @@ def fetch_fxtwitter(url: str) -> dict[str, Any] | None:
     try:
         response = http_session().get(
             f"https://api.fxtwitter.com/i/status/{match.group(1)}",
-            timeout=(10, 30),
+            timeout=media_http_timeout(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -3242,12 +3293,12 @@ def media_caption(
 
 
 def download_fxtwitter_media(
-    tweet: dict[str, Any], directory: Path
+    tweet: dict[str, Any], directory: Path, *, outcomes: dict[int, str] | None = None
 ) -> tuple[list[Path], int]:
     total = 0
     budget_lock = threading.Lock()
     group = NetworkGroup()
-    deadline = time.monotonic() + 240
+    deadline = CURRENT_FETCH_DEADLINE.get() or time.monotonic() + MEDIA_FETCH_SECONDS
     def download_entry(entry: tuple[int, dict[str, Any]]) -> tuple[Path | None, bool]:
         nonlocal total
         index, item = entry
@@ -3280,7 +3331,7 @@ def download_fxtwitter_media(
             target = directory / f"fxtwitter_{index}{suffix or '.bin'}"
             size = 0
             try:
-                with trusted_twimg_response(media_url, timeout=(min(10, remaining), min(30, remaining))) as response:
+                with trusted_twimg_response(media_url, timeout=media_http_timeout(deadline)) as response:
                     # read1 returns available data without waiting to fill a chunk,
                     # so a slow trickle cannot bypass the overall deadline.
                     read = getattr(response.raw, "read1", None)
@@ -3336,6 +3387,9 @@ def download_fxtwitter_media(
         # Two downloads per media worker; uploads remain sequential.
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(download_item, entries))
+    if outcomes is not None:
+        outcomes.update({index: "ok" if path else "oversized" if oversized else "failed"
+                         for (index, _), (path, oversized) in zip(entries, results)})
     return [path for path, _ in results if path is not None], sum(oversized for _, oversized in results)
 
 
@@ -3446,17 +3500,21 @@ def video_dimensions(path: Path) -> tuple[int, int] | None:
 
 
 def download_media(
-    url: str, directory: Path, allow_cookies: bool = True
+    url: str, directory: Path, allow_cookies: bool = True, *, indices: set[int] | None = None
 ) -> tuple[list[Path], str, bool]:
     # Bitrate-based estimates can greatly exceed the actual MP4 size. Only use
     # known sizes to exclude formats; downloaders still enforce the byte limit.
     video_format = f"best[filesize<=?{MAX_VIDEO_BYTES}]"
+    deadline = CURRENT_FETCH_DEADLINE.get() or time.monotonic() + MEDIA_FETCH_SECONDS
 
     def run_extractor(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         try:
             if shutil.disk_usage(directory).free < MIN_FREE_DISK_BYTES:
                 raise OSError("Not enough free space for media download")
-            return run_command(arguments, timeout=240, directory=directory)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return subprocess.CompletedProcess(arguments, 1, "Media extraction budget exhausted")
+            return run_command(arguments, timeout=remaining, directory=directory)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # run_command has stopped the child. Keep completed files, but never
             # expose exception text that might include credentials or headers.
@@ -3467,7 +3525,7 @@ def download_media(
     command = [
         sys.executable, str(Path(__file__).with_name("video_downloader.py")), "--gallery-dl",
         "--ignore-config",
-        "--range", "1-10",
+        "--range", ",".join(str(index) for index in sorted(indices)) if indices else "1-10",
         "-o", f"downloader.http.filesize-max={max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)}",
         "--directory",
         str(directory),
@@ -3478,7 +3536,7 @@ def download_media(
         "-o",
         "extractor.twitter.size=orig",
         "-o",
-        "extractor.twitter.cards=true",
+        "extractor.twitter.cards=false" if indices is not None else "extractor.twitter.cards=true",
         "-o",
         "extractor.twitter.quoted=false",
         "-o",
@@ -3494,12 +3552,21 @@ def download_media(
         "-o",
         f"downloader.ytdl.module={Path(__file__).with_name('video_downloader.py')}",
     ]
+    if indices is not None:
+        # A single selective gallery-dl pass can preserve source ordinals.
+        # yt-dlp's single-video fallback cannot reliably map missing items.
+        if not indices:
+            return [], "", False
+        use_cookies = allow_cookies and COOKIES_PATH.exists()
+        options = ["--cookies", str(COOKIES_PATH)] if use_cookies else []
+        result = run_extractor([*command, *options, url])
+        return media_files(directory), "gallery-dl", bool(use_cookies and cookies_look_invalid(result.stdout))
     result = run_extractor([*command, url])
     files = media_files(directory)
     method = "gallery-dl（匿名）" if files else ""
     cookie_invalid = False
 
-    if not files and allow_cookies and COOKIES_PATH.exists():
+    if not files and allow_cookies and COOKIES_PATH.exists() and "Unsupported URL" not in result.stdout:
         result = run_extractor(
             [*command, "--cookies", str(COOKIES_PATH), url],
         )
@@ -3528,7 +3595,7 @@ def download_media(
         if files:
             method = "yt-dlp（匿名）"
 
-        if not files and allow_cookies and COOKIES_PATH.exists():
+        if not files and allow_cookies and COOKIES_PATH.exists() and "Unsupported URL" not in result.stdout:
             result = run_extractor(
                 [*fallback, "--cookies", str(COOKIES_PATH), url],
             )
@@ -3608,6 +3675,8 @@ class Bot:
         self.traffic = TrafficWindow(self.acl.path.parent / "traffic.json")
         self.traffic_worker = threading.Thread(target=self.traffic.record, args=(self.stop_event,),
                                                daemon=True, name="traffic-recorder")
+        self.metadata_worker = threading.Thread(target=self._sync_metadata, daemon=True,
+                                                name="telegram-metadata")
 
     def clear_pending_input(self, user_id: int) -> None:
         self.pending_cookie_uploads.discard(user_id)
@@ -3636,17 +3705,10 @@ class Bot:
         self.traffic_worker.start()
         cleanup_stale_media()
         self.last_disk_cleanup = time.monotonic()
-        try:
-            self.api.configure_commands()
-        except (requests.RequestException, RuntimeError, ValueError):
-            LOG.exception("Could not configure Telegram command menu")
-        try:
-            self.api.configure_profile()
-        except (requests.RequestException, RuntimeError, ValueError):
-            LOG.exception("Could not configure Telegram profile")
         for worker in self.workers:
             worker.start()
         offset = load_update_offset()
+        ready = False
         while not self.stop_event.is_set():
             try:
                 if self.runtime_control_tick():
@@ -3656,13 +3718,24 @@ class Bot:
                     "getUpdates",
                     {
                         "offset": offset,
-                        "timeout": 20,
+                        "timeout": 20 if ready else 0,
                         "allowed_updates": json.dumps(
                             ["message", "edited_message", "callback_query", "inline_query"]
                         ),
                     },
                     timeout=(10, 28),
                 )
+                if not ready and all(worker.is_alive() for worker in self.workers):
+                    try:
+                        atomic_write_text(READY_PATH, json.dumps({
+                            "pid": os.getpid(), "instance": self.control_instance,
+                            "version": APP_VERSION,
+                        }))
+                    except OSError:
+                        LOG.warning("Could not persist runtime readiness; retrying")
+                    else:
+                        ready = True
+                        self.metadata_worker.start()
                 for update in updates:
                     if self.stop_event.is_set():
                         break
@@ -3689,6 +3762,15 @@ class Bot:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def _sync_metadata(self) -> None:
+        for configure in (self.api.configure_commands, self.api.configure_profile):
+            if self.stop_event.is_set():
+                break
+            try:
+                configure()
+            except (requests.RequestException, RuntimeError, ValueError):
+                LOG.warning("Could not synchronize Telegram metadata")
 
     def runtime_control_tick(self) -> bool:
         """Main polling thread only: apply settings with no job using globals."""
@@ -4104,11 +4186,15 @@ class Bot:
                 chat_id, public_text(language, "service_paused"), message_id
             )
             return
-        if self.jobs.qsize() >= MAX_QUEUE:
-            self.api.send_message(chat_id, public_text(language, "queue_full"), message_id)
-            return
         job = (chat_id, message_id, user_id, url)
         if f"{chat_id}:{message_id}" in self.acl.data["pending_jobs"]:
+            return
+        admission = self.acl.job_admission(user_id, url)
+        if admission:
+            self.api.send_message(chat_id, public_text(language, admission), message_id)
+            return
+        if self.jobs.qsize() >= MAX_QUEUE:
+            self.api.send_message(chat_id, public_text(language, "queue_full"), message_id)
             return
         if not media_disk_available():
             self.api.send_message(chat_id, public_text(language, "queue_full"), message_id)
@@ -5406,12 +5492,19 @@ class Bot:
         self, chat_id: int, message_id: int, user_id: int, url: str
     ) -> None:
         with language_scope(self.acl.language(user_id)):
-            self._process_url(chat_id, message_id, user_id, url)
+            token = CURRENT_FETCH_DEADLINE.set(time.monotonic() + MEDIA_FETCH_SECONDS)
+            try:
+                self._process_url(chat_id, message_id, user_id, url)
+            finally:
+                CURRENT_FETCH_DEADLINE.reset(token)
 
     def _process_url(
         self, chat_id: int, message_id: int, user_id: int, url: str
     ) -> None:
         if not self.can_process(user_id):
+            return
+        stage = self.acl.job_stage(chat_id, message_id)
+        if stage == "documents":
             return
         if not media_disk_available():
             raise RuntimeError("Media storage is temporarily unavailable")
@@ -5428,12 +5521,39 @@ class Bot:
             cookie_invalid = False
             fallback_oversized_videos = 0
             fallback_skipped_media = False
+            outcomes: dict[int, str] = {}
             if root_tweet and fxtwitter_media(root_tweet):
                 files, fallback_oversized_videos = (
-                    download_fxtwitter_media(root_tweet, directory)
+                    download_fxtwitter_media(root_tweet, directory, outcomes=outcomes)
                 )
                 if files:
                     method = "FxTwitter 直連"
+                    tweet_id = effective_url.rsplit("/", 1)[-1]
+                    source_files = {}
+                    for path in files:
+                        match = re.fullmatch(r"fxtwitter_(\d+)\.[A-Za-z0-9]+", path.name)
+                        if match:
+                            source_files[int(match[1])] = path
+                    missing = set(range(1, len(fxtwitter_media(root_tweet)) + 1)) - source_files.keys()
+                    if (missing and len(source_files) == len(files)
+                            and len(root_tweet["media"]["all"]) == len(fxtwitter_media(root_tweet))
+                            and time.monotonic() < CURRENT_FETCH_DEADLINE.get()):
+                        recovered, _method, cookie_invalid = download_media(
+                            effective_url, directory,
+                            allow_cookies=self.acl.is_admin(user_id) or self.acl.ordinary_user_cookies_enabled,
+                            indices=missing,
+                        )
+                        for path in recovered:
+                            match = re.fullmatch(re.escape(tweet_id) + r"_(\d+)\.[A-Za-z0-9]+", path.name)
+                            if match and int(match[1]) in missing and int(match[1]) not in source_files:
+                                index = int(match[1])
+                                source_files[index] = path
+                                if outcomes.get(index) == "oversized":
+                                    fallback_oversized_videos -= 1
+                                method = "FxTwitter + gallery-dl"
+                        files = [source_files[index] for index in sorted(source_files)]
+                        if len(source_files) == len(fxtwitter_media(root_tweet)):
+                            fallback_oversized_videos = 0
             if not files:
                 files, method, cookie_invalid = download_media(
                     effective_url,
@@ -5505,7 +5625,7 @@ class Bot:
             )
             if not self.can_process(user_id):
                 return
-            if previews:
+            if previews and not stage:
                 try:
                     self.api.send_previews(
                         chat_id, previews, caption, parse_mode="HTML",
@@ -5527,10 +5647,12 @@ class Bot:
                         message_id,
                         parse_mode="HTML",
                     )
-            else:
+            elif not stage:
                 self.api.send_message(
                     chat_id, caption, message_id, parse_mode="HTML"
                 )
+            if not stage:
+                self.acl.checkpoint_job(chat_id, message_id, "preview")
             if not self.can_process(user_id):
                 return
             try:
@@ -5545,6 +5667,8 @@ class Bot:
                     chat_id,
                     public_text(self.acl.language(user_id), "originals_failed"),
                 )
+            else:
+                self.acl.checkpoint_job(chat_id, message_id, "documents")
             if not self.can_process(user_id):
                 return
             oversized_video_count = sum(reason == "video_oversized" for _, reason in rejected) + fallback_oversized_videos
