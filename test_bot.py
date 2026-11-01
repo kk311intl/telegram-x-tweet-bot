@@ -4539,8 +4539,8 @@ class MenuTests(unittest.TestCase):
             })
             language_keyboard = api.edit_message.call_args.args[3]["inline_keyboard"]
             self.assertEqual(
-                [button["callback_data"] for button in language_keyboard[0]],
-                ["lang:zh-cn", "lang:zh", "lang:en", "lang:ja"],
+                [[button["callback_data"] for button in row] for row in language_keyboard[:2]],
+                [["lang:zh-cn", "lang:zh"], ["lang:en", "lang:ja"]],
             )
             self.assertEqual(
                 language_keyboard[-1][0]["callback_data"], "public:main"
@@ -7264,8 +7264,11 @@ class PublicReleaseLanguageTests(unittest.TestCase):
                         callback = {"id": "language", "from": {"id": user_id, "language_code": "zh-hans"},
                                     "message": {"message_id": 1, "chat": {"id": user_id}}}
                         service.handle_callback({**callback, "data": "public:language"})
-                        row = api.edit_message.call_args.args[3]["inline_keyboard"][0]
-                        self.assertEqual([item["callback_data"] for item in row], ["lang:zh-cn", "lang:zh", "lang:en", "lang:ja"])
+                        rows = api.edit_message.call_args.args[3]["inline_keyboard"]
+                        self.assertEqual([[item["callback_data"] for item in row] for row in rows],
+                                         [["lang:zh-cn", "lang:zh"], ["lang:en", "lang:ja"], ["public:main"]])
+                        self.assertEqual([item["callback_data"] for row in rows[:2] for item in row if item["text"].startswith("✓ ")],
+                                         ["lang:" + store.language(user_id)])
                         service.handle_callback({**callback, "data": "lang:" + language})
                         self.assertEqual(store.language(user_id), language)
                         self.assertEqual(bot.ACLStore(path, 100).language(user_id), language)

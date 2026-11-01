@@ -36,7 +36,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.12.2"
+APP_VERSION = "3.12.3"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -4834,8 +4834,9 @@ class Bot:
             }]]}
             if destination == "language":
                 text = public_text(language, "choose_language")
+                languages = language_row(language)
                 keyboard = {
-                    "inline_keyboard": [language_row(language)]
+                    "inline_keyboard": [languages[:2], languages[2:]]
                     + back_keyboard["inline_keyboard"]
                 }
                 self.api.edit_message(chat_id, message_id, text, keyboard)
