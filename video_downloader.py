@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 kk311intl. See LICENSE.downloader.
 
+import json
 import os
 import sys
 import tempfile
@@ -148,6 +149,15 @@ class YoutubeDL(yt_dlp.YoutubeDL):
                         super().process_info(attempt)
                         output = Path(attempt.get("filepath") or temporary)
                         if output.is_file() and 0 < output.stat().st_size <= limit:
+                            if self.params.get("writeinfojson"):
+                                # Keep only sensitivity fields outside the disposable quality directory.
+                                sensitivity = {key: info[key] for key in ("sensitive", "possibly_sensitive")
+                                               if type(info.get(key)) is bool}
+                                if type(info.get("age_limit")) is int:
+                                    sensitivity["age_limit"] = info["age_limit"]
+                                marker = Path(folder) / "sensitivity.json"
+                                marker.write_text(json.dumps(sensitivity), encoding="utf-8")
+                                os.replace(marker, target.with_name(target.name + ".info.json"))
                             os.replace(output, target)
                             attempt.update(filepath=str(target), _filename=str(target))
                             info.update(attempt)

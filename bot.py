@@ -21,7 +21,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -29,13 +29,14 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from lunardate import LunarDate
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from PIL import Image, ImageOps
 from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.11.0"
+APP_VERSION = "3.12.2"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -57,6 +58,16 @@ ENV_OWNER_ID = env_int("OWNER_USER_ID", 0, 0, (1 << 52) - 1)
 BOOTSTRAP_CODE = os.environ.get("BOOTSTRAP_CODE", "").strip()
 OWNER_CONTACT_URL = os.environ.get("OWNER_CONTACT_URL", "").strip()
 CURRENT_LANGUAGE: ContextVar[str] = ContextVar("current_language", default="zh")
+CURRENT_USER_ID: ContextVar[int] = ContextVar("current_user_id", default=0)
+USAGE_SETTINGS_USER_IDS = frozenset(
+    int(item.strip()) for item in os.environ.get("USAGE_SETTINGS_USER_IDS", "").split(",") if item.strip()
+)
+if any(not 0 < user_id < (1 << 52) for user_id in USAGE_SETTINGS_USER_IDS):
+    raise ValueError("USAGE_SETTINGS_USER_IDS must contain valid Telegram user IDs")
+
+
+def usage_settings_enabled(user_id: int | None = None) -> bool:
+    return not USAGE_SETTINGS_USER_IDS or (CURRENT_USER_ID.get() if user_id is None else user_id) in USAGE_SETTINGS_USER_IDS
 
 
 def ui_language() -> str:
@@ -64,12 +75,15 @@ def ui_language() -> str:
 
 
 @contextmanager
-def language_scope(language: str):
+def language_scope(language: str, user_id: int | None = None):
     token = CURRENT_LANGUAGE.set(language if language in PUBLIC_TEXT else "zh")
+    user_token = CURRENT_USER_ID.set(user_id) if user_id is not None else None
     try:
         yield
     finally:
         CURRENT_LANGUAGE.reset(token)
+        if user_token is not None:
+            CURRENT_USER_ID.reset(user_token)
 
 
 BOT_TIMEZONE_NAME = os.environ.get("BOT_TIMEZONE", "UTC").strip()
@@ -91,6 +105,7 @@ MANAGEMENT_PAGE_SIZE = 20
 MIN_TELEGRAM_USER_ID_SHORTCUT = 100_000
 MAX_TELEGRAM_USER_ID = (1 << 52) - 1
 LANGUAGE_CODES = {"zh-cn": "CNS", "zh": "CNT", "ja": "JA", "en": "EN"}
+MEDIA_PREFERENCES = {"tweet_link_enabled": True, "originals_enabled": True, "spoiler_enabled": True, "holiday_enabled": True}
 USER_LIST_NAME_WIDTH = 10
 USER_ROLE_FILTERS = ("all", "ordinary", "admin", "pending", "blocked", "initialized")
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
@@ -432,6 +447,42 @@ def bot_date(timestamp: float | None = None) -> str:
     return local.strftime("%Y-%m-%d")
 
 
+def easter_date(year: int) -> date:
+    """Gregorian Easter (Meeus/Jones/Butcher computus)."""
+    golden = year % 19
+    century, remainder = divmod(year, 100)
+    leap_centuries, century_remainder = divmod(century, 4)
+    correction = (century + 8) // 25
+    moon = (19 * golden + century - leap_centuries - (century - correction + 1) // 3 + 15) % 30
+    leap_years, year_remainder = divmod(remainder, 4)
+    weekday = (32 + 2 * century_remainder + 2 * leap_years - moon - year_remainder) % 7
+    adjustment = (golden + 11 * moon + 22 * weekday) // 451
+    month, day = divmod(moon + weekday - 7 * adjustment + 114, 31)
+    return date(year, month, day + 1)
+
+
+def processing_reaction(language: str, holiday_enabled: bool = True, timestamp: float | None = None) -> str:
+    """Only the accepted input's temporary reaction; holidays use the UTC calendar day."""
+    if not holiday_enabled:
+        return "👀"
+    today = datetime.fromtimestamp(time.time() if timestamp is None else timestamp, timezone.utc).date()
+    shared = {(1, 1): "🎉", (10, 31): "🎃", (12, 25): "🎄"}
+    if emoji := shared.get((today.month, today.day)):
+        return emoji
+    # Telegram's standard reactions do not include an egg emoji.
+    if today.month in (3, 4) and today == easter_date(today.year):
+        return "🎉"
+    if language in {"zh-cn", "zh"} and today.month in (1, 2) and 1900 <= today.year <= 2099:
+        try:
+            lunar = LunarDate.from_solar_date(today.year, today.month, today.day)
+        except ValueError:
+            pass  # Before the calendar's supported start date.
+        else:
+            if not lunar.isLeapMonth and (lunar.month, lunar.day) in {(12, 30), (1, 1)}:
+                return "🎉"
+    return "👀"
+
+
 def http_session() -> requests.Session:
     """Reuse DNS, TCP and TLS state within each bounded worker thread."""
     if not hasattr(HTTP_LOCAL, "session"):
@@ -552,6 +603,7 @@ OWNER_BUTTONS = {
     "📊 運行狀態": "/status",
     "📊 系統狀態": "/status",  # Previously sent reply keyboards.
     "ℹ️ 使用說明": "/help",
+    "ℹ️ 使用設定": "/help",
     "👥 用戶列表": "/users",
     "📝 申請審批": "/requests",
     "🔐 權限修改": "/finduser",
@@ -566,12 +618,19 @@ PUBLIC_TEXT = {
     "zh-cn": {
         "start_allowed": "请发送有效的 X/Twitter 单篇推文链接。",
         "help_allowed": (
-            "使用说明\n\n"
+            "使用设置\n\n"
             "发送 X/Twitter 单篇推文链接，获取文字、图片和视频。\n"
             f"其他聊天输入 {BOT_MENTION} 加上推文链接即可分享。"
         ),
         "language_menu": "🌐 Language",
-        "help_menu": "ℹ️ 使用说明",
+        "help_menu": "ℹ️ 使用设置",
+        "tweet_link_toggle": "🔗 推文链接：{state}",
+        "spoiler_toggle": "🙈 NSFW 遮罩：{state}",
+        "originals_toggle": "📎 原始文件：{state}",
+        "holiday_toggle": "🎉 节日彩蛋：{state}",
+        "enabled": "开",
+        "disabled": "关",
+        "recent_updates": f"最近更新 · {APP_VERSION}\nNSFW 预览默认加遮罩，并标记 🙈。\n新增推文链接、原始文件和节日彩蛋开关。",
         "feedback": "💬 问题反馈",
         "choose_language": "请选择语言。",
         "back": "↩️ 返回",
@@ -605,12 +664,19 @@ PUBLIC_TEXT = {
     "zh": {
         "start_allowed": "請傳送有效的 X/Twitter 單篇貼文網址。",
         "help_allowed": (
-            "使用說明\n\n"
+            "使用設定\n\n"
             "傳送 X/Twitter 單篇貼文網址，取得文字、圖片和影片。\n"
             f"其他聊天輸入 {BOT_MENTION} 加上貼文網址即可分享。"
         ),
         "language_menu": "🌐 Language",
-        "help_menu": "ℹ️ 使用說明",
+        "help_menu": "ℹ️ 使用設定",
+        "tweet_link_toggle": "🔗 推文連結：{state}",
+        "spoiler_toggle": "🙈 NSFW 遮罩：{state}",
+        "originals_toggle": "📎 原檔輸出：{state}",
+        "holiday_toggle": "🎉 節日彩蛋：{state}",
+        "enabled": "開",
+        "disabled": "關",
+        "recent_updates": f"最近更新 · {APP_VERSION}\nNSFW 預覽預設加遮罩，並標記 🙈。\n新增推文連結、原檔輸出和節日彩蛋開關。",
         "feedback": "💬 問題反饋",
         "choose_language": "請選擇語言。",
         "back": "↩️ 返回",
@@ -644,12 +710,19 @@ PUBLIC_TEXT = {
     "en": {
         "start_allowed": "Send a valid single-post X/Twitter URL.",
         "help_allowed": (
-            "How to use\n\n"
+            "Usage settings\n\n"
             "Send an X/Twitter post URL to get its text, images and videos.\n"
             f"Share elsewhere: type {BOT_MENTION} followed by the post URL."
         ),
         "language_menu": "🌐 Language",
-        "help_menu": "ℹ️ How to use",
+        "help_menu": "ℹ️ Usage settings",
+        "tweet_link_toggle": "🔗 Post link: {state}",
+        "spoiler_toggle": "🙈 NSFW spoiler: {state}",
+        "originals_toggle": "📎 Original files: {state}",
+        "holiday_toggle": "🎉 Holiday reactions: {state}",
+        "enabled": "On",
+        "disabled": "Off",
+        "recent_updates": f"What's new · {APP_VERSION}\nNSFW previews are covered by default and tagged with 🙈.\nNew toggles for post links, original files and holiday reactions.",
         "feedback": "💬 Feedback",
         "choose_language": "Choose a language.",
         "back": "↩️ Back",
@@ -683,12 +756,19 @@ PUBLIC_TEXT = {
     "ja": {
         "start_allowed": "有効な X/Twitter の単一投稿URLを送信してください。",
         "help_allowed": (
-            "使い方\n\n"
+            "利用設定\n\n"
             "X/Twitter の単一投稿URLを送ると、本文・画像・動画を取得できます。\n"
             f"他のチャットで {BOT_MENTION} に続けて投稿URLを入力すると共有できます。"
         ),
         "language_menu": "🌐 Language",
-        "help_menu": "ℹ️ 使い方",
+        "help_menu": "ℹ️ 利用設定",
+        "tweet_link_toggle": "🔗 投稿リンク：{state}",
+        "spoiler_toggle": "🙈 NSFW ぼかし：{state}",
+        "originals_toggle": "📎 元ファイル：{state}",
+        "holiday_toggle": "🎉 季節のリアクション：{state}",
+        "enabled": "オン",
+        "disabled": "オフ",
+        "recent_updates": f"最近の更新 · {APP_VERSION}\nNSFW プレビューは既定でぼかし、🙈 を付けます。\n投稿リンク・元ファイル・季節のリアクションの切り替えを追加しました。",
         "feedback": "💬 問い合わせ",
         "choose_language": "言語を選択してください。",
         "back": "↩️ 戻る",
@@ -722,22 +802,46 @@ PUBLIC_TEXT = {
 }
 
 
+LEGACY_HELP_TITLES = {"zh-cn": "使用说明", "zh": "使用說明", "en": "How to use", "ja": "使い方"}
+
+
 def public_text(language: str, key: str, **values: Any) -> str:
     selected = language if language in PUBLIC_TEXT else "zh"
+    if not usage_settings_enabled():
+        if key == "help_menu":
+            return "ℹ️ " + LEGACY_HELP_TITLES[selected]
+        if key in {"help_allowed", "recent_updates"}:
+            return LEGACY_HELP_TITLES[selected] + "\n" + PUBLIC_TEXT[selected]["help_allowed"].split("\n", 1)[1]
     return PUBLIC_TEXT[selected][key].format(**values)
 
 
 def public_help_text(language: str) -> str:
-    return public_text(language, "help_allowed")
+    text = public_text(language, "help_allowed")
+    return text + "\n\n" + public_text(language, "recent_updates") if usage_settings_enabled() else text
 
 
-def public_help_keyboard(language: str) -> dict[str, Any]:
+def public_help_keyboard(
+    language: str, spoiler_enabled: bool = True, originals_enabled: bool = True,
+    holiday_enabled: bool = True, tweet_link_enabled: bool = True,
+) -> dict[str, Any]:
     buttons = []
     parsed = urlparse(OWNER_CONTACT_URL)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         buttons.append({"text": public_text(language, "feedback"), "url": OWNER_CONTACT_URL})
     buttons.append({"text": public_text(language, "back"), "callback_data": "public:main"})
-    return {"inline_keyboard": [buttons]}
+    if not usage_settings_enabled():
+        return {"inline_keyboard": [buttons]}
+    return {"inline_keyboard": [
+        [{"text": public_text(language, key, state=public_text(language, "enabled" if enabled else "disabled")),
+          "callback_data": f"public:{setting}"}
+         for key, setting, enabled in (("tweet_link_toggle", "tweet_link_enabled", tweet_link_enabled),
+                                       ("originals_toggle", "originals_enabled", originals_enabled))],
+        [{"text": public_text(language, key, state=public_text(language, "enabled" if enabled else "disabled")),
+          "callback_data": f"public:{setting}"}
+         for key, setting, enabled in (("spoiler_toggle", "spoiler_enabled", spoiler_enabled),
+                                      ("holiday_toggle", "holiday_enabled", holiday_enabled))],
+        buttons,
+    ]}
 
 
 # Every account keeps its own language; request-local context isolates workers.
@@ -777,7 +881,7 @@ ADMIN_TEXT = {
     ),
     "running": ("正常", "Running", "稼働中", "正常"),
     "worker_stopped": ("工作執行緒未運行", "Worker stopped", "ワーカー停止", "工作线程未运行"),
-    "help": ("使用說明", "Help", "使い方", "使用说明"),
+    "help": ("使用設定", "Usage settings", "利用設定", "使用设置"),
     "advanced": ("高級選項", "Advanced settings", "詳細設定", "高级选项"),
     "user_controls": ("用戶控制", "User controls", "ユーザー制御", "用户控制"),
     "quota_management": ("額度管理", "Quota management", "上限管理", "额度管理"),
@@ -917,10 +1021,13 @@ ADMIN_TEXT = {
 
 
 def admin_text(key: str) -> str:
+    if key == "help" and not usage_settings_enabled():
+        return LEGACY_HELP_TITLES[ui_language()]
     return ADMIN_TEXT[key][{"zh": 0, "en": 1, "ja": 2, "zh-cn": 3}[ui_language()]]
 
 URL_RE = re.compile(
-    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/([0-9]+)(?:[^\s]*)?",
+    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/(?P<author>[A-Za-z0-9_]+)/status/"
+    r"(?P<tweet_id>[0-9]{1,25})(?![0-9])",
     re.IGNORECASE,
 )
 
@@ -1086,8 +1193,9 @@ class ACLStore:
             record = users.setdefault(str(user_id), {"user_id": user_id})
             if not isinstance(record, dict):
                 raise ValueError("ACL user record must be an object")
-            if "debug_mode" in record and type(record["debug_mode"]) is not bool:
-                raise ValueError("invalid ACL user debug mode")
+            for setting in ("debug_mode", *MEDIA_PREFERENCES):
+                if setting in record and type(record[setting]) is not bool:
+                    raise ValueError(f"invalid ACL user boolean: {setting}")
             record.pop("management_mode", None)
             record["user_id"] = user_id
             if user_id == data["owner_id"]:
@@ -1461,6 +1569,19 @@ class ACLStore:
             record["language"] = language
             self._save()
 
+    def media_preferences(self, user_id: int) -> dict[str, bool]:
+        with self.lock:
+            record = self.data["users"].get(str(user_id)) or {}
+            return {key: record.get(key, default) for key, default in MEDIA_PREFERENCES.items()}
+
+    def toggle_media_preference(self, user_id: int, setting: str) -> None:
+        if setting not in MEDIA_PREFERENCES or not is_telegram_user_id(user_id):
+            raise ValueError("invalid media preference")
+        with self.lock:
+            record = self.data["users"].setdefault(str(user_id), {"user_id": user_id})
+            record[setting] = not record.get(setting, MEDIA_PREFERENCES[setting])
+            self._save()
+
     def observe(self, sender: dict[str, Any], now: float | None = None) -> bool:
         user_id = int(sender.get("id", 0) or 0)
         if not user_id:
@@ -1726,14 +1847,7 @@ def normalize_status_url(text: str) -> str | None:
     match = URL_RE.search(text)
     if not match:
         return None
-    parsed = urlparse(match.group(0))
-    host = parsed.hostname.lower() if parsed.hostname else ""
-    if host not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}:
-        return None
-    path_match = re.search(r"/([A-Za-z0-9_]+)/status/([0-9]+)", parsed.path)
-    if not path_match or len(path_match.group(2)) > 25:
-        return None
-    return f"https://x.com/{path_match.group(1)}/status/{path_match.group(2)}"
+    return f"https://x.com/{match['author']}/status/{match['tweet_id']}"
 
 
 def owner_keyboard() -> dict[str, Any]:
@@ -2649,6 +2763,7 @@ class TelegramAPI:
         parse_mode: str | None = None,
         *,
         filename: str | None = None,
+        has_spoiler: bool = False,
     ) -> Any:
         suffix = path.suffix.lower()
         data: dict[str, Any] = {
@@ -2671,6 +2786,8 @@ class TelegramAPI:
             return None
         if silent:
             data["disable_notification"] = "true"
+        if has_spoiler:
+            data["has_spoiler"] = "true"
         with path.open("rb") as handle:
             return self.call(
                 method,
@@ -2687,6 +2804,7 @@ class TelegramAPI:
         parse_mode: str | None = None,
         *,
         tweet_id: str | None = None,
+        has_spoiler: bool = False,
     ) -> list[dict[str, Any]]:
         if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
             raise ValueError("invalid post ID for media filename")
@@ -2705,6 +2823,7 @@ class TelegramAPI:
                 result = self.send_preview(
                     chat_id, path, caption if index == 0 else "", parse_mode=parse_mode,
                     filename=f"X_{tweet_id}_{index + 1:02d}{path.suffix.lower()}" if tweet_id else None,
+                    has_spoiler=has_spoiler,
                 )
                 if isinstance(result, dict):
                     results.append(result)
@@ -2720,6 +2839,8 @@ class TelegramAPI:
                     "type": "photo" if suffix in {".jpg", ".jpeg", ".png", ".webp"} else "video",
                     "media": f"attach://{name}",
                 }
+                if has_spoiler:
+                    item["has_spoiler"] = True
                 if index == 0:
                     item["caption"] = caption if parse_mode else caption[:1024]
                     if parse_mode:
@@ -2901,13 +3022,13 @@ def tweet_html(
     limit: int,
     note: str = "",
 ) -> str:
-    suffix_text = f"\n\n{url}"
+    suffix_text = f"\n\n{url}" if url else ""
     if note:
         suffix_text += f"\n\n{note}"
     heading_limit = max(0, limit - len(suffix_text))
     heading = author_text_html(author, author_url, text, heading_limit)
     if not heading:
-        return html.escape(truncate_text(url + (f"\n\n{note}" if note else ""), limit))
+        return html.escape(truncate_text(url + (f"\n\n{note}" if note else "") or "X/Twitter", limit))
     return heading + html.escape(suffix_text)
 
 
@@ -2960,7 +3081,7 @@ def fetch_fxtwitter(url: str) -> dict[str, Any] | None:
         return None
     try:
         response = http_session().get(
-            f"https://api.fxtwitter.com/i/status/{match.group(1)}",
+            f"https://api.fxtwitter.com/i/status/{match['tweet_id']}",
             timeout=media_http_timeout(),
         )
         response.raise_for_status()
@@ -2979,6 +3100,41 @@ def fetch_fxtwitter(url: str) -> dict[str, Any] | None:
     except (requests.RequestException, ValueError, TypeError):
         LOG.exception("FxTwitter fallback failed")
         return None
+
+
+def sensitive_metadata(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("possibly_sensitive") is True or value.get("sensitive") is True:
+        return True
+    age = value.get("age_limit")
+    if type(age) is int and age >= 18:
+        return True
+    flags = value.get("sensitive_flags")
+    if isinstance(flags, dict):
+        return any(flag is True for flag in flags.values())
+    return isinstance(flags, (list, tuple)) and any(
+        flag in ("adult_content", "graphic_violence", "other", "Nudity", "Violence", "Sensitive") for flag in flags
+    )
+
+
+def downloaded_media_sensitive(directory: Path) -> bool:
+    # Only temporary extractor sidecars; never include their contents in logs.
+    checked = 0
+    for path in directory.rglob("*.json"):
+        if ".cache" in path.relative_to(directory).parts:
+            continue
+        if checked >= 20:
+            break
+        checked += 1
+        try:
+            with path.open("rb") as source:
+                content = source.read(1_048_577)
+            if len(content) <= 1_048_576 and sensitive_metadata(json.loads(content)):
+                return True
+        except (OSError, ValueError, RecursionError):
+            continue
+    return False
 
 
 def fxtwitter_tweet_url(tweet: dict[str, Any]) -> str | None:
@@ -3178,7 +3334,9 @@ def inline_caption(
     )
 
 
-def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
+def build_inline_results(
+    url: str, debug: bool = False, *, spoiler_enabled: bool = True, tweet_link_enabled: bool = True,
+) -> list[dict[str, Any]]:
     tweet = fetch_fxtwitter(url)
     if not tweet:
         return []
@@ -3186,7 +3344,20 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
     text, author, author_url = fxtwitter_text_author(tweet)
     if not text:
         text, author, author_url = fetch_tweet_text(effective_url)
-    caption = inline_caption(author, author_url, text, effective_url, debug)
+    caption_url = effective_url if tweet_link_enabled else ""
+    result_prefix = "" if tweet_link_enabled else "no-link:"
+    if spoiler_enabled and (sensitive_metadata(tweet) or any(sensitive_metadata(item) for item in fxtwitter_media(tweet))):
+        # Inline media results have no spoiler field. Share a covered text card
+        # without a thumbnail or link preview instead of exposing the media.
+        return [{
+            "type": "article", "id": inline_result_id(result_prefix + "spoiler:" + effective_url, 0),
+            "title": "🙈 NSFW", "description": author,
+            "input_message_content": {
+                "message_text": "<tg-spoiler>" + tweet_html(author, author_url, text, caption_url, 4096) + "</tg-spoiler>",
+                "parse_mode": "HTML", "disable_web_page_preview": True,
+            },
+        }]
+    caption = inline_caption(author, author_url, text, caption_url, debug)
     results: list[dict[str, Any]] = []
     for index, item in enumerate(fxtwitter_media(tweet), start=1):
         if len(results) >= INLINE_RESULT_LIMIT:
@@ -3201,7 +3372,7 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
             preview_url = inline_photo_url(media_url)
             result: dict[str, Any] = {
                 "type": "photo",
-                "id": inline_result_id(media_url, index),
+                "id": inline_result_id(result_prefix + media_url, index),
                 "photo_url": preview_url,
                 "thumbnail_url": preview_url,
                 "caption": caption,
@@ -3220,7 +3391,7 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
             continue
         result = {
             "type": "mpeg4_gif" if media_type == "gif" else "video",
-            "id": inline_result_id(media_url, index),
+            "id": inline_result_id(result_prefix + media_url, index),
             "thumbnail_url": thumbnail_url,
             "title": author or "X/Twitter media",
             "caption": caption,
@@ -3243,16 +3414,16 @@ def build_inline_results(url: str, debug: bool = False) -> list[dict[str, Any]]:
         results.append(result)
     if results:
         return results
-    message = tweet_html(author, author_url, text, effective_url, 4096)
+    message = tweet_html(author, author_url, text, caption_url, 4096)
     return [{
         "type": "article",
-        "id": inline_result_id(effective_url, 0),
+        "id": inline_result_id(result_prefix + effective_url, 0),
         "title": author or "X/Twitter post",
         "description": text[:120],
         "input_message_content": {
             "message_text": message,
             "parse_mode": "HTML",
-            "disable_web_page_preview": False,
+            "disable_web_page_preview": not tweet_link_enabled,
         },
     }]
 
@@ -3525,6 +3696,8 @@ def download_media(
     command = [
         sys.executable, str(Path(__file__).with_name("video_downloader.py")), "--gallery-dl",
         "--ignore-config",
+        "--write-metadata",
+        "-O", "include=sensitive,sensitive_flags",
         "--range", ",".join(str(index) for index in sorted(indices)) if indices else "1-10",
         "-o", f"downloader.http.filesize-max={max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)}",
         "--directory",
@@ -3581,6 +3754,7 @@ def download_media(
             str(Path(__file__).with_name("video_downloader.py")),
             "--no-config",
             "--no-playlist",
+            "--write-info-json",
             "--max-filesize", str(MAX_VIDEO_BYTES),
             "--restrict-filenames",
             "--merge-output-format",
@@ -3661,7 +3835,7 @@ class Bot:
         self.inline_futures: set[Future[Any]] = set()
         self.inline_cache_lock = threading.Lock()
         self.inline_cache: dict[
-            tuple[str, bool, str], tuple[float, list[dict[str, Any]]]
+            tuple[str, bool, str, bool, bool], tuple[float, list[dict[str, Any]]]
         ] = {}
         self.pending_cookie_uploads: set[int] = set()
         self.cookie_alert_lock = threading.Lock()
@@ -3854,10 +4028,15 @@ class Bot:
             or self.acl.is_admin(user_id)
         )
 
+    def usage_preferences(self, user_id: int) -> dict[str, bool]:
+        if usage_settings_enabled(user_id):
+            return self.acl.media_preferences(user_id)
+        return {"tweet_link_enabled": True, "spoiler_enabled": False, "originals_enabled": True, "holiday_enabled": False}
+
     def handle_update(self, update: dict[str, Any]) -> None:
         event = update.get("inline_query") or update.get("callback_query") or update.get("message") or update.get("edited_message") or {}
         user_id = int((event.get("from") or {}).get("id", 0) or 0)
-        with language_scope(self.acl.language(user_id)):
+        with language_scope(self.acl.language(user_id), user_id):
             self._handle_update(update)
 
     def _handle_update(self, update: dict[str, Any]) -> None:
@@ -4123,7 +4302,7 @@ class Bot:
                         chat_id,
                         public_help_text(language),
                         message_id,
-                        public_help_keyboard(language),
+                        public_help_keyboard(language, **self.usage_preferences(user_id)),
                         parse_mode="HTML",
                     )
                     return
@@ -4207,7 +4386,9 @@ class Bot:
                 message_id,
             )
             return
-        self.api.set_reaction(chat_id, message_id, "👀")
+        self.api.set_reaction(chat_id, message_id, processing_reaction(
+            language, self.usage_preferences(user_id)["holiday_enabled"],
+        ))
         self.jobs.put_nowait(job)
 
     def consume_inline_once(self, user_id: int, url: str) -> bool:
@@ -4292,7 +4473,7 @@ class Bot:
     def _process_inline_query(self, query_id: str, url: str, debug: bool,
                               user_id: int | None = None) -> None:
         language = self.acl.language(user_id) if user_id is not None else ui_language()
-        with language_scope(language):
+        with language_scope(language, user_id):
             self._build_inline_query_response(query_id, url, debug, user_id)
 
     def _build_inline_query_response(self, query_id: str, url: str, debug: bool,
@@ -4302,7 +4483,10 @@ class Bot:
                 self.api.answer_inline_query(query_id, [])
                 return
             now = time.monotonic()
-            key = (url, debug, ui_language())
+            preferences = self.usage_preferences(user_id) if user_id is not None else MEDIA_PREFERENCES
+            spoiler_enabled = preferences["spoiler_enabled"]
+            tweet_link_enabled = preferences["tweet_link_enabled"]
+            key = (url, debug, ui_language(), spoiler_enabled, tweet_link_enabled)
             with self.inline_cache_lock:
                 self.inline_cache = {
                     cache_key: value
@@ -4313,7 +4497,7 @@ class Bot:
             if cached:
                 results = cached[1]
             else:
-                results = build_inline_results(url, debug=debug)
+                results = build_inline_results(url, debug=debug, spoiler_enabled=spoiler_enabled, tweet_link_enabled=tweet_link_enabled)
                 if INLINE_CACHE_SECONDS:
                     with self.inline_cache_lock:
                         self.inline_cache[key] = (
@@ -4331,7 +4515,7 @@ class Bot:
                 LOG.warning("Could not answer failed inline query")
 
     def maybe_send_daily_report(self, force: bool = False) -> None:
-        with language_scope(self.acl.language(self.acl.owner_id)):
+        with language_scope(self.acl.language(self.acl.owner_id), self.acl.owner_id):
             self._send_daily_report(force)
 
     def _send_daily_report(self, force: bool = False) -> None:
@@ -4507,7 +4691,7 @@ class Bot:
         self.api.send_message(chat_id, text, message_id, keyboard, parse_mode="HTML")
 
     def system_status_text(self, viewer_id: int) -> str:
-        with language_scope(self.acl.language(viewer_id)):
+        with language_scope(self.acl.language(viewer_id), viewer_id):
             return self._system_status_text(viewer_id)
 
     def _system_status_text(self, viewer_id: int) -> str:
@@ -4526,7 +4710,7 @@ class Bot:
         return text.rstrip()
 
     def usage_overview_text(self, viewer_id: int) -> str:
-        with language_scope(self.acl.language(viewer_id)):
+        with language_scope(self.acl.language(viewer_id), viewer_id):
             return self._usage_overview_text()
 
     def _usage_overview_text(self) -> str:
@@ -4583,7 +4767,7 @@ class Bot:
 
     def handle_callback(self, callback: dict[str, Any]) -> None:
         user_id = int((callback.get("from") or {}).get("id", 0) or 0)
-        with language_scope(self.acl.language(user_id)):
+        with language_scope(self.acl.language(user_id), user_id):
             self._handle_callback(callback)
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
@@ -4636,6 +4820,10 @@ class Bot:
 
         if data.startswith("public:"):
             destination = data.split(":", 1)[1]
+            if destination == "updates":
+                destination = "help"  # Old settings keyboards still lead to the current page.
+            if not usage_settings_enabled(user_id) and destination in {*MEDIA_PREFERENCES, "updates"}:
+                destination = "help"
             if is_admin and not self.is_private_management_chat(user_id, chat_id):
                 self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
                 return
@@ -4651,12 +4839,17 @@ class Bot:
                     + back_keyboard["inline_keyboard"]
                 }
                 self.api.edit_message(chat_id, message_id, text, keyboard)
-            elif destination == "help":
+            elif destination in {"help", *MEDIA_PREFERENCES}:
+                if destination in MEDIA_PREFERENCES:
+                    if chat_id != user_id:
+                        self.api.answer_callback(callback_id, admin_text("private_only"), alert=True)
+                        return
+                    self.acl.toggle_media_preference(user_id, destination)
                 self.api.edit_message(
                     chat_id,
                     message_id,
                     public_help_text(language),
-                    public_help_keyboard(language),
+                    public_help_keyboard(language, **self.usage_preferences(user_id)),
                     parse_mode="HTML",
                 )
             elif destination == "main":
@@ -4765,7 +4958,7 @@ class Bot:
                     text = admin_text("bulk_quota_prompt")
                     keyboard = quota_input_keyboard()
             elif destination == "help":
-                text, keyboard = public_help_text(language), public_help_keyboard(language)
+                text, keyboard = public_help_text(language), public_help_keyboard(language, **self.usage_preferences(user_id))
             elif destination == "userlist":
                 text, keyboard, _ = self.users_page(self.acl.records(), 0)
             elif destination == "requests":
@@ -5236,7 +5429,7 @@ class Bot:
         command: str,
         argument: str,
     ) -> None:
-        with language_scope(self.acl.language(actor_id)):
+        with language_scope(self.acl.language(actor_id), actor_id):
             self._handle_owner_command(chat_id, message_id, actor_id, command, argument)
 
     def _handle_owner_command(
@@ -5359,7 +5552,7 @@ class Bot:
                 chat_id,
                 public_help_text(ui_language()),
                 message_id,
-                public_help_keyboard(ui_language()),
+                public_help_keyboard(ui_language(), **self.usage_preferences(actor_id)),
                 parse_mode="HTML",
             )
         elif command == "/cookies":
@@ -5397,7 +5590,7 @@ class Bot:
                 chat_id,
                 public_help_text(ui_language()),
                 message_id,
-                public_help_keyboard(ui_language()),
+                public_help_keyboard(ui_language(), **self.usage_preferences(actor_id)),
                 parse_mode="HTML",
             )
 
@@ -5462,7 +5655,7 @@ class Bot:
                 self.jobs.task_done()
 
     def notify_cookie_failure(self) -> None:
-        with self.cookie_alert_lock, language_scope(self.acl.language(self.acl.owner_id)):
+        with self.cookie_alert_lock, language_scope(self.acl.language(self.acl.owner_id), self.acl.owner_id):
             self._notify_cookie_failure()
 
     def _notify_cookie_failure(self) -> None:
@@ -5491,7 +5684,7 @@ class Bot:
     def process_url(
         self, chat_id: int, message_id: int, user_id: int, url: str
     ) -> None:
-        with language_scope(self.acl.language(user_id)):
+        with language_scope(self.acl.language(user_id), user_id):
             token = CURRENT_FETCH_DEADLINE.set(time.monotonic() + MEDIA_FETCH_SECONDS)
             try:
                 self._process_url(chat_id, message_id, user_id, url)
@@ -5506,6 +5699,7 @@ class Bot:
         stage = self.acl.job_stage(chat_id, message_id)
         if stage == "documents":
             return
+        preferences = self.usage_preferences(user_id)
         if not media_disk_available():
             raise RuntimeError("Media storage is temporarily unavailable")
         self.api.send_action(chat_id, "upload_document")
@@ -5614,22 +5808,29 @@ class Bot:
                 for path in files
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v", ".gif"}
             ]
+            sensitive = usage_settings_enabled(user_id) and (
+                sensitive_metadata(root_tweet) or sensitive_metadata(fallback_tweet)
+                or any(sensitive_metadata(item) for item in fxtwitter_media(fallback_tweet or {}))
+                or downloaded_media_sensitive(directory)
+            )
             caption = media_caption(
                 author,
                 author_url,
                 text,
-                effective_url,
+                effective_url if preferences["tweet_link_enabled"] else "",
                 self.acl.debug_mode(user_id),
                 method,
                 limit=1024 if previews else 4096,
             )
             if not self.can_process(user_id):
                 return
+            sent_previews = []
             if previews and not stage:
                 try:
-                    self.api.send_previews(
+                    sent_previews = self.api.send_previews(
                         chat_id, previews, caption, parse_mode="HTML",
                         tweet_id=effective_url.rsplit("/", 1)[-1],
+                        **({"has_spoiler": True} if sensitive and preferences["spoiler_enabled"] else {}),
                     )
                 except NetworkTimeout:
                     raise
@@ -5653,10 +5854,15 @@ class Bot:
                 )
             if not stage:
                 self.acl.checkpoint_job(chat_id, message_id, "preview")
+            if sensitive and isinstance(sent_previews, list) and sent_previews:
+                preview_id = sent_previews[0].get("message_id") if isinstance(sent_previews[0], dict) else None
+                if type(preview_id) is int and preview_id > 0:
+                    self.api.set_reaction(chat_id, preview_id, "🙈")
             if not self.can_process(user_id):
                 return
             try:
-                self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
+                if preferences["originals_enabled"]:
+                    self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
             except NetworkTimeout:
                 raise
             except (OSError, requests.RequestException, RuntimeError):

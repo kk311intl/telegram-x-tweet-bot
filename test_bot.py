@@ -772,6 +772,7 @@ class ReliabilityTests(unittest.TestCase):
                 path = Path(folder) / "acl.json"
                 store = bot.ACLStore(path, 100)
                 store.add(200)
+                store.toggle_media_preference(200, "holiday_enabled")
                 job = (200, 42, 200, "https://x.com/test/status/123")
                 if restored:
                     self.assertTrue(store.consume(200, job=job)[0])
@@ -2150,9 +2151,9 @@ printf 'restored\\n'
         with patch.object(bot, "OWNER_CONTACT_URL", "https://example.com/contact"):
             for language in bot.PUBLIC_TEXT:
                 text = bot.public_help_text(language)
-                self.assertEqual(text, bot.public_text(language, "help_allowed"))
+                self.assertEqual(text, bot.public_text(language, "help_allowed") + "\n\n" + bot.public_text(language, "recent_updates"))
                 self.assertNotIn("Powered by", text)
-                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"], [
+                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"][-1:], [
                     [{"text": bot.public_text(language, "feedback"), "url": "https://example.com/contact"},
                      {"text": bot.public_text(language, "back"), "callback_data": "public:main"}],
                 ])
@@ -4442,7 +4443,7 @@ class MenuTests(unittest.TestCase):
             bot.public_text("zh", "start_allowed"),
             "請傳送有效的 X/Twitter 單篇貼文網址。",
         )
-        self.assertIn("使い方", bot.public_text("ja", "help_allowed"))
+        self.assertIn("利用設定", bot.public_text("ja", "help_allowed"))
         for language in bot.PUBLIC_TEXT:
             guide = bot.public_text(language, "help_allowed")
             self.assertEqual(len(guide.splitlines()), 4)
@@ -4451,10 +4452,10 @@ class MenuTests(unittest.TestCase):
             for detail in ("/id", "引用", "quoted", "未壓縮", "未压缩", "uncompressed", "インライン"):
                 self.assertNotIn(detail, guide)
         expected_menus = {
-            "zh-cn": ["🌐 Language", "ℹ️ 使用说明"],
-            "zh": ["🌐 Language", "ℹ️ 使用說明"],
-            "en": ["🌐 Language", "ℹ️ How to use"],
-            "ja": ["🌐 Language", "ℹ️ 使い方"],
+            "zh-cn": ["🌐 Language", "ℹ️ 使用设置"],
+            "zh": ["🌐 Language", "ℹ️ 使用設定"],
+            "en": ["🌐 Language", "ℹ️ Usage settings"],
+            "ja": ["🌐 Language", "ℹ️ 利用設定"],
         }
         for language in ("zh-cn", "zh", "en", "ja"):
             menu = bot.start_keyboard(language, False, True)["inline_keyboard"][0]
@@ -7406,7 +7407,7 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             service.stop()
 
     def test_inline_cache_keeps_language_specific_results_separate(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "build_inline_results", side_effect=lambda url, debug: [{"id": bot.ui_language()}]) as builder:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "build_inline_results", side_effect=lambda url, debug, **_options: [{"id": bot.ui_language()}]) as builder:
             store = bot.ACLStore(Path(temporary) / "acl.json", 100)
             store.add(200)
             store.add(300)
@@ -7441,15 +7442,15 @@ class PublicReleaseLanguageTests(unittest.TestCase):
     def test_optional_contact_is_not_hardcoded(self):
         with patch.object(bot, "OWNER_CONTACT_URL", ""):
             for language in bot.PUBLIC_TEXT:
-                self.assertEqual(bot.public_help_text(language), bot.public_text(language, "help_allowed"))
-                self.assertEqual(len(bot.public_help_keyboard(language)["inline_keyboard"]), 1)
+                self.assertEqual(bot.public_help_text(language), bot.public_text(language, "help_allowed") + "\n\n" + bot.public_text(language, "recent_updates"))
+                self.assertEqual(len(bot.public_help_keyboard(language)["inline_keyboard"]), 3)
         with patch.object(bot, "OWNER_CONTACT_URL", 'https://example.com/contact?a=1&b=2'):
             for language in bot.PUBLIC_TEXT:
-                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"][0][0]["url"],
+                self.assertEqual(bot.public_help_keyboard(language)["inline_keyboard"][-1][0]["url"],
                                  'https://example.com/contact?a=1&b=2')
         with patch.object(bot, "OWNER_CONTACT_URL", "javascript:alert(1)"):
-            self.assertEqual(bot.public_help_text("en"), bot.public_text("en", "help_allowed"))
-            self.assertEqual(len(bot.public_help_keyboard("en")["inline_keyboard"]), 1)
+            self.assertEqual(bot.public_help_text("en"), bot.public_text("en", "help_allowed") + "\n\n" + bot.public_text("en", "recent_updates"))
+            self.assertEqual(len(bot.public_help_keyboard("en")["inline_keyboard"]), 3)
 
     def test_version_and_translation_catalog_are_complete(self):
         self.assertEqual((Path(__file__).parent / "VERSION").read_text().strip(), bot.APP_VERSION)
@@ -7459,6 +7460,505 @@ class PublicReleaseLanguageTests(unittest.TestCase):
             self.assertEqual(placeholders[0], placeholders[1], key)
             self.assertEqual(placeholders[0], placeholders[2], key)
             self.assertEqual(placeholders[0], placeholders[3], key)
+
+
+class MediaPreferenceTests(unittest.TestCase):
+    def test_every_extractor_stage_preserves_sensitive_state_to_preview(self):
+        for stage in range(4):
+            for sensitive in (True, False):
+                with self.subTest(stage=stage, sensitive=sensitive), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    cookies = root / "cookies.txt"
+                    cookies.write_text("fixture", encoding="utf-8")
+                    store = bot.ACLStore(root / "acl.json", 100)
+                    api = MagicMock()
+                    api.send_previews.return_value = [{"message_id": 99}]
+                    service = bot.Bot(api, store)
+                    self.addCleanup(service.stop)
+                    commands = []
+                    def extract(command, timeout, directory):
+                        commands.append(command)
+                        if len(commands) == stage + 1:
+                            (directory / "123.mp4").write_bytes(b"media")
+                            metadata = ({"sensitive": False, "sensitive_flags": ["Nudity"] if sensitive else []}
+                                        if stage < 2 else {"age_limit": 18 if sensitive else 0})
+                            (directory / "123.mp4.info.json").write_text(json.dumps(metadata), encoding="utf-8")
+                        return subprocess.CompletedProcess(command, 0, "")
+                    with patch.object(bot, "TMP_DIR", root), patch.object(bot, "COOKIES_PATH", cookies), \
+                         patch.object(bot, "fetch_fxtwitter", return_value=None), \
+                         patch.object(bot, "fetch_tweet_text", return_value=("Example", "Author", "https://x.com/example")), \
+                         patch.object(bot, "run_command", side_effect=extract):
+                        service.process_url(100, 7, 100, "https://x.com/example/status/123")
+                    self.assertEqual(len(commands), stage + 1)
+                    self.assertIn("--write-metadata" if stage < 2 else "--write-info-json", commands[-1])
+                    self.assertEqual(api.send_previews.call_args.kwargs.get("has_spoiler", False), sensitive)
+                    if sensitive:
+                        api.set_reaction.assert_called_once_with(100, 99, "🙈")
+                    else:
+                        api.set_reaction.assert_not_called()
+
+    def test_ytdlp_keeps_minimal_sensitive_marker_after_quality_temp_cleanup(self):
+        import yt_dlp
+        from video_downloader import YoutubeDL
+        for age in (0, 18):
+            with self.subTest(age=age), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fmt = {"format_id": "video", "url": "https://example.com/media.mp4", "ext": "mp4",
+                       "vcodec": "h264", "acodec": "aac"}
+                info = {"id": "fixture", "title": "Example", "age_limit": age,
+                        "private_note": "not-for-sidecar", "formats": [fmt], **fmt}
+                with YoutubeDL({"quiet": True, "writeinfojson": True, "outtmpl": str(root / "%(id)s.%(ext)s")}) as downloader:
+                    def downloaded(attempt):
+                        path = Path(downloader.prepare_filename(attempt))
+                        path.write_bytes(b"media")
+                        path.with_suffix(".info.json").write_text(json.dumps(info), encoding="utf-8")
+                        attempt["filepath"] = str(path)
+                    with patch.object(yt_dlp.YoutubeDL, "process_info", side_effect=downloaded):
+                        downloader.process_info(info)
+                self.assertFalse(list(root.glob(".video-*")))
+                self.assertEqual((root / "fixture.mp4").read_bytes(), b"media")
+                marker = json.loads((root / "fixture.mp4.info.json").read_text())
+                self.assertEqual(marker, {"age_limit": age})
+                self.assertEqual(bot.downloaded_media_sensitive(root), age == 18)
+
+    def test_preferences_are_private_persistent_and_strictly_boolean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.set_quota(200, 50)
+            store.set_quota(300, None)
+            for user_id in (100, 200, 300, 400):
+                self.assertEqual(store.media_preferences(user_id), bot.MEDIA_PREFERENCES)
+                store.toggle_media_preference(user_id, "tweet_link_enabled")
+                store.toggle_media_preference(user_id, "spoiler_enabled")
+                store.toggle_media_preference(user_id, "originals_enabled")
+                store.toggle_media_preference(user_id, "holiday_enabled")
+            replacement = bot.ACLStore(path, 100)
+            for user_id in (100, 200, 300, 400):
+                self.assertEqual(replacement.media_preferences(user_id), {
+                    "tweet_link_enabled": False, "spoiler_enabled": False, "originals_enabled": False, "holiday_enabled": False,
+                })
+            self.assertEqual((replacement.quota(200), replacement.quota(300), replacement.quota(400)), (50, None, 0))
+            with self.assertRaises(ValueError):
+                replacement.toggle_media_preference(200, "quota")
+            for key in bot.MEDIA_PREFERENCES:
+                for bad_value in (0, 1, "false", None, []):
+                    with self.subTest(key=key, value=bad_value), self.assertRaises(ValueError):
+                        validator = bot.ACLStore.__new__(bot.ACLStore)
+                        validator._apply_state({"users": {"200": {"user_id": 200, key: bad_value}}}, 1)
+
+    def test_settings_callbacks_update_only_the_sender_and_show_all_four_languages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, 50)
+            store.set_quota(300, None)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            self.addCleanup(service.stop)
+            for user_id in (100, 200, 300, 400):
+                for language in bot.PUBLIC_TEXT:
+                    store.set_language(user_id, language)
+                    for destination in (*bot.MEDIA_PREFERENCES, "updates", "help"):
+                        api.reset_mock()
+                        before = store.media_preferences(user_id)
+                        service.handle_callback({"id": "settings", "from": {"id": user_id},
+                            "data": "public:" + destination,
+                            "message": {"message_id": 5, "chat": {"id": user_id}}})
+                        after = store.media_preferences(user_id)
+                        if destination in bot.MEDIA_PREFERENCES:
+                            self.assertEqual(after[destination], not before[destination])
+                        text = api.edit_message.call_args.args[2]
+                        self.assertEqual(text, bot.public_help_text(language))
+                        keyboard = api.edit_message.call_args.args[3]["inline_keyboard"]
+                        self.assertEqual([[button["callback_data"] for button in row] for row in keyboard[:2]],
+                                         [["public:tweet_link_enabled", "public:originals_enabled"],
+                                          ["public:spoiler_enabled", "public:holiday_enabled"]])
+                        self.assertIn(bot.public_text(language, "enabled" if after["tweet_link_enabled"] else "disabled"), keyboard[0][0]["text"])
+                        self.assertIn(bot.public_text(language, "enabled" if after["spoiler_enabled"] else "disabled"), keyboard[1][0]["text"])
+                        self.assertIn(bot.public_text(language, "enabled" if after["holiday_enabled"] else "disabled"), keyboard[1][1]["text"])
+                        self.assertNotIn("public:updates", [button["callback_data"] for row in keyboard for button in row if "callback_data" in button])
+            self.assertEqual((store.quota(200), store.quota(400)), (50, 0))
+            before = store.media_preferences(200)
+            service.handle_callback({"id": "group", "from": {"id": 200}, "data": "public:spoiler_enabled",
+                "message": {"message_id": 5, "chat": {"id": -100}}})
+            self.assertEqual(store.media_preferences(200), before)
+            store.set_quota(200, -1)
+            service.handle_callback({"id": "banned", "from": {"id": 200}, "data": "public:spoiler_enabled",
+                "message": {"message_id": 5, "chat": {"id": 200}}})
+            self.assertEqual(store.media_preferences(200), before)
+
+    def test_sensitive_metadata_is_typed_and_extractor_sidecars_are_bounded(self):
+        for metadata in ({"possibly_sensitive": True}, {"sensitive": True}, {"age_limit": 18},
+                         {"sensitive_flags": ["adult_content"]}, {"sensitive_flags": {"adult_content": True}},
+                         {"sensitive_flags": ["Nudity"]}, {"sensitive_flags": ["Violence"]}, {"sensitive_flags": ["Sensitive"]}):
+            self.assertTrue(bot.sensitive_metadata(metadata), metadata)
+        for metadata in (None, [], {}, {"sensitive": "false"}, {"possibly_sensitive": 1},
+                         {"age_limit": True}, {"sensitive_flags": "false"}, {"sensitive_flags": {"adult_content": False}}):
+            self.assertFalse(bot.sensitive_metadata(metadata), metadata)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "bad.json").write_text("{", encoding="utf-8")
+            (directory / "large.json").write_bytes(b" " * 1_048_577)
+            self.assertFalse(bot.downloaded_media_sensitive(directory))
+            (directory / "post.mp4.info.json").write_text('{"age_limit":18}', encoding="utf-8")
+            self.assertTrue(bot.downloaded_media_sensitive(directory))
+            cached = [directory / ".cache" / f"{index}.json" for index in range(20)]
+            with patch.object(Path, "rglob", return_value=iter(cached + [directory / "post.mp4.info.json"])):
+                self.assertTrue(bot.downloaded_media_sensitive(directory))
+            self.assertEqual(bot.media_files(directory), [])
+
+    def test_native_spoilers_cover_each_preview_without_changing_originals(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "video_dimensions", return_value=(480, 270)):
+            paths = [Path(temporary) / name for name in ("photo.jpg", "video.mp4", "animation.gif")]
+            for path in paths:
+                path.write_bytes(b"original")
+            api = bot.TelegramAPI("YOUR_API_TOKEN")
+            api.call = MagicMock(return_value={"message_id": 9})
+            for path in paths:
+                api.send_previews(200, [path], "caption", has_spoiler=True)
+                self.assertEqual(api.call.call_args.args[1]["has_spoiler"], "true")
+                api.send_previews(200, [path], "caption")
+                self.assertNotIn("has_spoiler", api.call.call_args.args[1])
+            api.call.return_value = [{"message_id": 10}, {"message_id": 11}]
+            api.send_previews(200, paths[:2], "caption", has_spoiler=True)
+            self.assertTrue(all(item["has_spoiler"] for item in json.loads(api.call.call_args.args[1]["media"])))
+            api.send_documents(200, paths[:2])
+            self.assertTrue(all("has_spoiler" not in item for item in json.loads(api.call.call_args.args[1]["media"])))
+            self.assertTrue(all(path.read_bytes() == b"original" for path in paths))
+
+
+    def test_sensitive_delivery_uses_preferences_and_reacts_only_to_preview(self):
+        for sensitive, spoiler, originals, holiday in ((s, p, o, h) for s in (True, False) for p in (True, False)
+                                                       for o in (True, False) for h in (True, False)):
+            with self.subTest(sensitive=sensitive, spoiler=spoiler, originals=originals, holiday=holiday), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                media = directory / "video.mp4"
+                media.write_bytes(b"original")
+                store = bot.ACLStore(directory / "acl.json", 100)
+                if not spoiler:
+                    store.toggle_media_preference(100, "spoiler_enabled")
+                if not originals:
+                    store.toggle_media_preference(100, "originals_enabled")
+                if not holiday:
+                    store.toggle_media_preference(100, "holiday_enabled")
+                job = [100, 7, 100, "https://x.com/example/status/123"]
+                store.data["pending_jobs"]["100:7"] = job
+                api = MagicMock()
+                api.send_previews.return_value = [{"message_id": 99}]
+                service = bot.Bot(api, store)
+                self.addCleanup(service.stop)
+                tweet = {"id": "123", "text": "example", "possibly_sensitive": sensitive,
+                         "media": {"all": [{"type": "video", "url": "https://video.twimg.com/source.mp4"}]}}
+                with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                     patch.object(bot, "download_fxtwitter_media", return_value=([media], 0)):
+                    service.process_url(*job)
+                self.assertEqual(api.send_previews.call_args.kwargs.get("has_spoiler", False), sensitive and spoiler)
+                if sensitive:
+                    api.set_reaction.assert_called_once_with(100, 99, "🙈")
+                else:
+                    api.set_reaction.assert_not_called()
+                self.assertEqual(api.send_documents.call_count, int(originals))
+                if originals:
+                    api.send_documents.assert_called_once_with(100, [media], tweet_id="123")
+                self.assertEqual(store.job_stage(100, 7), "documents")
+                self.assertEqual(store.data["users"]["100"].get("usage_count", 0), 0)
+
+    def test_fallback_sensitive_metadata_and_disabled_originals_preserve_limit_notices(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            media = directory / "source.mp4"
+            media.write_bytes(b"source")
+            store = bot.ACLStore(directory / "acl.json", 100)
+            store.toggle_media_preference(100, "originals_enabled")
+            api = MagicMock()
+            api.send_previews.return_value = [{"message_id": 99}]
+            service = bot.Bot(api, store)
+            self.addCleanup(service.stop)
+            def download(_url, folder, **_kwargs):
+                (folder / "source.info.json").write_text('{"sensitive":true}', encoding="utf-8")
+                return [media], "gallery-dl", False
+            with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "fetch_fxtwitter", return_value=None), \
+                 patch.object(bot, "fetch_tweet_text", return_value=("example", "Author", "https://x.com/example")), \
+                 patch.object(bot, "download_media", side_effect=download), \
+                 patch.object(bot, "trim_files", return_value=([media], [("oversized.mp4", "video_oversized")])):
+                service.process_url(100, 7, 100, "https://x.com/example/status/123")
+            self.assertTrue(api.send_previews.call_args.kwargs["has_spoiler"])
+            api.set_reaction.assert_called_once_with(100, 99, "🙈")
+            api.send_documents.assert_not_called()
+            self.assertTrue(any("50 MB" in call.args[1] for call in api.send_message.call_args_list))
+
+    def test_preview_link_toggle_preserves_author_link_and_originals(self):
+        url = "https://x.com/example/status/123"
+        tweet = {"id": "123", "text": "Example text", "author": {"name": "Author", "screen_name": "example"},
+                 "media": {"all": [{"type": "photo", "url": "https://pbs.twimg.com/media/source.jpg"}]}}
+        for show_link in (True, False):
+            with self.subTest(show_link=show_link), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                media = directory / "photo.jpg"
+                bot.Image.new("RGB", (2, 2)).save(media)
+                store = bot.ACLStore(directory / "acl.json", 100)
+                if not show_link:
+                    store.toggle_media_preference(100, "tweet_link_enabled")
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                self.addCleanup(service.stop)
+                with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                     patch.object(bot, "download_fxtwitter_media", return_value=([media], 0)):
+                    service.process_url(100, 7, 100, url)
+                caption = api.send_previews.call_args.args[2]
+                self.assertEqual(url in caption, show_link)
+                self.assertIn('<a href="https://x.com/example">Author</a>:', caption)
+                self.assertIn("Example text", caption)
+                api.send_documents.assert_called_once_with(100, [media], tweet_id="123")
+        self.assertEqual(bot.tweet_html("", "", "", "", 4096), "X/Twitter")
+        for language in bot.PUBLIC_TEXT:
+            with bot.language_scope(language):
+                caption = bot.media_caption("Author", "https://x.com/example", "x" * 2000, "", True, "FxTwitter", limit=1024)
+                self.assertIn('href="https://x.com/example"', caption)
+                self.assertLessEqual(len(bot.re.sub(r"<[^>]+>", "", caption)), 1024)
+
+    def test_inline_links_and_cache_follow_link_preference(self):
+        url = "https://x.com/example/status/123"
+        tweet = {"id": "123", "text": "Example text", "author": {"name": "Author", "screen_name": "example"},
+                 "media": {"all": [{"type": "photo", "url": "https://pbs.twimg.com/media/source.jpg"}]}}
+        with patch.object(bot, "fetch_fxtwitter", return_value=tweet):
+            shown = bot.build_inline_results(url)[0]
+            hidden = bot.build_inline_results(url, tweet_link_enabled=False)[0]
+            self.assertNotEqual(shown["id"], hidden["id"])
+            self.assertIn(url, shown["caption"])
+            self.assertNotIn(url, hidden["caption"])
+            self.assertIn('href="https://x.com/example"', hidden["caption"])
+            tweet["possibly_sensitive"] = True
+            covered = bot.build_inline_results(url, tweet_link_enabled=False)[0]
+            self.assertNotIn(url, covered["input_message_content"]["message_text"])
+            self.assertNotIn("thumbnail_url", covered)
+            tweet.clear()
+            tweet.update({"id": "123", "text": "Text only", "author": {"name": "Author", "screen_name": "example"}})
+            article = bot.build_inline_results(url, tweet_link_enabled=False)[0]
+            self.assertNotIn(url, article["input_message_content"]["message_text"])
+            self.assertTrue(article["input_message_content"]["disable_web_page_preview"])
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "INLINE_CACHE_SECONDS", 60):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            service = bot.Bot(MagicMock(), store)
+            self.addCleanup(service.stop)
+            with patch.object(bot, "build_inline_results", side_effect=lambda *_args, **options: [{"link": options["tweet_link_enabled"]}]) as build:
+                service._process_inline_query("one", url, False, 100)
+                store.toggle_media_preference(100, "tweet_link_enabled")
+                service._process_inline_query("two", url, False, 100)
+                store.toggle_media_preference(100, "tweet_link_enabled")
+                service._process_inline_query("three", url, False, 100)
+                self.assertEqual(build.call_count, 2)
+                self.assertEqual([call.args[1][0]["link"] for call in service.api.answer_inline_query.call_args_list], [True, False, True])
+
+    def test_inline_sensitive_results_do_not_expose_thumbnails_and_cache_tracks_setting(self):
+        tweet = {"id": "123", "text": "example", "possibly_sensitive": True,
+                 "media": {"all": [{"type": "photo", "url": "https://pbs.twimg.com/media/source.jpg"}]}}
+        url = "https://x.com/example/status/123"
+        with patch.object(bot, "fetch_fxtwitter", return_value=tweet):
+            covered = bot.build_inline_results(url)
+            self.assertEqual(covered[0]["type"], "article")
+            self.assertNotIn("thumbnail_url", covered[0])
+            content = covered[0]["input_message_content"]
+            self.assertTrue(content["disable_web_page_preview"])
+            self.assertTrue(content["message_text"].startswith("<tg-spoiler>"))
+            self.assertEqual(bot.build_inline_results(url, spoiler_enabled=False)[0]["type"], "photo")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "INLINE_CACHE_SECONDS", 60):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.set_quota(200, 50)
+            service = bot.Bot(MagicMock(), store)
+            self.addCleanup(service.stop)
+            with patch.object(bot, "build_inline_results", side_effect=lambda *_args, **kwargs: [{"covered": kwargs["spoiler_enabled"]}]) as build:
+                service._process_inline_query("one", url, False, 200)
+                store.toggle_media_preference(200, "spoiler_enabled")
+                service._process_inline_query("two", url, False, 200)
+                store.toggle_media_preference(200, "spoiler_enabled")
+                service._process_inline_query("three", url, False, 200)
+                self.assertEqual(build.call_count, 2)
+                responses = service.api.answer_inline_query.call_args_list
+                self.assertEqual([call.args[1][0]["covered"] for call in responses], [True, False, True])
+
+
+class UsageSettingsRolloutTests(unittest.TestCase):
+    def test_rollout_is_per_actor_and_does_not_change_existing_preferences(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "USAGE_SETTINGS_USER_IDS", {100, 200}):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.add(200)
+            store.set_quota(300, None)
+            store.toggle_media_preference(300, "originals_enabled")
+            service = bot.Bot(MagicMock(), store)
+            self.addCleanup(service.stop)
+            for language in bot.PUBLIC_TEXT:
+                for user_id in (100, 200, 300):
+                    store.set_language(user_id, language)
+                    with bot.language_scope(language, user_id):
+                        self.assertEqual(bot.usage_settings_enabled(), user_id in {100, 200})
+                        self.assertEqual(len(bot.public_help_keyboard(language)["inline_keyboard"]),
+                                         1 if user_id == 300 else 3)
+                        if user_id == 300:
+                            self.assertEqual(bot.admin_text("help"), bot.LEGACY_HELP_TITLES[language])
+                            self.assertEqual(bot.public_help_text(language).splitlines()[0], bot.LEGACY_HELP_TITLES[language])
+                            with bot.language_scope("en"):
+                                self.assertFalse(bot.usage_settings_enabled())
+                    before = store.media_preferences(user_id)
+                    service.handle_callback({"id": "rollout", "from": {"id": user_id},
+                        "data": "public:holiday_enabled", "message": {"message_id": 5, "chat": {"id": user_id}}})
+                    after = store.media_preferences(user_id)
+                    self.assertEqual(after["holiday_enabled"], before["holiday_enabled"] if user_id == 300 else not before["holiday_enabled"])
+                    if user_id == 300:
+                        self.assertEqual(service.usage_preferences(user_id),
+                                         {"tweet_link_enabled": True, "spoiler_enabled": False, "originals_enabled": True, "holiday_enabled": False})
+                        service.handle_callback({"id": "updates", "from": {"id": user_id}, "data": "public:updates",
+                            "message": {"message_id": 5, "chat": {"id": user_id}}})
+                        self.assertEqual(service.api.edit_message.call_args.args[2].splitlines()[0], bot.LEGACY_HELP_TITLES[language])
+                        self.assertEqual(store.media_preferences(user_id), before)
+            self.assertEqual(bot.CURRENT_USER_ID.get(), 0)
+            self.assertEqual((store.quota(200), store.quota(300)), (50, None))
+
+    def test_excluded_user_keeps_original_media_and_inline_without_sensitive_reaction(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "USAGE_SETTINGS_USER_IDS", {100}):
+            directory = Path(temporary)
+            media = directory / "photo.jpg"
+            media.write_bytes(b"source")
+            store = bot.ACLStore(directory / "acl.json", 100)
+            store.add(200)
+            store.toggle_media_preference(200, "originals_enabled")
+            api = MagicMock()
+            api.send_previews.return_value = [{"message_id": 99}]
+            service = bot.Bot(api, store)
+            self.addCleanup(service.stop)
+            tweet = {"id": "123", "text": "example", "possibly_sensitive": True,
+                     "media": {"all": [{"type": "photo", "url": "https://pbs.twimg.com/media/source.jpg"}]}}
+            with patch.object(bot, "TMP_DIR", directory), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", return_value=([media], 0)):
+                service.process_url(200, 7, 200, "https://x.com/example/status/123")
+                service._process_inline_query("excluded", "https://x.com/example/status/123", False, 200)
+            self.assertFalse(api.send_previews.call_args.kwargs.get("has_spoiler", False))
+            api.set_reaction.assert_not_called()
+            api.send_documents.assert_called_once_with(200, [media], tweet_id="123")
+            self.assertEqual(api.answer_inline_query.call_args.args[1][0]["type"], "photo")
+
+    def test_only_trial_accounts_get_holiday_input_reactions(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bot, "USAGE_SETTINGS_USER_IDS", {100, 200}):
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.add(200)
+            store.add(300)
+            service = bot.Bot(MagicMock(), store)
+            self.addCleanup(service.stop)
+            instant = datetime.fromisoformat("2026-12-25T00:00:00+00:00").timestamp()
+            with patch.object(bot.time, "time", return_value=instant), patch.object(bot, "media_disk_available", return_value=True):
+                for user_id in (100, 200, 300):
+                    service.handle_update({"message": {"message_id": 42, "from": {"id": user_id},
+                        "chat": {"id": user_id}, "text": "https://x.com/example/status/123"}})
+                    service.api.set_reaction.assert_called_with(user_id, 42, "👀" if user_id == 300 else "🎄")
+
+
+class InputURLTests(unittest.TestCase):
+    def test_only_first_post_id_is_kept_and_all_suffixes_are_dropped(self):
+        expected = "https://x.com/example/status/123"
+        for source in (
+            "https://x.com/example/status/123?s=46&t=tracking",
+            "https://twitter.com/example/status/123/photo/1?utm_source=share#tracking",
+            "https://www.x.com/example/status/123/video/2#tracking",
+            "分享 https://x.com/example/status/123?redirect=https://x.com/other/status/999",
+            "https://x.com/example/status/123 https://x.com/other/status/999",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(bot.normalize_status_url(source), expected)
+        for source in ("https://x.com.evil.example/example/status/123", "https://example.com/example/status/123",
+                       "https://x.com/example/status/" + "1" * 26):
+            self.assertIsNone(bot.normalize_status_url(source))
+        session = MagicMock()
+        session.get.return_value.json.return_value = {"tweet": {"id": "123"}}
+        with patch.object(bot, "http_session", return_value=session):
+            bot.fetch_fxtwitter("https://x.com/example/status/123?s=46&t=tracking")
+        self.assertEqual(session.get.call_args.args[0], "https://api.fxtwitter.com/i/status/123")
+
+    def test_input_and_inline_use_clean_url_and_tracking_variants_deduplicate(self):
+        canonical = "https://x.com/example/status/123"
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.add(200)
+            service = bot.Bot(MagicMock(), store)
+            self.addCleanup(service.stop)
+            with patch.object(bot, "media_disk_available", return_value=True):
+                for message_id, suffix in ((1, "?s=46&t=one"), (2, "/video/1?utm_source=two")):
+                    service.handle_update({"message": {"message_id": message_id, "from": {"id": 200},
+                        "chat": {"id": 200}, "text": canonical + suffix + " https://x.com/other/status/999"}})
+            self.assertEqual(service.jobs.qsize(), 1)
+            self.assertEqual(store.data["users"]["200"]["usage_count"], 1)
+            self.assertEqual(store.data["pending_jobs"]["200:1"][3], canonical)
+            with patch.object(bot, "build_inline_results", return_value=[]) as build:
+                service.handle_inline_query({"id": "url-test", "from": {"id": 100},
+                    "query": canonical + "/photo/1?s=46&t=tracking"})
+                service.wait_for_inline_idle(3)
+                self.assertEqual(build.call_args.args[0], canonical)
+
+
+class HolidayReactionTests(unittest.TestCase):
+    def test_utc_holiday_days_languages_and_off_switch(self):
+        cases = [
+            ("2026-01-01", None, "🎉"), ("2026-04-05", None, "🎉"),
+            ("2027-03-28", None, "🎉"), ("2026-10-31", None, "🎃"),
+            ("2026-12-25", None, "🎄"), ("2026-02-17", {"zh-cn", "zh"}, "🎉"),
+            ("2027-02-06", {"zh-cn", "zh"}, "🎉"),
+            ("2024-02-09", {"zh-cn", "zh"}, "🎉"), ("2024-02-10", {"zh-cn", "zh"}, "🎉"),
+            ("2024-02-08", set(), "👀"), ("2024-02-11", set(), "👀"),
+            ("2025-01-28", set(), "👀"), ("2025-01-29", {"zh-cn", "zh"}, "🎉"),
+            ("2026-02-16", set(), "👀"), ("2026-03-18", set(), "👀"),
+            ("2026-09-25", set(), "👀"),
+            ("2026-07-07", set(), "👀"), ("2026-11-26", set(), "👀"),
+            ("2027-11-25", set(), "👀"), ("2026-11-01", set(), "👀"),
+            ("2100-02-09", set(), "👀"),
+        ]
+        # Both the server timezone and quota-day offset must be irrelevant.
+        with patch.object(bot, "BOT_TIMEZONE", bot.timezone(bot.timedelta(hours=9))), \
+             patch.object(bot, "DAILY_RESET_HOUR", 12):
+            for day, languages, emoji in cases:
+                for language in bot.PUBLIC_TEXT:
+                    expected = emoji if languages is None or language in languages else "👀"
+                    for clock in ("00:00:00", "23:59:59"):
+                        instant = datetime.fromisoformat(f"{day}T{clock}+00:00").timestamp()
+                        with self.subTest(day=day, language=language, clock=clock):
+                            self.assertEqual(bot.processing_reaction(language, timestamp=instant), expected)
+                            self.assertEqual(bot.processing_reaction(language, False, instant), "👀")
+            for instant, expected in (("2026-12-24T23:59:59+00:00", "👀"),
+                                      ("2026-12-26T00:00:00+00:00", "👀")):
+                self.assertEqual(bot.processing_reaction("zh", timestamp=datetime.fromisoformat(instant).timestamp()), expected)
+        self.assertEqual(bot.easter_date(2000).isoformat(), "2000-04-23")
+        self.assertEqual(bot.easter_date(2100).isoformat(), "2100-03-28")
+        # Windows fromtimestamp does not support negative Unix timestamps.
+        with patch.object(bot, "datetime") as calendar:
+            for day, expected in ((30, "👀"), (31, "🎉")):
+                calendar.fromtimestamp.return_value = datetime(1900, 1, day, tzinfo=bot.timezone.utc)
+                self.assertEqual(bot.processing_reaction("zh"), expected)
+
+    def test_holiday_reaction_is_only_on_accepted_input_and_keeps_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            store.add(200)
+            api = MagicMock()
+            service = bot.Bot(api, store)
+            self.addCleanup(service.stop)
+            instant = datetime.fromisoformat("2026-12-25T00:00:00+00:00").timestamp()
+            update = {"message": {"message_id": 42, "from": {"id": 200}, "chat": {"id": 200},
+                                  "text": "https://x.com/example/status/123"}}
+            with patch.object(bot.time, "time", return_value=instant), \
+                 patch.object(bot, "media_disk_available", return_value=True):
+                service.handle_update(update)
+                service.handle_update(update)
+                api.set_reaction.assert_called_once_with(200, 42, "🎄")
+                service.process_url = MagicMock()
+                service.worker.start()
+                try:
+                    deadline = bot.time.monotonic() + 3
+                    while service.jobs.unfinished_tasks and bot.time.monotonic() < deadline:
+                        bot.time.sleep(0.01)
+                    self.assertEqual(service.jobs.unfinished_tasks, 0)
+                finally:
+                    service.stop()
+                    service.worker.join(2)
+                self.assertEqual(api.set_reaction.call_args_list[-1].args, (200, 42))
+                self.assertFalse(store.data["pending_jobs"])
 
 
 if __name__ == "__main__":

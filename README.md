@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.11.0
+# Telegram X／Twitter 貼文媒體 Bot · v3.12.2
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -13,6 +13,11 @@ Demo: [@TwitterPreviewerBot](https://t.me/TwitterPreviewerBot)
 傳送單篇 X/Twitter 貼文網址，即可取得作者連結、文字、圖片與影片，也可內聯分享。所有用戶，包括所有者與管理員，都能在「Language」選擇简体中文、繁體中文、English、日本語。介面預設繁體中文（`zh`），不隨客戶端語言自動切換；指令選單與 Bot 簡介則配合客戶端語言。
 
 已接收的貼文會在原訊息加上 👀，處理結束後移除；無法識別的一般內容標示 🤔，並保留文字提示。
+輸入只採用第一個有效貼文網址，追蹤參數、媒體序號及後綴不會帶入處理或輸出。
+
+「使用設定」的四個開關依序為推文連結、原檔輸出、NSFW 遮罩、節日彩蛋，預設開啟，按帳號保存，所有角色均可使用。最近更新顯示在同頁文字下方。關閉推文連結會隱藏預覽末尾的來源網址，作者名稱的超連結保留。來源標記為敏感的媒體預覽預設遮罩，固定加上 🙈；關閉遮罩不影響回應。這是來源標記，不是內容鑑定。Inline 的敏感內容在遮罩開啟時改用遮罩文字卡。
+
+節日彩蛋只替換原訊息處理中的 👀，以 UTC 當天為準：元旦及西方復活節 🎉、萬聖夜 🎃、聖誕節 🎄。中文另保留農曆臘月三十及正月初一 🎉；沒有臘月三十的年份不以廿九代替。Telegram 的一般回應不支援彩蛋圖案，因此復活節使用 🎉。農曆由 `lunardate` 在本機換算，支援 1900–2099 年，超出範圍不套用農曆節日。
 
 以下指令使用 main 的最新程式。GitHub 的「Latest Release」只代表最近一次正式發布，可能落後於 main；Release 說明與 tag 對應當時版本。
 
@@ -49,7 +54,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DAILY_RESET_HOUR` | 0 | 該時區每日換日的整點，0–23。 |
 | `DAILY_REPORT_HOUR` | 0 | 向所有者發送用量與待審申請簡報的整點，0–23。 |
 | `DEFAULT_DAILY_LIMIT` | 50 | 新授權普通用戶額度，1–100000；Bot 內設定優先，不批次改現有額度。 |
-| `OWNER_CONTACT_URL` | 空白 | 使用說明頁的「問題反饋」按鈕連結，例如 https://t.me/YOUR_USERNAME；空白則不顯示。 |
+| `OWNER_CONTACT_URL` | 空白 | 使用設定頁的「問題反饋」按鈕連結，例如 https://t.me/YOUR_USERNAME；空白則不顯示。 |
+| `USAGE_SETTINGS_USER_IDS` | 空白 | 使用設定及其新功能的試用名單，以逗號分隔 Telegram 用戶 ID；其他帳號維持舊版行為。空白代表全部開放，修改後須重啟。 |
 | `WORKER_COUNT` | 2 | 貼文並行數，1–8。 |
 | `MAX_USER_PENDING` | 3 | 每位用戶最多同時處理或排隊的貼文數，1–100；相同貼文尚未完成時不重複接收或扣額度。 |
 | `MEDIA_FETCH_SECONDS` | 240 | 抓取媒體與切換來源共用的秒數，60–900；不包含排隊與 Telegram 發送。 |
@@ -117,6 +123,11 @@ Bot 原始碼 © 2026 kk311intl，採 [GPL-3.0-only](LICENSE)；獨立下載器 
 X/Twitter の単一投稿の URL を送ると、投稿者へのリンク、本文、画像、動画を取得できます。インライン共有にも対応しています。所有者や管理者を含む全ユーザーが「Language」で简体中文・繁體中文・English・日本語を選べます。画面の初期言語は繁體中文（`zh`）で、端末の言語に合わせて自動変更されません。コマンドメニューと Bot の紹介文は端末の言語に対応します。
 
 受け付けた投稿のメッセージに 👀 を付け、処理が終わると外します。通常の入力で内容を認識できない場合は 🤔 を付け、案内文も返信します。
+最初の有効な投稿URLだけを使い、追跡パラメーターやメディア番号などの後続部分は処理・出力に含めません。
+
+「利用設定」の4つのスイッチは、投稿リンク・元ファイル・NSFW ぼかし・季節のリアクションの順に並びます。既定はオンで、所有者・管理者を含めアカウントごとに保存します。最近の更新は同じ画面の本文下部に表示します。投稿リンクをオフにするとプレビュー末尾の投稿URLを隠し、投稿者名のリンクは残します。配信元がセンシティブとしたプレビューは既定でぼかし、常に 🙈 を付けます。ぼかしをオフにしてもリアクションは付きます。内容の独自判定はしません。インライン共有では、ぼかしがオンのセンシティブな投稿は隠した本文のカードにします。
+
+季節のリアクションは処理中の元メッセージの 👀 だけを置き換えます。UTC の当日限定で、元日と西方教会の復活祭は 🎉、ハロウィーンは 🎃、クリスマスは 🎄。中国語のみ旧暦12月30日と1月1日も 🎉 にします。12月30日がない年は29日で代用しません。Telegram の通常リアクションでは卵が使えないため、復活祭は 🎉 にしています。旧暦は `lunardate` でローカル計算し、対応範囲の1900～2099年以外では旧暦の行事を適用しません。
 
 ### 導入
 
@@ -153,7 +164,8 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 | `DAILY_RESET_HOUR` | 0 | 利用日の切り替え時刻、現地の 0–23 時。 |
 | `DAILY_REPORT_HOUR` | 0 | 所有者に使用量と審査待ち申請のレポートを送る時刻、0–23 時。 |
 | `DEFAULT_DAILY_LIMIT` | 50 | 新規承認ユーザーの上限、1–100000。Bot 内の設定が優先し、既存の上限は変えません。 |
-| `OWNER_CONTACT_URL` | 空欄 | 使い方ページの「問い合わせ」ボタンのリンク。例：https://t.me/YOUR_USERNAME。空欄なら非表示。 |
+| `OWNER_CONTACT_URL` | 空欄 | 利用設定ページの「問い合わせ」ボタンのリンク。例：https://t.me/YOUR_USERNAME。空欄なら非表示。 |
+| `USAGE_SETTINGS_USER_IDS` | 空欄 | 利用設定と新機能を試す Telegram ユーザー ID のカンマ区切りリスト。対象外は従来の動作を維持し、空欄なら全員に有効。変更後は再起動が必要。 |
 | `WORKER_COUNT` | 2 | 投稿処理の並列数、1–8。 |
 | `MAX_USER_PENDING` | 3 | 1人あたりの処理中・待機中の投稿数、1–100。同じ投稿の処理が終わるまでは重複受付・課金しません。 |
 | `MEDIA_FETCH_SECONDS` | 240 | メディア取得と配信元切り替えで共有する秒数、60–900。待機列と Telegram への送信は含みません。 |
@@ -221,6 +233,11 @@ If you do not write code, give the repository link and this prompt to an AI that
 Send a single X/Twitter post URL to receive a link to its author, text, images and videos. Inline sharing is also supported. All users, including the owner and administrators, can choose 简体中文, 繁體中文, English or 日本語 in Language. The interface defaults to Traditional Chinese (`zh`) and does not switch with the client's language. Command menus and the bot's profile follow the client's language.
 
 Accepted posts get a 👀 reaction on the original message, removed when processing ends. Unrecognized ordinary input gets a 🤔 reaction as well as a text prompt.
+Only the first valid post URL is used; tracking parameters, media indexes and other suffixes are discarded before processing or output.
+
+Usage settings has four toggles, ordered as post links, original files, NSFW spoilers and holiday reactions. All default to on and are saved per account, including owners and administrators. What's new appears below the instructions on the same page. Turning post links off hides the trailing source URL in previews while keeping the author's name linked. Previews flagged as sensitive by the source are covered by default and always get 🙈, even with spoilers off. This uses source flags rather than independent content classification. With spoilers enabled, sensitive inline results use a covered text card.
+
+Holiday reactions replace only the processing 👀 on the original message, for that UTC calendar day: New Year's Day and Western Easter 🎉, Halloween 🎃, and Christmas 🎄. Chinese also gets 🎉 on lunar month 12, day 30, and lunar New Year's Day. When month 12 has only 29 days, the 29th is not substituted. Telegram's standard reactions have no egg emoji, so Easter uses 🎉. `lunardate` calculates lunar dates locally for 1900–2099; lunar holidays are skipped outside that range.
 
 ### Deploy
 
@@ -257,7 +274,8 @@ After changing the initial quota, contact URL, timezone/schedule, media sizes, q
 | `DAILY_RESET_HOUR` | 0 | Local hour when the usage day rolls over, 0–23. |
 | `DAILY_REPORT_HOUR` | 0 | Local hour for sending the owner a report of usage and pending requests, 0–23. |
 | `DEFAULT_DAILY_LIMIT` | 50 | Quota for newly approved regular users, 1–100000; the in-bot default takes priority and existing quotas stay unchanged. |
-| `OWNER_CONTACT_URL` | empty | Help-page Feedback button URL, e.g. https://t.me/YOUR_USERNAME; omitted when empty. |
+| `OWNER_CONTACT_URL` | empty | Usage settings Feedback button URL, e.g. https://t.me/YOUR_USERNAME; omitted when empty. |
+| `USAGE_SETTINGS_USER_IDS` | empty | Comma-separated Telegram user IDs allowed to try Usage settings and its new features; other accounts keep the previous behavior. Empty enables them for everyone. Restart after changing. |
 | `WORKER_COUNT` | 2 | Concurrent post jobs, 1–8. |
 | `MAX_USER_PENDING` | 3 | Queued and running posts per user, 1–100. A post already in progress is not accepted or charged again. |
 | `MEDIA_FETCH_SECONDS` | 240 | Seconds shared by media fetching and source changes, 60–900; excludes queue time and Telegram sends. |
