@@ -6446,7 +6446,7 @@ class MediaTests(unittest.TestCase):
             self.assertNotIn("--cookies", command)
             self.assertIn("extractor.twitter.quoted=false", command)
             self.assertIn(f"downloader.http.filesize-max={max(bot.MAX_MEDIA_BYTES, bot.MAX_VIDEO_BYTES)}", command)
-            self.assertIn("1-10", command)
+            self.assertIn("1-20", command)
             self.assertEqual(runner.call_args.kwargs["directory"], Path(temporary))
             self.assertEqual(len(files), 1)
             self.assertEqual(method, "gallery-dl（匿名）")
@@ -6714,6 +6714,78 @@ class MediaTests(unittest.TestCase):
             _, data, _ = api.call.call_args.args
             media = json.loads(data["media"])
             self.assertEqual(media[0]["parse_mode"], "HTML")
+
+    def test_large_post_sends_ordered_previews_and_originals_without_repeating_caption(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            bot, "video_dimensions", return_value=(1280, 720)
+        ):
+            directory = Path(temporary)
+            filenames = [
+                f"123_{index}{'.mp4' if index in {4, 11, 18} else '.jpg'}"
+                for index in range(1, 21)
+            ]
+            for filename in reversed(filenames):
+                (directory / filename).write_bytes(filename.encode())
+            (directory / "123_21.jpg").write_bytes(b"outside post limit")
+            paths, rejected = bot.trim_files(bot.media_files(directory))
+            self.assertEqual([path.name for path in paths], filenames)
+            self.assertEqual(rejected, [])
+            caption = "<b>Post text</b>"
+
+            for count in (10, 11, 12, 20):
+                with self.subTest(count=count):
+                    api = bot.TelegramAPI("YOUR_API_TOKEN")
+                    uploads = []
+
+                    def send(method, data, files, **_options):
+                        media = json.loads(data["media"]) if "media" in data else None
+                        uploads.append((method, data, media, [
+                            (filename, handle.read()) for filename, handle in files.values()
+                        ]))
+                        return [{"message_id": 1}] * len(media) if media is not None else {"message_id": 1}
+
+                    api.call = send
+                    results = api.send_previews(
+                        100, paths[:count], caption, parse_mode="HTML",
+                        tweet_id="123", has_spoiler=True,
+                    )
+                    api.send_documents(100, paths[:count], tweet_id="123")
+                    batches = 1 if count == 10 else 2
+                    self.assertEqual(len(uploads), 2 * batches)
+                    self.assertEqual(len(results), count)
+                    previews, originals = uploads[:batches], uploads[batches:]
+                    expected = [
+                        (f"X_123_{index:02d}{path.suffix}", path.name.encode())
+                        for index, path in enumerate(paths[:count], 1)
+                    ]
+                    for delivery in (previews, originals):
+                        self.assertEqual([file for call in delivery for file in call[3]], expected)
+                        self.assertEqual([len(call[3]) for call in delivery], [10] + ([count - 10] if batches == 2 else []))
+                    self.assertEqual(previews[0][2][0]["caption"], caption)
+                    self.assertEqual(previews[0][2][0]["parse_mode"], "HTML")
+                    if count == 11:
+                        self.assertEqual(previews[1][0], "sendVideo")
+                        self.assertEqual(previews[1][1]["caption"], "")
+                        self.assertNotIn("parse_mode", previews[1][1])
+                        self.assertEqual(previews[1][1]["has_spoiler"], "true")
+                        self.assertEqual(originals[1][0], "sendDocument")
+                    elif count > 11:
+                        self.assertEqual(previews[1][0], "sendMediaGroup")
+                        self.assertTrue(all("caption" not in item and "parse_mode" not in item
+                                            and item["has_spoiler"] for item in previews[1][2]))
+                        self.assertEqual(originals[1][0], "sendMediaGroup")
+                    for method, _data, media, _files in originals:
+                        if method == "sendMediaGroup":
+                            self.assertTrue(all(item["type"] == "document" and "caption" not in item for item in media))
+
+    def test_fxtwitter_keeps_first_twenty_media_in_source_order(self):
+        photos = [
+            {"type": "photo", "url": f"https://pbs.twimg.com/media/photo{index}.jpg"}
+            for index in range(1, 22)
+        ]
+        media = bot.fxtwitter_media({"media": {"all": photos}})
+        self.assertEqual([item["url"] for item in media],
+                         [bot.original_photo_url(item["url"]) for item in photos[:20]])
 
     def test_trim_keeps_original_file(self):
         with tempfile.TemporaryDirectory() as temporary:

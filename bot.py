@@ -36,7 +36,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.12.3"
+APP_VERSION = "3.12.4"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -110,6 +110,8 @@ USER_LIST_NAME_WIDTH = 10
 USER_ROLE_FILTERS = ("all", "ordinary", "admin", "pending", "blocked", "initialized")
 INLINE_USAGE_DEDUP_SECONDS = 5 * 60
 INLINE_RESULT_LIMIT = 10
+POST_MEDIA_LIMIT = 20
+TELEGRAM_ALBUM_LIMIT = 10
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
 NETWORK_TIMEOUT_SECONDS = 60
 NETWORK_TIMEOUT_EXIT_CODE = 124
@@ -630,7 +632,7 @@ PUBLIC_TEXT = {
         "holiday_toggle": "🎉 节日彩蛋：{state}",
         "enabled": "开",
         "disabled": "关",
-        "recent_updates": f"最近更新 · {APP_VERSION}\nNSFW 预览默认加遮罩，并标记 🙈。\n新增推文链接、原始文件和节日彩蛋开关。",
+        "recent_updates": f"最近更新 · {APP_VERSION}\n单篇帖子最多支持 20 项媒体，超过 10 项会分批发送。",
         "feedback": "💬 问题反馈",
         "choose_language": "请选择语言。",
         "back": "↩️ 返回",
@@ -676,7 +678,7 @@ PUBLIC_TEXT = {
         "holiday_toggle": "🎉 節日彩蛋：{state}",
         "enabled": "開",
         "disabled": "關",
-        "recent_updates": f"最近更新 · {APP_VERSION}\nNSFW 預覽預設加遮罩，並標記 🙈。\n新增推文連結、原檔輸出和節日彩蛋開關。",
+        "recent_updates": f"最近更新 · {APP_VERSION}\n單篇貼文最多支援 20 項媒體，超過 10 項會分批發送。",
         "feedback": "💬 問題反饋",
         "choose_language": "請選擇語言。",
         "back": "↩️ 返回",
@@ -722,7 +724,7 @@ PUBLIC_TEXT = {
         "holiday_toggle": "🎉 Holiday reactions: {state}",
         "enabled": "On",
         "disabled": "Off",
-        "recent_updates": f"What's new · {APP_VERSION}\nNSFW previews are covered by default and tagged with 🙈.\nNew toggles for post links, original files and holiday reactions.",
+        "recent_updates": f"What's new · {APP_VERSION}\nPosts can contain up to 20 media items. More than 10 are sent in batches.",
         "feedback": "💬 Feedback",
         "choose_language": "Choose a language.",
         "back": "↩️ Back",
@@ -768,7 +770,7 @@ PUBLIC_TEXT = {
         "holiday_toggle": "🎉 季節のリアクション：{state}",
         "enabled": "オン",
         "disabled": "オフ",
-        "recent_updates": f"最近の更新 · {APP_VERSION}\nNSFW プレビューは既定でぼかし、🙈 を付けます。\n投稿リンク・元ファイル・季節のリアクションの切り替えを追加しました。",
+        "recent_updates": f"最近の更新 · {APP_VERSION}\n1 件の投稿につき最大 20 点に対応し、10 点を超える場合は分けて送信します。",
         "feedback": "💬 問い合わせ",
         "choose_language": "言語を選択してください。",
         "back": "↩️ 戻る",
@@ -2816,13 +2818,26 @@ class TelegramAPI:
             if paths:
                 self.send_message(chat_id, caption, parse_mode=parse_mode)
             return []
-        if len(supported) == 1 or any(path.suffix.lower() == ".gif" for path in supported):
+        results = []
+        for start in range(0, len(supported), TELEGRAM_ALBUM_LIMIT):
+            results.extend(self._send_preview_batch(
+                chat_id, supported[start:start + TELEGRAM_ALBUM_LIMIT],
+                caption if start == 0 else "", parse_mode if start == 0 else None,
+                tweet_id, start, has_spoiler,
+            ))
+        return results
+
+    def _send_preview_batch(
+        self, chat_id: int, paths: list[Path], caption: str, parse_mode: str | None,
+        tweet_id: str | None, start: int, has_spoiler: bool,
+    ) -> list[dict[str, Any]]:
+        if len(paths) == 1 or any(path.suffix.lower() == ".gif" for path in paths):
             # Telegram media albums do not support animation items.
             results = []
-            for index, path in enumerate(supported[:10]):
+            for index, path in enumerate(paths):
                 result = self.send_preview(
-                    chat_id, path, caption if index == 0 else "", parse_mode=parse_mode,
-                    filename=f"X_{tweet_id}_{index + 1:02d}{path.suffix.lower()}" if tweet_id else None,
+                    chat_id, path, caption if index == 0 else "", parse_mode=parse_mode if index == 0 else None,
+                    filename=f"X_{tweet_id}_{start + index + 1:02d}{path.suffix.lower()}" if tweet_id else None,
                     has_spoiler=has_spoiler,
                 )
                 if isinstance(result, dict):
@@ -2832,7 +2847,7 @@ class TelegramAPI:
         media: list[dict[str, Any]] = []
         with ExitStack() as stack:
             files: dict[str, Any] = {}
-            for index, path in enumerate(supported[:10]):
+            for index, path in enumerate(paths):
                 name = f"media{index}"
                 suffix = path.suffix.lower()
                 item: dict[str, Any] = {
@@ -2841,7 +2856,7 @@ class TelegramAPI:
                 }
                 if has_spoiler:
                     item["has_spoiler"] = True
-                if index == 0:
+                if index == 0 and caption:
                     item["caption"] = caption if parse_mode else caption[:1024]
                     if parse_mode:
                         item["parse_mode"] = parse_mode
@@ -2851,7 +2866,7 @@ class TelegramAPI:
                         item["width"], item["height"] = dimensions
                     item["supports_streaming"] = True
                 handle = stack.enter_context(path.open("rb"))
-                filename = f"X_{tweet_id}_{index + 1:02d}{suffix}" if tweet_id else path.name
+                filename = f"X_{tweet_id}_{start + index + 1:02d}{suffix}" if tweet_id else path.name
                 files[name] = (filename, handle)
                 media.append(item)
             result = self.call(
@@ -2872,34 +2887,32 @@ class TelegramAPI:
             )
 
     def send_documents(self, chat_id: int, paths: list[Path], *, tweet_id: str | None = None) -> None:
-        if not paths:
-            return
         if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
             raise ValueError("invalid post ID for media filename")
-        filenames = [f"X_{tweet_id}_{index + 1:02d}{path.suffix.lower()}" if tweet_id else path.name
-                     for index, path in enumerate(paths[:10])]
-        if len(paths) == 1:
-            self.send_document(chat_id, paths[0], filename=filenames[0])
-            return
-        with ExitStack() as stack:
-            files: dict[str, Any] = {}
-            media = []
-            for index, path in enumerate(paths[:10]):
-                name = f"document{index}"
-                item: dict[str, Any] = {
-                    "type": "document",
-                    "media": f"attach://{name}",
-                    "disable_content_type_detection": True,
-                }
-                handle = stack.enter_context(path.open("rb"))
-                files[name] = (filenames[index], handle)
-                media.append(item)
-            self.call(
-                "sendMediaGroup",
-                {"chat_id": chat_id, "media": json.dumps(media, ensure_ascii=False)},
-                files,
-                timeout=(15, 240),
-            )
+        for start in range(0, len(paths), TELEGRAM_ALBUM_LIMIT):
+            batch = paths[start:start + TELEGRAM_ALBUM_LIMIT]
+            filenames = [f"X_{tweet_id}_{index:02d}{path.suffix.lower()}" if tweet_id else path.name
+                         for index, path in enumerate(batch, start + 1)]
+            if len(batch) == 1:
+                self.send_document(chat_id, batch[0], filename=filenames[0])
+                continue
+            with ExitStack() as stack:
+                files: dict[str, Any] = {}
+                media = []
+                for index, (path, filename) in enumerate(zip(batch, filenames)):
+                    name = f"document{index}"
+                    media.append({
+                        "type": "document",
+                        "media": f"attach://{name}",
+                        "disable_content_type_detection": True,
+                    })
+                    files[name] = (filename, stack.enter_context(path.open("rb")))
+                self.call(
+                    "sendMediaGroup",
+                    {"chat_id": chat_id, "media": json.dumps(media, ensure_ascii=False)},
+                    files,
+                    timeout=(15, 240),
+                )
 
 
 def run_command(
@@ -3219,6 +3232,8 @@ def fxtwitter_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(media_url, str) and media_url and media_url not in seen:
             seen.add(media_url)
             results.append(candidate)
+            if len(results) == POST_MEDIA_LIMIT:
+                break
     return results
 
 
@@ -3566,12 +3581,20 @@ def download_fxtwitter_media(
 
 def media_files(directory: Path) -> list[Path]:
     ignored = {".json", ".part", ".ytdl", ".txt"}
+
+    def source_order(path: Path) -> tuple[Path, int, str]:
+        # gallery-dl uses <post ID>_<ordinal>; yt-dlp uses the playlist ordinal.
+        _prefix, _, ordinal = path.stem.rpartition("_")
+        return path.parent, int(ordinal) if re.fullmatch(r"[0-9]{1,3}", ordinal) else 0, path.name
+
     return sorted(
-        path
-        for path in directory.rglob("*")
-        if path.is_file() and path.suffix.lower() not in ignored
-        and ".cache" not in path.relative_to(directory).parts
-        and not any(part.startswith(".video-") for part in path.relative_to(directory).parts)
+        (
+            path for path in directory.rglob("*")
+            if path.is_file() and path.suffix.lower() not in ignored
+            and ".cache" not in path.relative_to(directory).parts
+            and not any(part.startswith(".video-") for part in path.relative_to(directory).parts)
+        ),
+        key=source_order,
     )
 
 
@@ -3698,7 +3721,7 @@ def download_media(
         "--ignore-config",
         "--write-metadata",
         "-O", "include=sensitive,sensitive_flags",
-        "--range", ",".join(str(index) for index in sorted(indices)) if indices else "1-10",
+        "--range", ",".join(str(index) for index in sorted(indices)) if indices else f"1-{POST_MEDIA_LIMIT}",
         "-o", f"downloader.http.filesize-max={max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES)}",
         "--directory",
         str(directory),
@@ -3754,6 +3777,7 @@ def download_media(
             str(Path(__file__).with_name("video_downloader.py")),
             "--no-config",
             "--no-playlist",
+            "--playlist-end", str(POST_MEDIA_LIMIT),
             "--write-info-json",
             "--max-filesize", str(MAX_VIDEO_BYTES),
             "--restrict-filenames",
@@ -3762,7 +3786,7 @@ def download_media(
             "--format",
             video_format,
             "--output",
-            str(directory / "%(id)s.%(ext)s"),
+            str(directory / "%(id)s_%(playlist_index|0)s.%(ext)s"),
         ]
         result = run_extractor([*fallback, url])
         files = media_files(directory)
@@ -3785,7 +3809,7 @@ def trim_files(files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
     accepted: list[Path] = []
     rejected: list[tuple[str, str]] = []
     total = 0
-    for path in files[:10]:
+    for path in files[:POST_MEDIA_LIMIT]:
         size = path.stat().st_size
         is_video = path.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}
         item_limit = MAX_VIDEO_BYTES if is_video else MAX_MEDIA_BYTES

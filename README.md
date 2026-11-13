@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.12.3
+# Telegram X／Twitter 貼文媒體 Bot · v3.12.4
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -73,7 +73,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 圖片向 X 請求原圖尺寸（`orig`），不以縮圖替代原檔；原圖並非一定有 4K。影片從高畫質開始，超過下載上限就清除暫存並嘗試下一級，匿名來源與混合貼文亦同；不重新壓縮。圖片與影片均附送下載檔案，預覽可能另行縮放。影片仍受 Telegram 的 50 MB 上限限制。長文會節錄並保留原文連結，不繼續取得引用貼文。來源不可用或所有版本均超限時，可能只能取得部分內容。
 
-X/Twitter 的 GIF 使用來源 MP4 預覽及文件附件，不轉為 `.gif`；多媒體貼文維持相簿預覽。
+每篇貼文最多處理 20 項媒體。Telegram 相簿每組最多 10 項，超出的媒體按原順序另發，貼文文字只放在第一組。啟用原檔輸出時，附件也按相同上限分批。X/Twitter 的 GIF 維持來源 MP4，不轉為 `.gif`。
 
 單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。各來源與畫質退避共用 `MEDIA_FETCH_SECONDS`，預設 240 秒，不會換來源就重新計時。來源順序可對應時，部分失敗的媒體最多補抓一次並保留原順序。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。多次正常傳輸合計可超過一分鐘。
 
@@ -183,7 +183,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 画像は X の原寸版（`orig`）を要求し、縮小版で代用しません。必ずしも4Kではありません。動画は高画質から試し、容量制限を超えると一時ファイルを削除して次の画質に下げます。匿名取得や画像との混在でも同様で、再圧縮はしません。取得した画像・動画を添付し、プレビューは縮小される場合があります。動画には Telegram の 50 MB 上限が適用されます。長文は原文リンクを残して抜粋し、引用先までは取得しません。配信元が利用できない場合や全画質が上限を超える場合は、一部しか取得できないことがあります。
 
-X/Twitter の GIF は元の MP4 をプレビューと添付ファイルに使い、`.gif` には変換しません。複数メディアの投稿はアルバムでプレビューします。
+1 件の投稿につき最大 20 点のメディアを処理します。Telegram のアルバムは 1 組につき最大 10 点です。残りは元の順序で続けて送り、投稿本文は最初の組だけに付きます。元ファイルも同じ上限で分割します。X/Twitter の GIF は元の MP4 のまま送信し、`.gif` には変換しません。
 
 DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。配信元や画質を切り替えても `MEDIA_FETCH_SECONDS`（初期値240秒）の残り時間を共有します。元の順序を特定できる場合は取得できなかったメディアだけを1回補完します。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。正常な通信の合計が1分を超えることはあります。
 
@@ -293,7 +293,7 @@ Enable Inline Mode in BotFather for inline sharing. The owner can import cookies
 
 Photos request X's original-size variant (`orig`), not a thumbnail substitute; this does not always mean 4K. Videos start at high quality. If a download exceeds the limit, its temporary files are removed before trying the next quality, including anonymous sources and mixed-media posts. Videos are not re-encoded. Downloaded files accompany previews, which may be resized. Videos remain subject to Telegram's 50 MB limit. Long text is excerpted with a source link, and quoted posts are not retrieved. Unavailable sources or variants that all exceed the limit may prevent complete retrieval.
 
-X/Twitter GIFs use the source MP4 for both previews and file attachments, without conversion to `.gif`. Multi-media posts keep album previews.
+Up to 20 media items are processed per post. Telegram albums hold up to 10 items, so remaining media are sent in order without repeating the post text. Original files are split at the same limit when enabled. X/Twitter GIFs still use the source MP4 without conversion to `.gif`.
 
 Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files. Sources and video-quality fallbacks share `MEDIA_FETCH_SECONDS` (240 seconds by default); changing sources does not reset it. Missing media get one selective recovery pass when source order can be matched. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Several healthy transfers may take more than a minute in total.
 
