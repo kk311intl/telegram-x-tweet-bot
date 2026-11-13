@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.12.4
+# Telegram X／Twitter 貼文媒體 Bot · v3.12.5
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -77,7 +77,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。各來源與畫質退避共用 `MEDIA_FETCH_SECONDS`，預設 240 秒，不會換來源就重新計時。來源順序可對應時，部分失敗的媒體最多補抓一次並保留原順序。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。多次正常傳輸合計可超過一分鐘。
 
-預覽與文件送達後分別記錄進度；重啟恢復任務時跳過已確認成功的階段，不再扣額度。Telegram 未回傳確認便斷線的情況，仍無法保證不重複。啟動先恢復接收，再於背景同步選單與描述；部署須確認工作線程及首次輪詢成功後才完成切換。
+分批送達後逐批記錄進度。重啟時，已送達的批次內容一致才續發剩餘批次，不再扣額度；內容不同時停止該階段並提示。Telegram 未回傳確認或尚未存盤便中斷時，仍可能重複。啟動先恢復接收，再於背景同步選單與描述；部署須確認工作線程及首次輪詢成功後才完成切換。
 
 用量總覽提供今日、7 日及 30 日統計，按設定的換日時間計算並包含今天；活躍人數跨日去重。每日用量保留 30 天，歷史不足時只計算已記錄的用量。
 
@@ -187,7 +187,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。配信元や画質を切り替えても `MEDIA_FETCH_SECONDS`（初期値240秒）の残り時間を共有します。元の順序を特定できる場合は取得できなかったメディアだけを1回補完します。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。正常な通信の合計が1分を超えることはあります。
 
-プレビューと添付ファイルの送信確認をそれぞれ保存し、再起動後は確認済みの段階を省略します。利用回数も再加算しません。ただし Telegram の応答前に切断された場合は重複を完全には防げません。起動時は先に受付を再開し、メニューと説明を背景で同期します。更新は処理スレッドの起動と最初のポーリング成功を確認してから確定します。
+分割送信はグループごとに送信確認を保存します。再起動後は確認済みの内容が一致する場合だけ残りを送り、利用回数は再加算しません。一致しなければその段階を中止して通知します。Telegram の応答前や保存前に中断した場合は重複する可能性があります。起動時は先に受付を再開し、メニューと説明を背景で同期します。更新は処理スレッドの起動と最初のポーリング成功を確認してから確定します。
 
 利用状況には本日・7日間・30日間の統計を表示します。設定した日付の切り替え時刻を基準に本日を含め、利用者は期間内で重複して数えません。日別使用量は30日分を保存し、履歴が足りない場合は記録済みの使用量のみを集計します。
 
@@ -297,7 +297,7 @@ Up to 20 media items are processed per post. Telegram albums hold up to 10 items
 
 Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files. Sources and video-quality fallbacks share `MEDIA_FETCH_SECONDS` (240 seconds by default); changing sources does not reset it. Missing media get one selective recovery pass when source order can be matched. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Several healthy transfers may take more than a minute in total.
 
-Confirmed preview and document delivery stages are saved separately, so recovery after a restart skips completed stages without charging again. A connection lost before Telegram confirms delivery can still cause duplicates. Startup begins intake before synchronizing menus and descriptions in the background. Deployment completes only after workers start and the first successful poll is confirmed.
+Delivery is saved after each confirmed batch. After a restart, the bot sends the remaining batches without charging again if the confirmed batches still match. If they do not match, it stops that stage and shows a notice. An interruption before Telegram confirms delivery or before progress is saved can still cause duplicates. Startup begins intake before synchronizing menus and descriptions in the background. Deployment completes only after workers start and the first successful poll is confirmed.
 
 Usage overview shows today, 7 days and 30 days, including today and following the configured daily reset time. Active users are counted once per period. Daily totals are kept for 30 days; incomplete history includes only recorded usage.
 

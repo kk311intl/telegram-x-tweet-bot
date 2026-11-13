@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -36,7 +36,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.12.4"
+APP_VERSION = "3.12.5"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -124,6 +124,11 @@ DNS_LOOKUP_SCRIPT = (
 CURRENT_NETWORK_REQUEST: ContextVar[Any] = ContextVar("network_request", default=None)
 CURRENT_NETWORK_GROUP: ContextVar[Any] = ContextVar("network_group", default=None)
 CURRENT_FETCH_DEADLINE: ContextVar[float | None] = ContextVar("fetch_deadline", default=None)
+CURRENT_MEDIA_PERMISSION: ContextVar[Callable[[], bool] | None] = ContextVar("media_permission", default=None)
+
+
+class MediaPermissionRevoked(RuntimeError):
+    pass
 
 
 class NetworkTimeout(RuntimeError):
@@ -659,6 +664,7 @@ PUBLIC_TEXT = {
         "images_skipped": "部分图片超过大小限制，已跳过。",
         "media_skipped": "部分媒体无法发送，已跳过。",
         "preview_failed": "媒体预览发送失败，请稍后重试。",
+        "preview_partial": "部分媒体预览未发送。",
         "originals_failed": "部分原始文件发送失败，请稍后重试。",
         "language_set": "语言已切换为简体中文。",
         "unsupported_language": "不支持此语言。",
@@ -705,6 +711,7 @@ PUBLIC_TEXT = {
         "images_skipped": "部分圖片超過大小限制，已略過。",
         "media_skipped": "部分媒體無法傳送，已略過。",
         "preview_failed": "媒體預覽傳送失敗，請稍後重試。",
+        "preview_partial": "部分媒體預覽未傳送。",
         "originals_failed": "部分原始檔案傳送失敗，請稍後重試。",
         "language_set": "語言已切換為繁體中文。",
         "unsupported_language": "不支援此語言。",
@@ -751,6 +758,7 @@ PUBLIC_TEXT = {
         "images_skipped": "Some images were too large and were skipped.",
         "media_skipped": "Some media could not be sent and were skipped.",
         "preview_failed": "Couldn't send the media preview. Try again later.",
+        "preview_partial": "Some media previews weren't sent.",
         "originals_failed": "Couldn't send some original files. Try again later.",
         "language_set": "Language changed to English.",
         "unsupported_language": "Unsupported language.",
@@ -797,6 +805,7 @@ PUBLIC_TEXT = {
         "images_skipped": "一部の画像はサイズが大きすぎるため、スキップしました。",
         "media_skipped": "一部のメディアを送信できなかったため、スキップしました。",
         "preview_failed": "メディアのプレビューを送信できませんでした。しばらくしてから再試行してください。",
+        "preview_partial": "一部のプレビューを送信できませんでした。",
         "originals_failed": "一部の元ファイルを送信できませんでした。しばらくしてから再試行してください。",
         "language_set": "表示言語を日本語に変更しました。",
         "unsupported_language": "この言語は対応していません。",
@@ -1088,6 +1097,7 @@ class ACLStore:
             "auto_approve_enabled": False,
             "pending_jobs": {},
             "job_progress": {},
+            "job_batches": {},
         }
         self._load()
         if env_owner_id and not self.data.get("owner_id"):
@@ -1163,6 +1173,7 @@ class ACLStore:
             "auto_approve_enabled": bool(raw.get("auto_approve_enabled", False)),
             "pending_jobs": raw.get("pending_jobs", {}),
             "job_progress": raw.get("job_progress", {}),
+            "job_batches": raw.get("job_batches", {}),
         }
         if "default_daily_limit" in raw:
             limit = raw["default_daily_limit"]
@@ -1237,6 +1248,14 @@ class ACLStore:
                 or any(key not in jobs or value not in ("preview", "documents")
                        for key, value in progress.items())):
             raise ValueError("invalid job progress")
+        batches = data["job_batches"]
+        if (not isinstance(batches, dict)
+                or any(key not in jobs or progress.get(key) == "documents"
+                       or not isinstance(values, list) or not 1 <= len(values) <= POST_MEDIA_LIMIT
+                       or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                              for value in values)
+                       for key, values in batches.items())):
+            raise ValueError("invalid job batches")
         self.data = data
 
     @classmethod
@@ -1252,6 +1271,7 @@ class ACLStore:
             key = f"{chat_id}:{message_id}"
             self.data["pending_jobs"].pop(key, None)
             self.data["job_progress"].pop(key, None)
+            self.data["job_batches"].pop(key, None)
             self._save()
 
     def job_stage(self, chat_id: int, message_id: int) -> str:
@@ -1265,6 +1285,18 @@ class ACLStore:
             key = f"{chat_id}:{message_id}"
             if key in self.data["pending_jobs"]:
                 self.data["job_progress"][key] = stage
+                self.data["job_batches"].pop(key, None)
+                self._save()
+
+    def job_batches(self, chat_id: int, message_id: int) -> list[str]:
+        with self.lock:
+            return self.data["job_batches"].get(f"{chat_id}:{message_id}", []).copy()
+
+    def checkpoint_batch(self, chat_id: int, message_id: int, fingerprint: str) -> None:
+        with self.lock:
+            key = f"{chat_id}:{message_id}"
+            if key in self.data["pending_jobs"]:
+                self.data["job_batches"].setdefault(key, []).append(fingerprint)
                 self._save()
 
     def job_admission(self, user_id: int, url: str) -> str:
@@ -2486,6 +2518,9 @@ class TelegramAPI:
     ) -> Any:
         positions = [(value[1], value[1].tell()) for value in (files or {}).values()]
         for attempt in range(2):
+            permission = CURRENT_MEDIA_PERMISSION.get()
+            if files and permission is not None and not permission():
+                raise MediaPermissionRevoked()
             try:
                 if files:
                     for handle, position in positions:
@@ -2807,6 +2842,7 @@ class TelegramAPI:
         *,
         tweet_id: str | None = None,
         has_spoiler: bool = False,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
             raise ValueError("invalid post ID for media filename")
@@ -2823,7 +2859,7 @@ class TelegramAPI:
             results.extend(self._send_preview_batch(
                 chat_id, supported[start:start + TELEGRAM_ALBUM_LIMIT],
                 caption if start == 0 else "", parse_mode if start == 0 else None,
-                tweet_id, start, has_spoiler,
+                tweet_id, offset + start, has_spoiler,
             ))
         return results
 
@@ -2886,13 +2922,15 @@ class TelegramAPI:
                 timeout=(15, 180),
             )
 
-    def send_documents(self, chat_id: int, paths: list[Path], *, tweet_id: str | None = None) -> None:
+    def send_documents(
+        self, chat_id: int, paths: list[Path], *, tweet_id: str | None = None, offset: int = 0,
+    ) -> None:
         if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
             raise ValueError("invalid post ID for media filename")
         for start in range(0, len(paths), TELEGRAM_ALBUM_LIMIT):
             batch = paths[start:start + TELEGRAM_ALBUM_LIMIT]
             filenames = [f"X_{tweet_id}_{index:02d}{path.suffix.lower()}" if tweet_id else path.name
-                         for index, path in enumerate(batch, start + 1)]
+                         for index, path in enumerate(batch, offset + start + 1)]
             if len(batch) == 1:
                 self.send_document(chat_id, batch[0], filename=filenames[0])
                 continue
@@ -3825,6 +3863,18 @@ def trim_files(files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
         accepted.append(path)
         total += size
     return accepted, rejected
+
+
+def delivery_batch_fingerprint(paths: list[Path]) -> str:
+    # Check content, not just a batch index: a retry can fetch different media.
+    batch_hash = hashlib.sha256()
+    for path in paths:
+        file_hash = hashlib.sha256()
+        with path.open("rb") as media:
+            for chunk in iter(lambda: media.read(128 * 1024), b""):
+                file_hash.update(chunk)
+        batch_hash.update(path.suffix.lower().encode() + b"\0" + file_hash.digest())
+    return batch_hash.hexdigest()
 
 
 class Bot:
@@ -5716,6 +5766,74 @@ class Bot:
             finally:
                 CURRENT_FETCH_DEADLINE.reset(token)
 
+    def _deliver_media(
+        self, chat_id: int, message_id: int, user_id: int, paths: list[Path],
+        tweet_id: str, *, preview: bool, caption: str = "", sensitive: bool = False,
+    ) -> bool:
+        def allowed() -> bool:
+            return self.can_process(user_id) and (preview or self.usage_preferences(user_id)["originals_enabled"])
+
+        confirmed = self.acl.job_batches(chat_id, message_id)
+        batches = []
+        for start in range(0, len(paths), TELEGRAM_ALBUM_LIMIT):
+            batch = paths[start:start + TELEGRAM_ALBUM_LIMIT]
+            if preview and any(path.suffix.lower() == ".gif" for path in batch):
+                batches.extend((start + index, [path]) for index, path in enumerate(batch))
+            else:
+                batches.append((start, batch))
+        if len(confirmed) > len(batches) or any(
+            fingerprint != delivery_batch_fingerprint(batches[index][1])
+            for index, fingerprint in enumerate(confirmed)
+        ):
+            # Do not guess what to skip if re-downloaded media changed.
+            if allowed():
+                self.api.send_message(chat_id, public_text(
+                    self.acl.language(user_id), "preview_partial" if preview else "originals_failed"
+                ), message_id)
+            return False
+        for start, batch in batches[len(confirmed):]:
+            fingerprint = delivery_batch_fingerprint(batch) if len(batches) > 1 else None
+            if not allowed():
+                return False
+            options = {"tweet_id": tweet_id}
+            if start:
+                options["offset"] = start
+            try:
+                permission_token = CURRENT_MEDIA_PERMISSION.set(allowed)
+                try:
+                    if preview:
+                        if sensitive and self.usage_preferences(user_id)["spoiler_enabled"]:
+                            options["has_spoiler"] = True
+                        sent = self.api.send_previews(
+                            chat_id, batch, caption if not start else "", parse_mode="HTML" if not start else None,
+                            **options,
+                        )
+                    else:
+                        self.api.send_documents(chat_id, batch, **options)
+                finally:
+                    CURRENT_MEDIA_PERMISSION.reset(permission_token)
+            except MediaPermissionRevoked:
+                return False
+            except NetworkTimeout:
+                raise
+            except (OSError, requests.RequestException, RuntimeError):
+                LOG.exception("Could not send media batch")
+                if self.can_process(user_id):
+                    key = ("preview_partial" if start else "preview_failed") if preview else "originals_failed"
+                    notice = public_text(self.acl.language(user_id), key)
+                    if preview and not start:
+                        self.api.send_message(chat_id, caption + "\n\n" + html.escape(notice), message_id, parse_mode="HTML")
+                    else:
+                        self.api.send_message(chat_id, notice, message_id)
+                return False
+            if fingerprint:
+                self.acl.checkpoint_batch(chat_id, message_id, fingerprint)
+            if preview and sensitive and isinstance(sent, list) and sent and isinstance(sent[0], dict):
+                preview_id = sent[0].get("message_id")
+                if type(preview_id) is int and preview_id > 0:
+                    self.api.set_reaction(chat_id, preview_id, "🙈")
+        return True
+
     def _process_url(
         self, chat_id: int, message_id: int, user_id: int, url: str
     ) -> None:
@@ -5815,7 +5933,8 @@ class Bot:
                 len(files) + len(rejected) + fallback_oversized_videos
                 < len(fxtwitter_media(fallback_tweet or {}))
             )
-            if not files and not text and not rejected and not fallback_oversized_videos:
+            if (not files and not text and not rejected and not fallback_oversized_videos
+                    and not self.acl.job_batches(chat_id, message_id)):
                 LOG.warning("Post text and media unavailable after extraction: %s", effective_url)
                 if self.can_process(user_id):
                     self.api.send_message(
@@ -5849,56 +5968,19 @@ class Bot:
             )
             if not self.can_process(user_id):
                 return
-            sent_previews = []
-            if previews and not stage:
-                try:
-                    sent_previews = self.api.send_previews(
-                        chat_id, previews, caption, parse_mode="HTML",
-                        tweet_id=effective_url.rsplit("/", 1)[-1],
-                        **({"has_spoiler": True} if sensitive and preferences["spoiler_enabled"] else {}),
-                    )
-                except NetworkTimeout:
-                    raise
-                except (OSError, requests.RequestException, RuntimeError):
-                    LOG.exception("Could not send media previews")
-                    if not self.can_process(user_id):
-                        return
-                    self.api.send_message(
-                        chat_id,
-                        caption
-                        + "\n\n"
-                        + html.escape(
-                            public_text(self.acl.language(user_id), "preview_failed")
-                        ),
-                        message_id,
-                        parse_mode="HTML",
-                    )
-            elif not stage:
-                self.api.send_message(
-                    chat_id, caption, message_id, parse_mode="HTML"
-                )
+            tweet_id = effective_url.rsplit("/", 1)[-1]
             if not stage:
+                if previews or self.acl.job_batches(chat_id, message_id):
+                    self._deliver_media(chat_id, message_id, user_id, previews, tweet_id,
+                                        preview=True, caption=caption, sensitive=sensitive)
+                else:
+                    self.api.send_message(chat_id, caption, message_id, parse_mode="HTML")
                 self.acl.checkpoint_job(chat_id, message_id, "preview")
-            if sensitive and isinstance(sent_previews, list) and sent_previews:
-                preview_id = sent_previews[0].get("message_id") if isinstance(sent_previews[0], dict) else None
-                if type(preview_id) is int and preview_id > 0:
-                    self.api.set_reaction(chat_id, preview_id, "🙈")
             if not self.can_process(user_id):
                 return
-            try:
-                if preferences["originals_enabled"]:
-                    self.api.send_documents(chat_id, files, tweet_id=effective_url.rsplit("/", 1)[-1])
-            except NetworkTimeout:
-                raise
-            except (OSError, requests.RequestException, RuntimeError):
-                LOG.exception("Could not send original media files")
-                if not self.can_process(user_id):
-                    return
-                self.api.send_message(
-                    chat_id,
-                    public_text(self.acl.language(user_id), "originals_failed"),
-                )
-            else:
+            if not self.usage_preferences(user_id)["originals_enabled"] or self._deliver_media(
+                chat_id, message_id, user_id, files, tweet_id, preview=False,
+            ):
                 self.acl.checkpoint_job(chat_id, message_id, "documents")
             if not self.can_process(user_id):
                 return

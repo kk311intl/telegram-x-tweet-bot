@@ -205,6 +205,102 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(progress=progress), self.assertRaises(ValueError):
                 bot.ACLStore.__new__(bot.ACLStore)._apply_state(payload, 1)
 
+    def test_batch_progress_handles_failure_restart_and_revocation(self):
+        for mode in ("success", "partial", "preview_restart", "document_restart", "changed", "blocked", "originals_off", "animation"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                store = bot.ACLStore(root / "acl.json", 100)
+                store.set_quota(200, 100)
+                job = (200, 42, 200, "https://x.com/example/status/123")
+                store.consume(200, job=job)
+                paths = [root / f"{i}.jpg" for i in range(20 if mode == "success" else 11)]
+                if mode == "animation":
+                    paths[0] = paths[0].with_suffix(".gif")
+                for path in paths:
+                    path.write_bytes(path.name.encode())
+                api = MagicMock()
+                service = bot.Bot(api, store)
+                self.addCleanup(service.stop)
+                uploads = []
+
+                def send(_chat, batch, *args, **options):
+                    uploads.append((batch, args, options))
+                    if len(uploads) == 1 and mode == "blocked":
+                        store.set_quota(200, -1)
+                    if len(uploads) == 1 and mode == "originals_off":
+                        store.toggle_media_preference(200, "originals_enabled")
+                    if len(uploads) == 2:
+                        if mode == "partial":
+                            raise RuntimeError("second batch rejected")
+                        if mode in {"preview_restart", "document_restart", "changed"}:
+                            raise KeyboardInterrupt()
+                    return [{"message_id": len(uploads)}]
+
+                preview = mode not in {"document_restart", "originals_off"}
+                if not preview:
+                    store.checkpoint_job(200, 42, "preview")
+                sender = api.send_previews if preview else api.send_documents
+                sender.side_effect = send
+                deliver = lambda: service._deliver_media(
+                    200, 42, 200, paths, "123", preview=preview, caption="caption", sensitive=True,
+                )
+                if mode in {"preview_restart", "document_restart", "changed"}:
+                    with self.assertRaises(KeyboardInterrupt):
+                        deliver()
+                    service.acl = bot.ACLStore(root / "acl.json", 100)
+                    self.assertEqual(len(service.acl.job_batches(200, 42)), 1)
+                    if mode == "changed":
+                        paths[0].write_bytes(b"changed")
+                    sender.side_effect = None
+                    sender.return_value = [{"message_id": 3}]
+                    sender.reset_mock()
+                    self.assertEqual(deliver(), mode != "changed")
+                    if mode == "changed":
+                        sender.assert_not_called()
+                    elif preview:
+                        sender.assert_called_once_with(200, paths[10:], "", parse_mode=None,
+                                                       offset=10, tweet_id="123", has_spoiler=True)
+                    else:
+                        sender.assert_called_once_with(200, paths[10:], offset=10, tweet_id="123")
+                elif mode == "partial":
+                    self.assertFalse(deliver())
+                    api.set_reaction.assert_called_once_with(200, 1, "🙈")
+                    api.send_message.assert_called_once_with(
+                        200, bot.public_text(store.language(200), "preview_partial"), 42,
+                    )
+                elif mode in {"success", "animation"}:
+                    if mode == "animation":
+                        store.toggle_media_preference(200, "spoiler_enabled")
+                    self.assertTrue(deliver())
+                    count = 11 if mode == "animation" else 2
+                    self.assertEqual(len(uploads), count)
+                    self.assertEqual([item.args for item in api.set_reaction.call_args_list],
+                                     [(200, i, "🙈") for i in range(1, count + 1)])
+                    self.assertTrue(all(options.get("has_spoiler", False) == (mode == "success")
+                                        for _, _, options in uploads))
+                else:
+                    self.assertFalse(deliver())
+                    sender.assert_called_once()
+                self.assertEqual(service.acl.data["users"]["200"]["usage_count"], 1)
+
+    def test_revocation_during_rate_limit_wait_prevents_upload_retry(self):
+        api = bot.TelegramAPI("YOUR_API_TOKEN")
+        response = MagicMock(status_code=429)
+        response.json.return_value = {"ok": False, "parameters": {"retry_after": 1}}
+        allowed = MagicMock(side_effect=[True, False])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "image.jpg"
+            path.write_bytes(b"photo")
+            token = bot.CURRENT_MEDIA_PERMISSION.set(allowed)
+            try:
+                with patch.object(api, "session") as session, patch.object(bot.time, "sleep"):
+                    session.return_value.post.return_value = response
+                    with self.assertRaises(bot.MediaPermissionRevoked):
+                        api.send_preview(100, path)
+                    session.return_value.post.assert_called_once()
+            finally:
+                bot.CURRENT_MEDIA_PERMISSION.reset(token)
+
     def test_extractor_sources_share_one_budget(self):
         clock = [10.0]
         def extract(command, timeout, directory):
