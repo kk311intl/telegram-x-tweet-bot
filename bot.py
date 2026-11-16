@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -36,7 +36,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.12.5"
+APP_VERSION = "3.13.0"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -98,6 +98,7 @@ INLINE_MAX_PENDING = max(
     env_int("INLINE_MAX_PENDING", 4, 1, 32),
 )
 TELEGRAM_VIDEO_MAX_BYTES = 50_000_000
+PHOTO_MAX_BYTES = 9_000_000  # Below Telegram's 10 MB photo limit.
 MAX_COOKIE_BYTES = 1024 * 1024
 COOKIE_ALERT_INTERVAL = 24 * 60 * 60
 MAX_DAILY_LIMIT = 100_000
@@ -115,12 +116,20 @@ TELEGRAM_ALBUM_LIMIT = 10
 TELEGRAM_RETRY_AFTER_MAX_SECONDS = 30
 NETWORK_TIMEOUT_SECONDS = 60
 NETWORK_TIMEOUT_EXIT_CODE = 124
+# Multipart uploads to Telegram get 60 seconds plus time for the body at this
+# minimum rate, never more than the cap; callers' timeouts still bound it.
+UPLOAD_MIN_BYTES_PER_SECOND = 512 * 1024
+UPLOAD_TIMEOUT_MAX_SECONDS = 300
 DNS_LOOKUP_SCRIPT = (
     "import json,socket,sys; host,port=json.load(sys.stdin); "
     "print(json.dumps(list(dict.fromkeys("
     "r[4][0] + ('%' + str(r[4][3]) if len(r[4]) > 3 and r[4][3] else '') "
     "for r in socket.getaddrinfo(host,port,0,socket.SOCK_STREAM)))))"
 )
+DNS_CACHE_SECONDS = 60
+DNS_CACHE_LIMIT = 256
+DNS_CACHE: dict[tuple[str, int], tuple[float, list[str]]] = {}
+DNS_CACHE_LOCK = threading.Lock()
 CURRENT_NETWORK_REQUEST: ContextVar[Any] = ContextVar("network_request", default=None)
 CURRENT_NETWORK_GROUP: ContextVar[Any] = ContextVar("network_group", default=None)
 CURRENT_FETCH_DEADLINE: ContextVar[float | None] = ContextVar("fetch_deadline", default=None)
@@ -250,6 +259,12 @@ def resolve_addresses(host: str, port: int, deadline: RequestDeadline) -> list[s
         return [host]
     except ValueError:
         pass
+    # Each resolver is a short-lived interpreter; reuse recent successful
+    # answers briefly. Failures are never cached.
+    with DNS_CACHE_LOCK:
+        cached = DNS_CACHE.get((host, port))
+        if cached and cached[0] > time.monotonic():
+            return list(cached[1])
     # A Python thread cannot cancel getaddrinfo. Reap a bounded resolver process
     # instead, without replacing DNS globally or leaving stuck resolver threads.
     process = subprocess.Popen(
@@ -275,6 +290,10 @@ def resolve_addresses(host: str, port: int, deadline: RequestDeadline) -> list[s
     addresses = json.loads(output)
     if not isinstance(addresses, list) or not addresses:
         raise OSError("Name resolution returned no addresses")
+    with DNS_CACHE_LOCK:
+        if len(DNS_CACHE) >= DNS_CACHE_LIMIT:
+            DNS_CACHE.clear()
+        DNS_CACHE[(host, port)] = (time.monotonic() + DNS_CACHE_SECONDS, list(addresses))
     return addresses
 
 
@@ -336,6 +355,14 @@ def deadline_pools(manager) -> None:
     }
 
 
+def upload_deadline_seconds(body: Any) -> float:
+    """Allow large uploads a size-based budget; every other request keeps 60 seconds."""
+    size = getattr(body, "len", None)
+    if type(size) is not int or size <= 0:
+        return NETWORK_TIMEOUT_SECONDS
+    return min(UPLOAD_TIMEOUT_MAX_SECONDS, NETWORK_TIMEOUT_SECONDS + size / UPLOAD_MIN_BYTES_PER_SECOND)
+
+
 class DeadlineAdapter(requests.adapters.HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs) -> None:
         super().init_poolmanager(*args, **kwargs)
@@ -349,7 +376,7 @@ class DeadlineAdapter(requests.adapters.HTTPAdapter):
 
     def send(self, request, **kwargs):
         timeout = kwargs.get("timeout")
-        seconds = NETWORK_TIMEOUT_SECONDS
+        seconds = upload_deadline_seconds(request.body)
         if isinstance(timeout, tuple):
             seconds = min(seconds, sum(value or seconds for value in timeout))
         deadline = RequestDeadline(seconds)
@@ -490,14 +517,18 @@ def processing_reaction(language: str, holiday_enabled: bool = True, timestamp: 
     return "👀"
 
 
+def new_http_session() -> requests.Session:
+    session = requests.Session()
+    session.mount("https://", DeadlineAdapter())
+    session.mount("http://", DeadlineAdapter())
+    session.headers["User-Agent"] = f"{APP_NAME}/{APP_VERSION}"
+    return session
+
+
 def http_session() -> requests.Session:
     """Reuse DNS, TCP and TLS state within each bounded worker thread."""
     if not hasattr(HTTP_LOCAL, "session"):
-        session = requests.Session()
-        session.mount("https://", DeadlineAdapter())
-        session.mount("http://", DeadlineAdapter())
-        session.headers["User-Agent"] = f"{APP_NAME}/{APP_VERSION}"
-        HTTP_LOCAL.session = session
+        HTTP_LOCAL.session = new_http_session()
     return HTTP_LOCAL.session
 
 
@@ -1340,15 +1371,18 @@ class ACLStore:
         if self.path.exists():
             try:
                 current = self.path.read_text(encoding="utf-8")
-                previous = json.loads(current)
-                validator = ACLStore.__new__(ACLStore)
-                validator._apply_state(previous, self.path.stat().st_mtime_ns)
+                # Text this store wrote itself was valid; anything else on disk
+                # is parsed and validated before it may become the backup.
+                if current != getattr(self, "_written", None):
+                    previous = json.loads(current)
+                    validator = ACLStore.__new__(ACLStore)
+                    validator._apply_state(previous, self.path.stat().st_mtime_ns)
                 atomic_write_text(self.backup_path, current)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 LOG.exception("Refusing to replace the ACL backup with invalid state")
-        atomic_write_text(
-            self.path, json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
-        )
+        text = json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
+        atomic_write_text(self.path, text)
+        self._written = text
         if getattr(os, "geteuid", lambda: -1)() == 0:
             shutil.chown(self.path, user="x-tweet-bot", group="x-tweet-bot")
             if self.backup_path.exists():
@@ -2485,6 +2519,52 @@ def safe_telegram_description(value: Any) -> str:
     return description[:240]
 
 
+FILE_ID_CACHE_SECONDS = 6 * 60 * 60
+FILE_ID_CACHE_LIMIT = 512
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v"}
+
+
+class CachedMedia(NamedTuple):
+    """A file Telegram already stores for this Bot; resent by file_id, not uploaded."""
+    file_id: str
+    suffix: str
+
+    @property
+    def name(self) -> str:
+        return f"cached{self.suffix}"
+
+
+def sent_file_ids(messages: Any, paths: list[Any], *, document: bool) -> list[str] | None:
+    """Map sent messages back to reusable file_ids, or None when any is unclear."""
+    if not isinstance(messages, list) or len(messages) != len(paths):
+        return None
+    file_ids = []
+    for message, path in zip(messages, paths):
+        if not isinstance(message, dict):
+            return None
+        suffix = path.suffix.lower()
+        key = ("document" if document else "animation" if suffix == ".gif"
+               else "video" if suffix in VIDEO_SUFFIXES else "photo")
+        value = message.get(key)
+        if key == "photo":
+            value = value[-1] if isinstance(value, list) and value else None
+        file_id = value.get("file_id") if isinstance(value, dict) else None
+        if not isinstance(file_id, str) or not file_id:
+            return None
+        file_ids.append(file_id)
+    return file_ids
+
+
+def telegram_upload_failed_before_delivery(method: str, payload: dict[str, Any]) -> bool:
+    description = payload.get("description")
+    if payload.get("ok") is not False or not isinstance(description, str):
+        return False
+    if "Internal Server Error during file upload" not in description:
+        return False
+    # An album error names the first failed item; only #1 means none was sent.
+    return method != "sendMediaGroup" or re.search(r"failed to send message #1\b", description) is not None
+
+
 class TelegramAPIError(RuntimeError):
     def __init__(self, method: str, status_code: int, description: str = "") -> None:
         self.method = method
@@ -2502,10 +2582,7 @@ class TelegramAPI:
 
     def session(self) -> requests.Session:
         if not hasattr(self.local, "session"):
-            self.local.session = requests.Session()
-            self.local.session.mount("https://", DeadlineAdapter())
-            self.local.session.mount("http://", DeadlineAdapter())
-            self.local.session.headers["User-Agent"] = f"{APP_NAME}/{APP_VERSION}"
+            self.local.session = new_http_session()
         return self.local.session
 
     def call(
@@ -2571,6 +2648,13 @@ class TelegramAPI:
                     response.close()
                     time.sleep(retry_after)
                     continue
+            if files and attempt == 0 and telegram_upload_failed_before_delivery(method, payload):
+                # Telegram rejected the upload before posting anything, so one
+                # retry cannot duplicate a message.
+                LOG.warning("Telegram %s upload failed on Telegram's side; retrying once", method)
+                response.close()
+                time.sleep(1)
+                continue
             if response.status_code >= 400:
                 raise TelegramAPIError(
                     method,
@@ -2815,7 +2899,7 @@ class TelegramAPI:
             method, field = "sendAnimation", "animation"
         elif suffix in {".mp4", ".mov", ".m4v"}:
             method, field = "sendVideo", "video"
-            dimensions = video_dimensions(path)
+            dimensions = None if isinstance(path, CachedMedia) else video_dimensions(path)
             if dimensions:
                 data["width"], data["height"] = dimensions
             data["supports_streaming"] = "true"
@@ -2825,6 +2909,8 @@ class TelegramAPI:
             data["disable_notification"] = "true"
         if has_spoiler:
             data["has_spoiler"] = "true"
+        if isinstance(path, CachedMedia):
+            return self.call(method, {**data, field: path.file_id})
         with path.open("rb") as handle:
             return self.call(
                 method,
@@ -2897,10 +2983,14 @@ class TelegramAPI:
                     if parse_mode:
                         item["parse_mode"] = parse_mode
                 if item["type"] == "video":
-                    dimensions = video_dimensions(path)
+                    dimensions = None if isinstance(path, CachedMedia) else video_dimensions(path)
                     if dimensions:
                         item["width"], item["height"] = dimensions
                     item["supports_streaming"] = True
+                if isinstance(path, CachedMedia):
+                    item["media"] = path.file_id
+                    media.append(item)
+                    continue
                 handle = stack.enter_context(path.open("rb"))
                 filename = f"X_{tweet_id}_{start + index + 1:02d}{suffix}" if tweet_id else path.name
                 files[name] = (filename, handle)
@@ -2913,9 +3003,13 @@ class TelegramAPI:
             )
             return result if isinstance(result, list) else []
 
-    def send_document(self, chat_id: int, path: Path, caption: str = "", *, filename: str | None = None) -> None:
+    def send_document(self, chat_id: int, path: Path, caption: str = "", *, filename: str | None = None) -> Any:
+        if isinstance(path, CachedMedia):
+            return self.call("sendDocument", {
+                "chat_id": chat_id, "caption": caption[:1024], "document": path.file_id,
+            })
         with path.open("rb") as handle:
-            self.call(
+            return self.call(
                 "sendDocument",
                 {"chat_id": chat_id, "caption": caption[:1024], "disable_content_type_detection": "true"},
                 {"document": (filename or path.name, handle)},
@@ -2924,33 +3018,38 @@ class TelegramAPI:
 
     def send_documents(
         self, chat_id: int, paths: list[Path], *, tweet_id: str | None = None, offset: int = 0,
-    ) -> None:
+    ) -> list[Any]:
         if tweet_id is not None and not re.fullmatch(r"[0-9]{1,25}", tweet_id):
             raise ValueError("invalid post ID for media filename")
+        results: list[Any] = []
         for start in range(0, len(paths), TELEGRAM_ALBUM_LIMIT):
             batch = paths[start:start + TELEGRAM_ALBUM_LIMIT]
             filenames = [f"X_{tweet_id}_{index:02d}{path.suffix.lower()}" if tweet_id else path.name
                          for index, path in enumerate(batch, offset + start + 1)]
             if len(batch) == 1:
-                self.send_document(chat_id, batch[0], filename=filenames[0])
+                results.append(self.send_document(chat_id, batch[0], filename=filenames[0]))
                 continue
             with ExitStack() as stack:
                 files: dict[str, Any] = {}
                 media = []
                 for index, (path, filename) in enumerate(zip(batch, filenames)):
                     name = f"document{index}"
+                    cached = isinstance(path, CachedMedia)
                     media.append({
                         "type": "document",
-                        "media": f"attach://{name}",
+                        "media": path.file_id if cached else f"attach://{name}",
                         "disable_content_type_detection": True,
                     })
-                    files[name] = (filename, stack.enter_context(path.open("rb")))
-                self.call(
+                    if not cached:
+                        files[name] = (filename, stack.enter_context(path.open("rb")))
+                result = self.call(
                     "sendMediaGroup",
                     {"chat_id": chat_id, "media": json.dumps(media, ensure_ascii=False)},
                     files,
                     timeout=(15, 240),
                 )
+                results.extend(result if isinstance(result, list) else [None] * len(batch))
+        return results
 
 
 def run_command(
@@ -3662,22 +3761,23 @@ def prepare_image(path: Path) -> Path:
                 and image.mode in {"RGB", "L"}
                 and image.width <= 4096
                 and image.height <= 4096
-                and path.stat().st_size <= 9_000_000
+                and path.stat().st_size <= PHOTO_MAX_BYTES
                 and telegram_photo_dimensions_valid(image.width, image.height)
             ):
                 return path
             image = ImageOps.exif_transpose(image)
-            image.thumbnail((4096, 4096))
             if image.mode not in {"RGB", "L"}:
                 image = image.convert("RGB")
-            image = pad_extreme_photo_ratio(image)
             output = path.with_suffix(".telegram.jpg")
-            quality = 90
-            while quality >= 55:
-                image.save(output, "JPEG", quality=quality, optimize=True)
-                if output.stat().st_size <= 9_000_000:
-                    return output
-                quality -= 10
+            # Lower quality first, then the size, so noisy originals still fit.
+            for side in (4096, 2560, 1600):
+                image.thumbnail((side, side))
+                padded = pad_extreme_photo_ratio(image)
+                for quality in (90, 80, 70, 60):
+                    padded.save(output, "JPEG", quality=quality, optimize=True)
+                    if output.stat().st_size <= PHOTO_MAX_BYTES:
+                        return output
+            output.unlink(missing_ok=True)
     except (OSError, ValueError):
         LOG.exception("Image conversion failed: %s", path)
     return path
@@ -3709,7 +3809,29 @@ def parse_video_dimensions(payload: dict[str, Any]) -> tuple[int, int] | None:
     return width, height
 
 
+VIDEO_DIMENSION_CACHE: dict[tuple[str, int, int], tuple[int, int] | None] = {}
+VIDEO_DIMENSION_LOCK = threading.Lock()
+
+
 def video_dimensions(path: Path) -> tuple[int, int] | None:
+    """Probe each media file once; retries and later batches reuse the result."""
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    key = (str(path), status.st_mtime_ns, status.st_size)
+    with VIDEO_DIMENSION_LOCK:
+        if key in VIDEO_DIMENSION_CACHE:
+            return VIDEO_DIMENSION_CACHE[key]
+    dimensions = probe_video_dimensions(path)
+    with VIDEO_DIMENSION_LOCK:
+        if len(VIDEO_DIMENSION_CACHE) >= 256:
+            VIDEO_DIMENSION_CACHE.clear()
+        VIDEO_DIMENSION_CACHE[key] = dimensions
+    return dimensions
+
+
+def probe_video_dimensions(path: Path) -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             [
@@ -3869,6 +3991,9 @@ def delivery_batch_fingerprint(paths: list[Path]) -> str:
     # Check content, not just a batch index: a retry can fetch different media.
     batch_hash = hashlib.sha256()
     for path in paths:
+        if isinstance(path, CachedMedia):
+            batch_hash.update(path.suffix.encode() + b"\0id:" + path.file_id.encode())
+            continue
         file_hash = hashlib.sha256()
         with path.open("rb") as media:
             for chunk in iter(lambda: media.read(128 * 1024), b""):
@@ -3918,6 +4043,10 @@ class Bot:
         self.pending_bulk_quotas: dict[int, tuple[int, int, dict[str, int]] | None] = {}
         self.inline_usage_lock = threading.Lock()
         self.inline_usage: dict[tuple[int, str, str], float] = {}
+        # Recently delivered complete posts, kept in memory only: a restart
+        # simply downloads again. Keys are post IDs.
+        self.media_cache_lock = threading.Lock()
+        self.media_cache: dict[str, dict[str, Any]] = {}
         self.started_at = time.time()
         self.last_disk_cleanup = 0.0
         self.traffic = TrafficWindow(self.acl.path.parent / "traffic.json")
@@ -5769,6 +5898,7 @@ class Bot:
     def _deliver_media(
         self, chat_id: int, message_id: int, user_id: int, paths: list[Path],
         tweet_id: str, *, preview: bool, caption: str = "", sensitive: bool = False,
+        sent_ids: list[str | None] | None = None, notify_failure: bool = True,
     ) -> bool:
         def allowed() -> bool:
             return self.can_process(user_id) and (preview or self.usage_preferences(user_id)["originals_enabled"])
@@ -5809,7 +5939,7 @@ class Bot:
                             **options,
                         )
                     else:
-                        self.api.send_documents(chat_id, batch, **options)
+                        sent = self.api.send_documents(chat_id, batch, **options)
                 finally:
                     CURRENT_MEDIA_PERMISSION.reset(permission_token)
             except MediaPermissionRevoked:
@@ -5818,7 +5948,7 @@ class Bot:
                 raise
             except (OSError, requests.RequestException, RuntimeError):
                 LOG.exception("Could not send media batch")
-                if self.can_process(user_id):
+                if notify_failure and self.can_process(user_id):
                     key = ("preview_partial" if start else "preview_failed") if preview else "originals_failed"
                     notice = public_text(self.acl.language(user_id), key)
                     if preview and not start:
@@ -5828,11 +5958,93 @@ class Bot:
                 return False
             if fingerprint:
                 self.acl.checkpoint_batch(chat_id, message_id, fingerprint)
+            if sent_ids is not None:
+                sent_ids.extend(sent_file_ids(sent, batch, document=not preview) or [None] * len(batch))
             if preview and sensitive and isinstance(sent, list) and sent and isinstance(sent[0], dict):
                 preview_id = sent[0].get("message_id")
                 if type(preview_id) is int and preview_id > 0:
                     self.api.set_reaction(chat_id, preview_id, "🙈")
         return True
+
+    def cached_media(self, tweet_id: str, source_count: int, need_documents: bool) -> dict[str, Any] | None:
+        with self.media_cache_lock:
+            entry = self.media_cache.get(tweet_id)
+            if entry and entry["expires"] <= time.monotonic():
+                self.media_cache.pop(tweet_id, None)
+                entry = None
+        if not entry or entry["source_count"] != source_count:
+            return None
+        return None if need_documents and entry["documents"] is None else entry
+
+    def remember_media(self, tweet_id: str, entry: dict[str, Any]) -> None:
+        now = time.monotonic()
+        entry["expires"] = now + FILE_ID_CACHE_SECONDS
+        with self.media_cache_lock:
+            self.media_cache = {key: value for key, value in self.media_cache.items() if value["expires"] > now}
+            current = self.media_cache.get(tweet_id)
+            if current and current["documents"] is not None and entry["documents"] is None:
+                entry["documents"] = current["documents"]
+            while len(self.media_cache) >= FILE_ID_CACHE_LIMIT and tweet_id not in self.media_cache:
+                self.media_cache.pop(min(self.media_cache, key=lambda key: self.media_cache[key]["expires"]))
+            self.media_cache[tweet_id] = entry
+
+    def forget_media(self, tweet_id: str) -> None:
+        with self.media_cache_lock:
+            self.media_cache.pop(tweet_id, None)
+
+    def _deliver_cached(
+        self, chat_id: int, message_id: int, user_id: int, root_tweet: dict[str, Any],
+        tweet_id: str, caption_parts: tuple[str, str, str, str],
+    ) -> bool:
+        """Resend a recent complete post by file_id. False means download as usual."""
+        preferences = self.usage_preferences(user_id)
+        entry = self.cached_media(tweet_id, len(fxtwitter_media(root_tweet)), preferences["originals_enabled"])
+        if entry is None:
+            return False
+        author, author_url, text, link = caption_parts
+        sensitive = usage_settings_enabled(user_id) and (
+            entry["sensitive"] or sensitive_metadata(root_tweet)
+            or any(sensitive_metadata(item) for item in fxtwitter_media(root_tweet))
+        )
+        previews = entry["previews"]
+        caption = media_caption(
+            author, author_url, text, link if preferences["tweet_link_enabled"] else "",
+            self.acl.debug_mode(user_id), "Telegram 快取", limit=1024 if previews else 4096,
+        )
+        if not previews:
+            self.api.send_message(chat_id, caption, message_id, parse_mode="HTML")
+        elif not self._deliver_media(chat_id, message_id, user_id, previews, tweet_id, preview=True,
+                                     caption=caption, sensitive=sensitive, notify_failure=False):
+            outcome = self._cached_failure(chat_id, message_id, user_id, tweet_id, preview=True)
+            if outcome != "continue":
+                return outcome == "stop"
+        self.acl.checkpoint_job(chat_id, message_id, "preview")
+        if not self.can_process(user_id):
+            return True
+        if self.usage_preferences(user_id)["originals_enabled"]:
+            if entry["documents"] is None:
+                return False  # Originals were switched on meanwhile; fetch them.
+            if not self._deliver_media(chat_id, message_id, user_id, entry["documents"], tweet_id,
+                                       preview=False, notify_failure=False):
+                return self._cached_failure(chat_id, message_id, user_id, tweet_id, preview=False) != "fallback"
+        self.acl.checkpoint_job(chat_id, message_id, "documents")
+        return True
+
+    def _cached_failure(self, chat_id: int, message_id: int, user_id: int, tweet_id: str, *, preview: bool) -> str:
+        """Return stop, continue (to the next stage) or fallback (download again)."""
+        self.forget_media(tweet_id)
+        if not self.can_process(user_id) or (
+            not preview and not self.usage_preferences(user_id)["originals_enabled"]
+        ):
+            return "stop"
+        if self.acl.job_batches(chat_id, message_id):
+            # Part of this stage was already sent; never resend or guess the rest.
+            self.api.send_message(chat_id, public_text(
+                self.acl.language(user_id), "preview_partial" if preview else "originals_failed"
+            ), message_id)
+            return "continue" if preview else "stop"
+        LOG.warning("Cached Telegram media could not be resent; downloading again")
+        return "fallback"
 
     def _process_url(
         self, chat_id: int, message_id: int, user_id: int, url: str
@@ -5852,6 +6064,16 @@ class Bot:
         text, author, author_url = fxtwitter_text_author(root_tweet) if root_tweet else ("", "", "")
         if not text and not (root_tweet and isinstance(root_tweet.get("text"), str)):
             text, author, author_url = fetch_tweet_text(effective_url)
+        tweet_id = effective_url.rsplit("/", 1)[-1]
+        fresh = not stage and not self.acl.job_batches(chat_id, message_id)
+        if fresh and root_tweet and fxtwitter_media(root_tweet):
+            if self._deliver_cached(chat_id, message_id, user_id, root_tweet, tweet_id,
+                                    (author, author_url, text, effective_url)):
+                return
+            stage = self.acl.job_stage(chat_id, message_id)
+            fresh = not stage and not self.acl.job_batches(chat_id, message_id)
+            if stage == "documents" or not self.can_process(user_id):
+                return
         with media_temporary_directory() as directory:
             files: list[Path] = []
             method = ""
@@ -5865,7 +6087,6 @@ class Bot:
                 )
                 if files:
                     method = "FxTwitter 直連"
-                    tweet_id = effective_url.rsplit("/", 1)[-1]
                     source_files = {}
                     for path in files:
                         match = re.fullmatch(r"fxtwitter_(\d+)\.[A-Za-z0-9]+", path.name)
@@ -5952,11 +6173,12 @@ class Bot:
                 for path in files
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v", ".gif"}
             ]
-            sensitive = usage_settings_enabled(user_id) and (
+            source_sensitive = (
                 sensitive_metadata(root_tweet) or sensitive_metadata(fallback_tweet)
                 or any(sensitive_metadata(item) for item in fxtwitter_media(fallback_tweet or {}))
                 or downloaded_media_sensitive(directory)
             )
+            sensitive = usage_settings_enabled(user_id) and source_sensitive
             caption = media_caption(
                 author,
                 author_url,
@@ -5968,20 +6190,43 @@ class Bot:
             )
             if not self.can_process(user_id):
                 return
-            tweet_id = effective_url.rsplit("/", 1)[-1]
+            # Only a complete, freshly delivered post may be reused later.
+            cacheable = bool(
+                fresh and root_tweet and fallback_tweet is root_tweet and files and not rejected
+                and not fallback_oversized_videos and not fallback_skipped_media
+                and len(files) == len(fxtwitter_media(root_tweet))
+            )
+            preview_ids: list[str | None] = []
+            document_ids: list[str | None] = []
+            previews_sent = False
             if not stage:
                 if previews or self.acl.job_batches(chat_id, message_id):
-                    self._deliver_media(chat_id, message_id, user_id, previews, tweet_id,
-                                        preview=True, caption=caption, sensitive=sensitive)
+                    previews_sent = self._deliver_media(
+                        chat_id, message_id, user_id, previews, tweet_id,
+                        preview=True, caption=caption, sensitive=sensitive, sent_ids=preview_ids,
+                    )
                 else:
                     self.api.send_message(chat_id, caption, message_id, parse_mode="HTML")
+                    previews_sent = True
                 self.acl.checkpoint_job(chat_id, message_id, "preview")
             if not self.can_process(user_id):
                 return
-            if not self.usage_preferences(user_id)["originals_enabled"] or self._deliver_media(
-                chat_id, message_id, user_id, files, tweet_id, preview=False,
+            originals = self.usage_preferences(user_id)["originals_enabled"]
+            if not originals or self._deliver_media(
+                chat_id, message_id, user_id, files, tweet_id, preview=False, sent_ids=document_ids,
             ):
                 self.acl.checkpoint_job(chat_id, message_id, "documents")
+                if (cacheable and previews_sent and len(preview_ids) == len(previews)
+                        and None not in preview_ids
+                        and (not originals or (len(document_ids) == len(files) and None not in document_ids))):
+                    self.remember_media(tweet_id, {
+                        "source_count": len(files),
+                        "sensitive": bool(source_sensitive),
+                        "previews": [CachedMedia(file_id, path.suffix.lower())
+                                     for file_id, path in zip(preview_ids, previews)],
+                        "documents": [CachedMedia(file_id, path.suffix.lower())
+                                      for file_id, path in zip(document_ids, files)] if originals else None,
+                    })
             if not self.can_process(user_id):
                 return
             oversized_video_count = sum(reason == "video_oversized" for _, reason in rejected) + fallback_oversized_videos

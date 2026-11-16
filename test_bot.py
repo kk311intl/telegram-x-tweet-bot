@@ -2,6 +2,7 @@
 import json
 import io
 import os
+import shlex
 import shutil
 import socket
 import ssl
@@ -2936,10 +2937,12 @@ printf 'restored\\n'
             service = bot.Bot(api, store)
             service.workers = []
             service.handle_update = MagicMock(side_effect=OSError("disk full"))
-            with patch.object(bot, "load_update_offset", return_value=0), patch.object(bot, "save_update_offset") as save, patch.object(bot, "cleanup_stale_media"):
+            with patch.object(bot, "READY_PATH", Path(directory) / "ready.json"), \
+                 patch.object(bot, "load_update_offset", return_value=0), patch.object(bot, "save_update_offset") as save, patch.object(bot, "cleanup_stale_media"):
                 with self.assertRaises(OSError):
                     service.start()
                 save.assert_not_called()
+                self.assertTrue((Path(directory) / "ready.json").is_file())
             service.stop()
 
     def test_export_is_read_only(self):
@@ -3143,7 +3146,7 @@ class ConfigurationCLITests(unittest.TestCase):
             for quote in ('"', "'", ""):
                 with self.subTest(quote=quote):
                     path.write_text(f"  BOT_TIMEZONE = {quote}Asia/Tokyo{quote}  \n  DAILY_RESET_HOUR = {quote}6{quote}  \n", encoding="utf-8")
-                    shell = header.replace("/etc/x-tweet-telegram-bot.env", path.as_posix())
+                    shell = header.replace("/etc/x-tweet-telegram-bot.env", shlex.quote(path.as_posix()))
                     shell += '\nprintf "%s\\n" "$BOT_TIMEZONE" "$DAILY_RESET_HOUR"\n'
                     result = subprocess.run([bash, "-s"], input=shell.encode(), capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
@@ -7378,11 +7381,13 @@ class PerformanceSafetyTests(unittest.TestCase):
 
             service.handle_update = MagicMock(side_effect=handle)
             service.maybe_send_daily_report = MagicMock()
-            with patch.object(bot, "load_update_offset", return_value=0), patch.object(
+            with patch.object(bot, "READY_PATH", Path(temporary) / "ready.json"), \
+                 patch.object(bot, "load_update_offset", return_value=0), patch.object(
                 bot, "save_update_offset"
             ) as save_offset, patch.object(bot, "cleanup_stale_media"):
                 service.start()
 
+            self.assertTrue((Path(temporary) / "ready.json").is_file())
             self.assertEqual(service.handle_update.call_count, 2)
             self.assertEqual(
                 [call.args[0] for call in save_offset.call_args_list], [2, 3]
@@ -8130,6 +8135,252 @@ class HolidayReactionTests(unittest.TestCase):
                     service.worker.join(2)
                 self.assertEqual(api.set_reaction.call_args_list[-1].args, (200, 42))
                 self.assertFalse(store.data["pending_jobs"])
+
+
+class DeliveryOptimizationTests(unittest.TestCase):
+    def test_upload_deadline_scales_with_body_within_caller_timeout(self):
+        self.assertEqual(bot.upload_deadline_seconds(b"form"), bot.NETWORK_TIMEOUT_SECONDS)
+        self.assertEqual(bot.upload_deadline_seconds(None), bot.NETWORK_TIMEOUT_SECONDS)
+        self.assertEqual(bot.upload_deadline_seconds(MagicMock(len=10 ** 10)), bot.UPLOAD_TIMEOUT_MAX_SECONDS)
+        captured = []
+        real_deadline = bot.RequestDeadline
+
+        def spy(seconds):
+            captured.append(seconds)
+            return real_deadline(seconds)
+
+        cases = [
+            (MagicMock(len=50_000_000), (15, 240), 60 + 50_000_000 / bot.UPLOAD_MIN_BYTES_PER_SECOND),
+            (MagicMock(len=10 ** 9), (15, 180), 195),
+            ("chat_id=1", (10, 70), bot.NETWORK_TIMEOUT_SECONDS),
+        ]
+        with patch.object(bot, "RequestDeadline", side_effect=spy), \
+             patch.object(bot.requests.adapters.HTTPAdapter, "send", return_value=MagicMock()):
+            for body, timeout, expected in cases:
+                bot.DeadlineAdapter().send(MagicMock(body=body), timeout=timeout)
+        self.assertEqual(len(captured), 3)
+        for seconds, (_body, _timeout, expected) in zip(captured, cases):
+            self.assertAlmostEqual(seconds, expected)
+
+    def test_acl_save_revalidates_only_text_it_did_not_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "acl.json"
+            store = bot.ACLStore(path, 100)
+            store.add(200)
+            original = bot.ACLStore._apply_state
+            with patch.object(bot.ACLStore, "_apply_state", autospec=True, side_effect=original) as validate:
+                store.set_quota(200, 7)
+                store.set_quota(200, 8)
+                self.assertEqual(validate.call_count, 0)
+                external = json.loads(path.read_text(encoding="utf-8"))
+                external["users"]["200"]["quota"] = 9
+                path.write_text(json.dumps(external), encoding="utf-8")
+                store.set_quota(200, 10)
+                self.assertEqual(validate.call_count, 1)
+            self.assertEqual(json.loads(store.backup_path.read_text(encoding="utf-8")), external)
+            self.assertEqual(bot.ACLStore(path, 100).quota(200), 10)
+
+    def test_upload_retries_once_only_when_telegram_sent_nothing(self):
+        def failure(item):
+            response = MagicMock(status_code=400)
+            response.json.return_value = {
+                "ok": False, "error_code": 400,
+                "description": f'Bad Request: failed to send message #{item} with the error message '
+                               '"Internal Server Error during file upload"',
+            }
+            return response
+
+        success = MagicMock(status_code=200)
+        success.json.return_value = {"ok": True, "result": [{"message_id": 1}]}
+        for item, retried in ((1, True), (2, False), (10, False)):
+            with self.subTest(item=item):
+                api = bot.TelegramAPI("123:test")
+                session = MagicMock()
+                session.post.side_effect = [failure(item), success]
+                with patch.object(api, "session", return_value=session), patch.object(bot.time, "sleep"):
+                    files = {"media0": ("a.jpg", io.BytesIO(b"image"))}
+                    if retried:
+                        with self.assertLogs(bot.LOG, level="WARNING"):
+                            result = api.call("sendMediaGroup", {"chat_id": 1, "media": "[]"}, files)
+                        self.assertEqual(result, [{"message_id": 1}])
+                    else:
+                        with self.assertRaises(bot.TelegramAPIError):
+                            api.call("sendMediaGroup", {"chat_id": 1, "media": "[]"}, files)
+                self.assertEqual(session.post.call_count, 2 if retried else 1)
+        api = bot.TelegramAPI("123:test")
+        session = MagicMock()
+        session.post.side_effect = [failure(1), success]
+        with patch.object(api, "session", return_value=session), self.assertRaises(bot.TelegramAPIError):
+            api.call("sendMessage", {"chat_id": 1, "text": "no upload, no retry"})
+        self.assertEqual(session.post.call_count, 1)
+
+    def test_dns_answers_are_reused_briefly_and_failures_are_not(self):
+        bot.DNS_CACHE.clear()
+        self.addCleanup(bot.DNS_CACHE.clear)
+        answer = "import json,sys; json.load(sys.stdin); print(json.dumps(['127.0.0.1']))"
+        deadline = bot.RequestDeadline(30)
+        self.addCleanup(deadline.close)
+        with patch.object(bot, "DNS_LOOKUP_SCRIPT", answer), \
+             patch.object(bot.subprocess, "Popen", wraps=bot.subprocess.Popen) as popen:
+            self.assertEqual(bot.resolve_addresses("cache.invalid", 443, deadline), ["127.0.0.1"])
+            self.assertEqual(bot.resolve_addresses("cache.invalid", 443, deadline), ["127.0.0.1"])
+            self.assertEqual(popen.call_count, 1)
+            bot.DNS_CACHE[("cache.invalid", 443)] = (0, ["127.0.0.1"])
+            bot.resolve_addresses("cache.invalid", 443, deadline)
+            self.assertEqual(popen.call_count, 2)
+        with patch.object(bot, "DNS_LOOKUP_SCRIPT", "raise SystemExit(1)"), self.assertRaises(OSError):
+            bot.resolve_addresses("failed.invalid", 443, deadline)
+        self.assertNotIn(("failed.invalid", 443), bot.DNS_CACHE)
+
+    def test_video_dimensions_probe_each_file_version_once(self):
+        bot.VIDEO_DIMENSION_CACHE.clear()
+        self.addCleanup(bot.VIDEO_DIMENSION_CACHE.clear)
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(bot, "probe_video_dimensions", return_value=(640, 360)) as probe:
+            path = Path(temporary) / "video.mp4"
+            path.write_bytes(b"video")
+            self.assertEqual(bot.video_dimensions(path), (640, 360))
+            self.assertEqual(bot.video_dimensions(path), (640, 360))
+            self.assertEqual(probe.call_count, 1)
+            path.write_bytes(b"other video")
+            bot.video_dimensions(path)
+            self.assertEqual(probe.call_count, 2)
+            self.assertIsNone(bot.video_dimensions(Path(temporary) / "missing.mp4"))
+            self.assertEqual(probe.call_count, 2)
+
+    def test_prepare_image_shrinks_noisy_photo_until_it_fits(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "noise.png"
+            source = Image.frombytes("RGB", (2400, 1800), os.urandom(2400 * 1800 * 3))
+            source.save(path)
+            expected = source.copy()
+            expected.thumbnail((1600, 1600))
+            buffer = io.BytesIO()
+            expected.save(buffer, "JPEG", quality=60, optimize=True)
+            limit = int(buffer.tell() * 1.1)
+            with patch.object(bot, "PHOTO_MAX_BYTES", limit):
+                prepared = bot.prepare_image(path)
+            self.assertEqual(prepared.suffix, ".jpg")
+            self.assertLessEqual(prepared.stat().st_size, limit)
+            with Image.open(prepared) as image:
+                self.assertLessEqual(max(image.size), 1600)
+
+    def test_inline_translations_cover_all_languages(self):
+        import ast
+        languages = set(bot.PUBLIC_TEXT)
+        tree = ast.parse(Path(bot.__file__).read_text(encoding="utf-8"))
+        checked = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict) or not all(isinstance(key, ast.Constant) for key in node.keys):
+                continue
+            keys = {key.value for key in node.keys}
+            # Only English and Japanese have their own duration format; the
+            # ordinary-user label falls back to admin_text for other languages.
+            # Bot command menus are keyed by Telegram language_code, with "" as default.
+            if keys & languages and "zh" in keys and keys != {"zh", "zh-cn"} and "" not in keys:
+                checked += 1
+                self.assertEqual(keys, languages, f"bot.py:{node.lineno}")
+        self.assertGreater(checked, 30)
+
+    def test_sent_file_ids_require_one_clear_id_per_item(self):
+        paths = [Path("a.jpg"), Path("b.mp4"), Path("c.gif")]
+        messages = [{"photo": [{"file_id": "small"}, {"file_id": "large"}]},
+                    {"video": {"file_id": "video"}}, {"animation": {"file_id": "animation"}}]
+        self.assertEqual(bot.sent_file_ids(messages, paths, document=False), ["large", "video", "animation"])
+        self.assertEqual(bot.sent_file_ids([{"document": {"file_id": "doc"}}], paths[:1], document=True), ["doc"])
+        self.assertIsNone(bot.sent_file_ids(messages[:2], paths, document=False))
+        self.assertIsNone(bot.sent_file_ids([{"animation": {"file_id": "x"}}], paths[1:2], document=False))
+        self.assertIsNone(bot.sent_file_ids([{"photo": []}], paths[:1], document=False))
+        self.assertIsNone(bot.sent_file_ids(MagicMock(), paths, document=False))
+
+    def test_cached_media_is_sent_by_file_id_without_uploading(self):
+        api = bot.TelegramAPI("123:test")
+        with patch.object(api, "call", return_value=[{"message_id": 1}, {"message_id": 2}]) as call:
+            api.send_previews(5, [bot.CachedMedia("photo-id", ".jpg"), bot.CachedMedia("video-id", ".mp4")],
+                              "caption", tweet_id="123", has_spoiler=True)
+            method, data, files = call.call_args.args
+            self.assertEqual((method, files), ("sendMediaGroup", {}))
+            media = json.loads(data["media"])
+            self.assertEqual([item["media"] for item in media], ["photo-id", "video-id"])
+            self.assertTrue(all(item["has_spoiler"] for item in media))
+            self.assertEqual(media[0]["caption"], "caption")
+            call.reset_mock()
+            call.return_value = {"message_id": 3}
+            api.send_previews(5, [bot.CachedMedia("single", ".mp4")], "caption", has_spoiler=True)
+            self.assertEqual(call.call_args.args[0], "sendVideo")
+            self.assertEqual(call.call_args.args[1]["video"], "single")
+            self.assertEqual(call.call_args.args[1]["has_spoiler"], "true")
+            self.assertEqual(len(call.call_args.args), 2)
+            call.return_value = {"message_id": 4}
+            self.assertEqual(api.send_documents(5, [bot.CachedMedia("doc", ".jpg")]), [{"message_id": 4}])
+            self.assertEqual(call.call_args.args, ("sendDocument", {"chat_id": 5, "caption": "", "document": "doc"}))
+
+    def test_repeated_post_reuses_file_ids_and_falls_back_when_they_fail(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(bot, "media_disk_available", return_value=True):
+            root = Path(folder)
+            store = bot.ACLStore(root / "acl.json", 100)
+            store.add(200)
+            store.add(300)
+            tweet = {"id": "123", "text": "example", "possibly_sensitive": True, "media": {"all": [
+                {"type": "photo", "url": "https://pbs.twimg.com/one.jpg"},
+                {"type": "photo", "url": "https://pbs.twimg.com/two.jpg"}]}}
+            downloads = []
+
+            def download(_tweet, directory, **_options):
+                downloads.append(directory)
+                paths = [directory / f"fxtwitter_{index}.jpg" for index in (1, 2)]
+                for path in paths:
+                    path.write_bytes(path.name.encode())
+                return paths, 0
+
+            def sent(kind):
+                def send(_chat, batch, *args, **options):
+                    return [{"message_id": index + 1, kind: [{"file_id": f"{kind}-{index}"}] if kind == "photo"
+                             else {"file_id": f"{kind}-{index}"}} for index, _path in enumerate(batch)]
+                return send
+
+            api = MagicMock()
+            api.send_previews.side_effect = sent("photo")
+            api.send_documents.side_effect = sent("document")
+            service = bot.Bot(api, store)
+            self.addCleanup(service.stop)
+            with patch.object(bot, "TMP_DIR", root), patch.object(bot, "fetch_fxtwitter", return_value=tweet), \
+                 patch.object(bot, "download_fxtwitter_media", side_effect=download), \
+                 patch.object(bot, "prepare_image", side_effect=lambda path: path):
+                service.process_url(200, 1, 200, "https://x.com/example/status/123")
+                self.assertEqual(len(downloads), 1)
+                self.assertIsInstance(api.send_previews.call_args.args[1][0], Path)
+                api.reset_mock()
+                service.process_url(300, 2, 300, "https://x.com/example/status/123")
+                self.assertEqual(len(downloads), 1)
+                previews = api.send_previews.call_args.args[1]
+                self.assertEqual(previews, [bot.CachedMedia("photo-0", ".jpg"), bot.CachedMedia("photo-1", ".jpg")])
+                self.assertTrue(api.send_previews.call_args.kwargs["has_spoiler"])
+                self.assertEqual(api.send_documents.call_args.args[1],
+                                 [bot.CachedMedia("document-0", ".jpg"), bot.CachedMedia("document-1", ".jpg")])
+                api.set_reaction.assert_called_with(300, 1, "🙈")
+                api.send_message.assert_not_called()
+
+                api.reset_mock()
+                uploads = []
+
+                def reject_cached(_chat, batch, *args, **options):
+                    uploads.append(batch)
+                    if isinstance(batch[0], bot.CachedMedia):
+                        raise bot.TelegramAPIError("sendMediaGroup", 400, "wrong file identifier")
+                    return sent("photo")(_chat, batch)
+
+                api.send_previews.side_effect = reject_cached
+                with self.assertLogs(bot.LOG, level="WARNING"):
+                    service.process_url(300, 3, 300, "https://x.com/example/status/123")
+                self.assertEqual(len(downloads), 2)
+                self.assertIsInstance(uploads[0][0], bot.CachedMedia)
+                self.assertIsInstance(uploads[1][0], Path)
+                api.send_message.assert_not_called()
+                self.assertIsInstance(api.send_documents.call_args.args[1][0], Path)
+            store.set_quota(300, 0)
+            self.assertFalse(service.can_process(300))
 
 
 if __name__ == "__main__":

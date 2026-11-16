@@ -1,4 +1,4 @@
-# Telegram X／Twitter 貼文媒體 Bot · v3.12.5
+# Telegram X／Twitter 貼文媒體 Bot · v3.13.0
 
 [中文](#中文) / [日本語](#日本語) / [English](#english)
 
@@ -75,7 +75,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 每篇貼文最多處理 20 項媒體。Telegram 相簿每組最多 10 項，超出的媒體按原順序另發，貼文文字只放在第一組。啟用原檔輸出時，附件也按相同上限分批。X/Twitter 的 GIF 維持來源 MP4，不轉為 `.gif`。
 
-單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；逾時會停止整個任務並清理暫存，不繼續重送媒體。各來源與畫質退避共用 `MEDIA_FETCH_SECONDS`，預設 240 秒，不會換來源就重新計時。來源順序可對應時，部分失敗的媒體最多補抓一次並保留原順序。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。多次正常傳輸合計可超過一分鐘。
+單次網路操作最多 60 秒，包含 DNS 與 TLS 建連；上傳到 Telegram 另按檔案大小延長，最多 300 秒。逾時會停止整個任務並清理暫存，不繼續重送媒體。各來源與畫質退避共用 `MEDIA_FETCH_SECONDS`，預設 240 秒，不會換來源就重新計時。來源順序可對應時，部分失敗的媒體最多補抓一次並保留原順序。錯誤通知最多嘗試 5 秒，Telegram 完全不通時可能無法送達。多次正常傳輸合計可超過一分鐘。同一篇完整送達的貼文在 6 小時內再次請求時，直接重用 Telegram 已保存的檔案，不重新下載或上傳；重用失敗會改回正常取得。此紀錄只在記憶體中，重啟後清空。
 
 分批送達後逐批記錄進度。重啟時，已送達的批次內容一致才續發剩餘批次，不再扣額度；內容不同時停止該階段並提示。Telegram 未回傳確認或尚未存盤便中斷時，仍可能重複。啟動先恢復接收，再於背景同步選單與描述；部署須確認工作線程及首次輪詢成功後才完成切換。
 
@@ -185,7 +185,7 @@ systemctl status x-tweet-telegram-bot.service --no-pager
 
 1 件の投稿につき最大 20 点のメディアを処理します。Telegram のアルバムは 1 組につき最大 10 点です。残りは元の順序で続けて送り、投稿本文は最初の組だけに付きます。元ファイルも同じ上限で分割します。X/Twitter の GIF は元の MP4 のまま送信し、`.gif` には変換しません。
 
-DNS・TLS接続を含む各通信は最大60秒です。時間切れで投稿処理を中止し、一時ファイルを削除します。配信元や画質を切り替えても `MEDIA_FETCH_SECONDS`（初期値240秒）の残り時間を共有します。元の順序を特定できる場合は取得できなかったメディアだけを1回補完します。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。正常な通信の合計が1分を超えることはあります。
+DNS・TLS接続を含む各通信は最大60秒です。Telegram へのアップロードはファイルサイズに応じて最大300秒まで延長します。時間切れで投稿処理を中止し、一時ファイルを削除します。配信元や画質を切り替えても `MEDIA_FETCH_SECONDS`（初期値240秒）の残り時間を共有します。元の順序を特定できる場合は取得できなかったメディアだけを1回補完します。エラー通知は最大5秒だけ試み、Telegram に接続できない場合は届かないことがあります。正常な通信の合計が1分を超えることはあります。すべて届いた投稿を6時間以内に再度リクエストした場合は、Telegram に保存済みのファイルを再利用し、再ダウンロードや再アップロードをしません。再利用に失敗すると通常の取得に戻ります。この記録はメモリ上だけにあり、再起動で消えます。
 
 分割送信はグループごとに送信確認を保存します。再起動後は確認済みの内容が一致する場合だけ残りを送り、利用回数は再加算しません。一致しなければその段階を中止して通知します。Telegram の応答前や保存前に中断した場合は重複する可能性があります。起動時は先に受付を再開し、メニューと説明を背景で同期します。更新は処理スレッドの起動と最初のポーリング成功を確認してから確定します。
 
@@ -295,7 +295,7 @@ Photos request X's original-size variant (`orig`), not a thumbnail substitute; t
 
 Up to 20 media items are processed per post. Telegram albums hold up to 10 items, so remaining media are sent in order without repeating the post text. Original files are split at the same limit when enabled. X/Twitter GIFs still use the source MP4 without conversion to `.gif`.
 
-Each network operation, including DNS and TLS setup, has a 60-second limit. A timeout stops the job and removes temporary files. Sources and video-quality fallbacks share `MEDIA_FETCH_SECONDS` (240 seconds by default); changing sources does not reset it. Missing media get one selective recovery pass when source order can be matched. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Several healthy transfers may take more than a minute in total.
+Each network operation, including DNS and TLS setup, has a 60-second limit; uploads to Telegram get extra time by file size, up to 300 seconds. A timeout stops the job and removes temporary files. Sources and video-quality fallbacks share `MEDIA_FETCH_SECONDS` (240 seconds by default); changing sources does not reset it. Missing media get one selective recovery pass when source order can be matched. The error notice gets one attempt of up to 5 seconds and may not arrive if Telegram is unreachable. Several healthy transfers may take more than a minute in total. When a fully delivered post is requested again within 6 hours, the Bot reuses the files Telegram already stores instead of downloading and uploading them again; if reuse fails, it fetches the post normally. This record lives in memory only and is cleared on restart.
 
 Delivery is saved after each confirmed batch. After a restart, the bot sends the remaining batches without charging again if the confirmed batches still match. If they do not match, it stops that stage and shows a notice. An interruption before Telegram confirms delivery or before progress is saved can still cause duplicates. Startup begins intake before synchronizing menus and descriptions in the background. Deployment completes only after workers start and the first successful poll is confirmed.
 
