@@ -8283,6 +8283,48 @@ class DeliveryOptimizationTests(unittest.TestCase):
                 self.assertEqual(keys, languages, f"bot.py:{node.lineno}")
         self.assertGreater(checked, 30)
 
+    def test_preview_photos_are_capped_at_telegram_storage_size(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temporary:
+            for size, expected in (((8192, 5464), (2560, 1707)), ((3000, 2000), (2560, 1707)), ((2560, 1000), None)):
+                with self.subTest(size=size):
+                    path = Path(temporary) / f"{size[0]}x{size[1]}.jpg"
+                    Image.new("RGB", size, "white").save(path, "JPEG")
+                    prepared = bot.prepare_image(path)
+                    if expected is None:
+                        self.assertEqual(prepared, path)
+                        continue
+                    self.assertNotEqual(prepared, path)
+                    with Image.open(prepared) as image:
+                        self.assertLessEqual(max(image.size), bot.PREVIEW_MAX_SIDE)
+                        self.assertAlmostEqual(image.size[1], expected[1], delta=2)
+                    self.assertEqual(path.read_bytes()[:2], b"\xff\xd8")  # The original stays untouched.
+
+    def test_chat_action_does_not_delay_media_job(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = bot.ACLStore(Path(temporary) / "acl.json", 100)
+            api = MagicMock()
+            started = bot.threading.Event()
+            release = bot.threading.Event()
+
+            def slow_action(*_args):
+                started.set()
+                release.wait(5)
+                raise OSError("unexpected failure")
+
+            api.send_action.side_effect = slow_action
+            service = bot.Bot(api, store)
+            self.addCleanup(service.action_executor.shutdown, wait=True)
+            begin = bot.time.monotonic()
+            service.send_action_later(100, "upload_document")
+            self.assertLess(bot.time.monotonic() - begin, 1)
+            self.assertTrue(started.wait(5))
+            with self.assertLogs(bot.LOG, level="WARNING"):
+                release.set()
+                service.action_executor.shutdown(wait=True)
+            api.send_action.assert_called_once_with(100, "upload_document")
+            service.send_action_later(100, "upload_document")  # Ignored after shutdown.
+
     def test_sent_file_ids_require_one_clear_id_per_item(self):
         paths = [Path("a.jpg"), Path("b.mp4"), Path("c.gif")]
         messages = [{"photo": [{"file_id": "small"}, {"file_id": "large"}]},

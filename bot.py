@@ -36,7 +36,7 @@ from urllib3.exceptions import HTTPError as StreamHTTPError
 
 
 APP_NAME = "x-tweet-telegram-bot"
-APP_VERSION = "3.13.0"
+APP_VERSION = "3.13.1"
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/x-tweet-telegram-bot"))
 ACL_PATH = STATE_DIR / "acl.json"
 UPDATE_OFFSET_PATH = STATE_DIR / "update-offset.json"
@@ -99,6 +99,9 @@ INLINE_MAX_PENDING = max(
 )
 TELEGRAM_VIDEO_MAX_BYTES = 50_000_000
 PHOTO_MAX_BYTES = 9_000_000  # Below Telegram's 10 MB photo limit.
+# Telegram stores photos at up to 2560 px; larger previews only cost upload
+# time. Originals are still sent unchanged as documents.
+PREVIEW_MAX_SIDE = 2560
 MAX_COOKIE_BYTES = 1024 * 1024
 COOKIE_ALERT_INTERVAL = 24 * 60 * 60
 MAX_DAILY_LIMIT = 100_000
@@ -3759,18 +3762,22 @@ def prepare_image(path: Path) -> Path:
             if (
                 orientation == 1
                 and image.mode in {"RGB", "L"}
-                and image.width <= 4096
-                and image.height <= 4096
+                and image.width <= PREVIEW_MAX_SIDE
+                and image.height <= PREVIEW_MAX_SIDE
                 and path.stat().st_size <= PHOTO_MAX_BYTES
                 and telegram_photo_dimensions_valid(image.width, image.height)
             ):
                 return path
+            # Large JPEGs decode at a reduced scale (never below the preview
+            # size), which is far cheaper than a full decode and resize.
+            image.draft(image.mode if image.mode in {"RGB", "L"} else None,
+                        (PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
             image = ImageOps.exif_transpose(image)
             if image.mode not in {"RGB", "L"}:
                 image = image.convert("RGB")
             output = path.with_suffix(".telegram.jpg")
             # Lower quality first, then the size, so noisy originals still fit.
-            for side in (4096, 2560, 1600):
+            for side in (PREVIEW_MAX_SIDE, 1600, 1024):
                 image.thumbnail((side, side))
                 padded = pad_extreme_photo_ratio(image)
                 for quality in (90, 80, 70, 60):
@@ -4029,6 +4036,9 @@ class Bot:
             max_workers=INLINE_WORKER_COUNT,
             thread_name_prefix="inline-worker",
         )
+        # One thread keeps its Telegram connection alive for cosmetic chat
+        # actions, so media jobs never wait for that round trip.
+        self.action_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chat-action")
         self.inline_slots = threading.BoundedSemaphore(INLINE_MAX_PENDING)
         self.inline_futures_lock = threading.Lock()
         self.inline_futures: set[Future[Any]] = set()
@@ -4139,6 +4149,17 @@ class Bot:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def send_action_later(self, chat_id: int, action: str) -> None:
+        def send() -> None:
+            try:
+                self.api.send_action(chat_id, action)
+            except Exception:
+                LOG.warning("Could not send Telegram chat action", exc_info=True)
+        try:
+            self.action_executor.submit(send)
+        except RuntimeError:
+            pass  # The executor is shutting down; the action is cosmetic.
 
     def _sync_metadata(self) -> None:
         for configure in (self.api.configure_commands, self.api.configure_profile):
@@ -6057,7 +6078,7 @@ class Bot:
         preferences = self.usage_preferences(user_id)
         if not media_disk_available():
             raise RuntimeError("Media storage is temporarily unavailable")
-        self.api.send_action(chat_id, "upload_document")
+        self.send_action_later(chat_id, "upload_document")
         root_tweet = fetch_fxtwitter(url)
         effective_url = fxtwitter_tweet_url(root_tweet) if root_tweet else None
         effective_url = effective_url or url
@@ -6268,6 +6289,7 @@ def main() -> int:
     finally:
         bot.stop()
         bot.inline_executor.shutdown(wait=False, cancel_futures=True)
+        bot.action_executor.shutdown(wait=False, cancel_futures=True)
         deadline = time.monotonic() + 20
         for worker in bot.workers:
             if worker.ident is not None:
